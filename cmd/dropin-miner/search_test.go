@@ -51,8 +51,8 @@ enabled = true
 as_url = "https://as.fictional.test"
 chain_id = "fictional-1"
 slot_id = 3
-state_dir = "` + filepath.Join(root, "state") + `"
-spool_dir = "` + filepath.Join(root, "spool") + `"
+state_dir = "` + filepath.ToSlash(filepath.Join(root, "state")) + `"
+spool_dir = "` + filepath.ToSlash(filepath.Join(root, "spool")) + `"
 
 [miner]
 enabled = true

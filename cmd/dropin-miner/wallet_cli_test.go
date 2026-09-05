@@ -43,7 +43,7 @@ func TestWalletInitCreatesAWalletAndRefusesToOverwriteIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm()&0o077 != 0 {
+		if posixModes && info.Mode().Perm()&0o077 != 0 {
 			t.Errorf("%s is group/world-accessible: %04o", name, info.Mode().Perm())
 		}
 	}

@@ -54,7 +54,7 @@ func TestDPoPKeyGeneratedOnceAndStable(t *testing.T) {
 		t.Fatal("distinct installations produced identical jkt")
 	}
 	info, err := os.Stat(filepath.Join(dir, "dpop.key"))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || (posixModes && info.Mode().Perm() != 0o600) {
 		t.Fatalf("dpop.key perms = %v, want 0600", info.Mode().Perm())
 	}
 }
@@ -122,7 +122,7 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 		t.Fatalf("got %q ok=%v err=%v", got, ok, err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "refresh.token"))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || (posixModes && info.Mode().Perm() != 0o600) {
 		t.Fatalf("refresh.token perms = %v, want 0600", info.Mode().Perm())
 	}
 	if err := s.SaveRefreshToken(""); err == nil {
