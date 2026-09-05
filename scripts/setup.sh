@@ -40,6 +40,76 @@ fi
 [ -x "$BIN" ] || die "not executable: $BIN"
 say "Using binary: $BIN"; "$BIN" version 2>/dev/null || true
 
+# ── 1b. a previous installation ──────────────────────────────────────────────
+# Nothing we ship ever deletes the state directory: it holds the wallet, the
+# enrollment and the stored key. A user who removed the miner and comes
+# back, or who set the directory aside as ~/.tokendrop.bak-*, should get
+# those back rather than a second wallet and a second enrollment.
+#
+# What counts as an installation is any of: wallet/wallet.key,
+# state/refresh.token, credentials.json. describe_install prints what a
+# directory holds; adopt_install moves those pieces (and any unsent spool)
+# into HOME_DIR, never overwriting one that is already there.
+has_install(){ [ -f "$1/wallet/wallet.key" ] || [ -f "$1/state/refresh.token" ] || [ -f "$1/credentials.json" ]; }
+describe_install(){
+  d="$1"; parts=""
+  if [ -f "$d/wallet/wallet.key" ]; then
+    addr=$("$BIN" wallet address -dir "$d/wallet" 2>/dev/null || echo "?")
+    parts="wallet $addr"
+  fi
+  [ -f "$d/state/refresh.token" ] && parts="${parts:+$parts, }enrolled"
+  [ -f "$d/credentials.json" ] && parts="${parts:+$parts, }stored API key"
+  [ -d "$d/spool" ] && [ -n "$(ls -A "$d/spool" 2>/dev/null)" ] && parts="${parts:+$parts, }unsent spool"
+  printf '%s' "$parts"
+}
+adopt_install(){
+  src="$1"
+  for piece in wallet state credentials.json spool; do
+    [ -e "$src/$piece" ] || continue
+    if [ -e "$HOME_DIR/$piece" ]; then
+      echo "  keeping the $piece already in $HOME_DIR (not overwritten by $src/$piece)"
+      continue
+    fi
+    mkdir -p "$HOME_DIR"
+    mv "$src/$piece" "$HOME_DIR/$piece"
+    echo "  adopted $piece"
+  done
+}
+
+if has_install "$HOME_DIR"; then
+  say "Previous installation found in $HOME_DIR: $(describe_install "$HOME_DIR")"
+  echo "Its wallet, enrollment and key are used as they are; only what is missing is set up."
+else
+  # Siblings a person or an earlier removal might have left: ~/.tokendrop.bak-DATE,
+  # ~/.tokendrop.old, ~/.tokendrop-anything. Newest first.
+  FOUND=""
+  for cand in $(ls -dt "$HOME_DIR".* "$HOME_DIR"-* 2>/dev/null); do
+    [ -d "$cand" ] || continue
+    has_install "$cand" || continue
+    FOUND="$cand"; break
+  done
+  if [ -n "$FOUND" ]; then
+    say "A previous installation is set aside at $FOUND"
+    echo "It holds: $(describe_install "$FOUND")"
+    echo "Using it means the same wallet, the same enrollment and no new tokens to generate."
+    if [ -t 0 ]; then
+      printf '\nUse it? [Y/n]: '
+      read -r ADOPT || ADOPT=n
+    else
+      echo "Not an interactive shell — not touching it. Move it to $HOME_DIR yourself to reuse it."
+      ADOPT=n
+    fi
+    case "$ADOPT" in
+      ""|y|Y|yes|YES)
+        adopt_install "$FOUND"
+        if [ -z "$(ls -A "$FOUND" 2>/dev/null)" ]; then rmdir "$FOUND" && echo "  removed the now-empty $FOUND"
+        else echo "  left the rest of $FOUND in place (config, logs); delete it when you like"; fi
+        ;;
+      *) echo "Left it alone. A fresh wallet and enrollment follow." ;;
+    esac
+  fi
+fi
+
 # ── 2. directories (0700 matters: keys and spooled records live here) ────────
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/spool" "$HOME_DIR/intake" "$HOME_DIR/sessions"
 chmod 700 "$HOME_DIR" "$HOME_DIR/state" "$HOME_DIR/spool" "$HOME_DIR/intake" "$HOME_DIR/sessions"

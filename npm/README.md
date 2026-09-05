@@ -128,6 +128,20 @@ Your first reward takes an hour or two: you join an epoch two ahead, and it
 has to close and settle. One verified search per epoch makes you eligible,
 and the pot splits equally among everyone eligible.
 
+## Removing it, and coming back
+
+```
+dropin-miner agents uninstall     # the skills, hooks and plugin, nothing else
+rm ~/.tokendrop/bin/dropin-miner  # the binary
+```
+
+Nothing we ship deletes `~/.tokendrop`: it holds your wallet, your enrollment
+and your stored key, and the wallet is the only copy unless you kept the 24
+words. Leave it, or set it aside as `~/.tokendrop.bak-<date>`. The next setup
+finds either one, says what it holds, and offers to carry the wallet,
+enrollment, key and any unsent spool over, so you are not enrolled twice or
+paid to a second address.
+
 ## License
 
 Apache-2.0.

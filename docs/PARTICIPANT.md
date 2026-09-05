@@ -45,6 +45,7 @@ Setup asks, in order:
 
 | it asks | what to know |
 |---|---|
+| **Use the previous installation?** | Only if one is found in `~/.tokendrop` or set aside beside it. Yes keeps your wallet, enrollment and key; the questions below that they answer are then skipped. |
 | **An enrollment token** | Generate it when asked, not before: it lasts 15 minutes and works once. `platform.nyks.dev → Mining → Slot 3 → Generate enrollment token` |
 | **Wallet, or your own address?** | The wallet prints its 24 words once. Have paper ready. |
 | **Your sr- API key** | Typed with echo off, checked against the router without spending, stored owner-only in `~/.tokendrop/credentials.json`. Press Enter to skip and run `dropin-miner login` later. |
@@ -148,3 +149,17 @@ operator at <https://platform.nyks.dev/contact-us> and say which address you
 want to change *to*. Nobody needs your API key, your recovery phrase, or the
 contents of `~/.tokendrop/` to approve a payout address, and no operator will
 ask you for them.
+
+## Removing it, and coming back
+
+`dropin-miner agents uninstall` takes the skills, hooks and plugin out of
+your agents and touches nothing else. Delete the binary if you like. Do not
+delete `~/.tokendrop` unless you mean to lose the wallet in it: if you made
+the wallet here, the 24 words you wrote down are the only other copy.
+
+Coming back later, run the installer again. It looks for `~/.tokendrop`, or
+a set-aside copy beside it (`~/.tokendrop.bak-<date>`, `~/.tokendrop.old`),
+tells you what it holds — the wallet's address, whether it is enrolled,
+whether a key is stored — and asks before using it. Saying yes carries the
+wallet, the enrollment, the key and any unsent spool over; the steps that
+would have made new ones are skipped. Saying no starts fresh beside it.
