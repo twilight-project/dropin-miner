@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestWriteSurvivesRestart(t *testing.T) {
 		t.Fatalf("delivery context lost: %+v", pending[0])
 	}
 	info, err := os.Stat(filepath.Join(dir, reopened.filename(rec)))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("record perms: %v %v", err, info)
 	}
 }

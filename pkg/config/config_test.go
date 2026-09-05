@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,9 @@ func TestLoopbackAccepted(t *testing.T) {
 }
 
 func TestUnixSocketListen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are a POSIX listener; the miner never listens")
+	}
 	cfg := load(t, []string{"-listen", "unix:///tmp/td/proxy.sock"}, noEnv)
 	if !cfg.Listen.IsUnix() || cfg.Listen.Address != "/tmp/td/proxy.sock" {
 		t.Errorf("socket: %+v", cfg.Listen)
@@ -239,7 +243,7 @@ func TestUpstreamCAFile(t *testing.T) {
 	if err := os.WriteFile(junk, []byte("not a pem"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	path = writeTOML(t, "[transport]\nupstream_ca_file = \""+junk+"\"\n")
+	path = writeTOML(t, "[transport]\nupstream_ca_file = \""+filepath.ToSlash(junk)+"\"\n")
 	err := loadErr(t, []string{"-config", path}, noEnv)
 	if !strings.Contains(err.Error(), "PEM") {
 		t.Errorf("want PEM error, got: %v", err)
