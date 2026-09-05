@@ -1,6 +1,6 @@
 {
   "name": "dropin-miner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Web search for coding agents that pays the person running the agent. npm wrapper around the dropin-miner Go binary.",
   "license": "Apache-2.0",
   "repository": "github:twilight-project/dropin-miner",

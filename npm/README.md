@@ -1,18 +1,132 @@
-# dropin-miner (npm wrapper)
+# dropin-miner
+
+Web search for coding agents that pays the person running the agent.
+
+One binary. Drop it into Claude Code, Codex, Cursor or opencode and their web
+searches go through the Twilight search router, carry the agent's
+trajectory, and earn Twilight Slot rewards to an address you control. No
+daemon, no proxy, no MCP server: between tool calls nothing is running.
 
 ```bash
-npx dropin-miner agents install
+curl -fsSL https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.sh | sh
 ```
 
-This package downloads the `dropin-miner` release binary for your platform
-on install, verifies it against the release checksums, and forwards every
-argument to it. The binary, its commands and its configuration are
-documented in the main repository:
-https://github.com/twilight-project/dropin-miner
+Windows, in PowerShell:
 
-Environment:
+```powershell
+irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex
+```
+
+The installer fetches a checksummed release, then asks its questions in
+order: enrollment token, where to be paid (a wallet it makes here, or an
+address you paste), the first join, your shell profile, and which coding
+agents to set up. It never asks for or writes your API key; that lives in the
+environment your agents run from.
+
+## How it works
+
+Everything happens at four moments the agent already has.
+
+| moment | who runs it | what happens |
+|---|---|---|
+| install | you, once | enroll, payout address, first join, skill and hooks written per agent |
+| session start | a hook | seed the context-window counter, start a flush |
+| tool call | the agent | `dropin-miner search` posts to the router with your key and the trace envelope, prints results, records the served request id, starts a flush |
+| session end | a hook | start a flush |
+
+A **flush** is the mining plane as one pass: ask the AS which epoch is open,
+join it if not joined, hold a participation capability, promote recorded
+searches into the spool, submit once, exit. Two flushes at once queue on a
+lock. A machine that never searches never runs one.
+
+The **trace** is how the router groups one task's searches. It comes from
+whichever of these the host allows: a hook that rewrites the shell command
+with `TOKENDROP_TRACE_BRIDGE=<envelope>` (Claude Code, opencode), a per-workspace
+lineage file the hooks write and `search` reads (Cursor, and every host as a
+fallback), or a hashed per-shell identity when there is no hook at all. Every
+identifier is hashed before it leaves the machine; the assistant text just
+before a search travels only inside that search's request, capped at 32 KB.
+`TOKENDROP_TRACE=off` sends none.
+
+## Per host
+
+| host | tool | lineage | files written by `agents install` |
+|---|---|---|---|
+| Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries in `~/.claude/settings.json` |
+| Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
+| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/` (allow network for the command: its sandbox is offline by default) |
+| opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
+| anything else | rules line | per-shell | printed for you to paste |
+
+Uninstall removes exactly those, and only hook entries that name this binary.
+
+## Commands
+
+```
+dropin-miner search [-tier fast] [-format json|model] <query>
+dropin-miner agents install|status|uninstall
+dropin-miner flush [-force]
+dropin-miner enroll | payout | join | status | doctor | earnings
+dropin-miner wallet init|address|register|balance|send
+```
+
+`dropin-miner help` describes each. Every command takes `-config <file>`,
+falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
+
+## Config
+
+```toml
+[[provider]]
+name     = "search-router"
+upstream = "https://router-api.nyks.dev"
+
+[mining]
+enabled   = true
+as_url    = "https://minis.nyks.dev"
+chain_id  = "twilight-devnet-3"
+slot_id   = 3
+state_dir = "/home/you/.tokendrop/state"
+spool_dir = "/home/you/.tokendrop/spool"
+
+[miner]
+enabled        = true
+intake_dir     = "/home/you/.tokendrop/intake"     # served request ids, until flushed
+sessions_dir   = "/home/you/.tokendrop/sessions"   # per-workspace lineage files
+flush_interval = "3m"                             # how often a flush re-asks the AS
+# router_url = "..."   defaults to the provider upstream
+```
+
+The `[mining]` block is the proxy's, unchanged: a machine that already runs
+`tokendrop-proxy` can point this at the same state directory and be the same
+participant.
+
+## Building
+
+```bash
+make build      # bin/dropin-miner
+make verify     # test, race, vet (incl. Windows), cross-compile
+```
+
+Go 1.25 or newer. The participant packages under `pkg/` are copied from
+`tokendrop-proxy` with their golden vectors; see `pkg/README.md`.
+
+## Two things worth knowing
+
+The query rides in process arguments, so it is visible in `ps` and shell
+history on your own machine. It is not a credential; the key never leaves the
+environment.
+
+Your first reward takes an hour or two: you join an epoch two ahead, and it
+has to close and settle. One verified search per epoch makes you eligible,
+and the pot splits equally among everyone eligible.
+
+## License
+
+Apache-2.0.
+
+## The npm wrapper
+
+This package downloads the release binary for your platform on install, verifies it against the release checksums, and forwards every argument to it. The package version is the release tag it fetches.
 
 - `DROPIN_MINER_BINARY=/path` use a binary already on the machine
 - `DROPIN_MINER_SKIP_DOWNLOAD=1` install the wrapper without fetching
-
-The package version is the release tag it fetches.
