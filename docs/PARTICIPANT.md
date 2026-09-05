@@ -84,6 +84,25 @@ dropin-miner search -format model "what is proof of authority consensus"
 dropin-miner flush
 ```
 
+## Making it the default, or not
+
+Out of the box the skill tells your agent to prefer this search over its
+built-in one. If you would rather your agent use its own search unless you
+ask for this one, say so once:
+
+```
+/dropin-miner off      # in Claude Code, Codex or Cursor
+/dropin-miner on       # back to this search as the default
+/dropin-miner status
+```
+
+or, from a shell, `dropin-miner agents prefer off|on|status`. Either way the
+choice is recorded beside your config and the installed skills are rewritten,
+so it holds in every agent, from its next start, and across reinstalls.
+While it is off, "search through dropin-miner" or "use the router" in a
+request still routes that one search here. Searches that do not come here
+earn nothing.
+
 ## What travels with a search, and how to turn it off
 
 Each search carries a small `trace` beside the query so the router can group

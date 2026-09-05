@@ -67,6 +67,7 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 ```
 dropin-miner search [-tier fast] [-format json|model] <query>
 dropin-miner agents install|status|uninstall
+dropin-miner agents prefer on|off|status
 dropin-miner flush [-force]
 dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
@@ -80,6 +81,13 @@ falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
 zero-spend probe against the router, and writes `~/.tokendrop/credentials.json`
 as `0600`. A search takes its key from `TOKENDROP_API_KEY` if set, else that
 file (refused if it is a symlink or readable by others), else `OPENAI_API_KEY`.
+
+`agents prefer off` makes the agent's own web search the default and keeps
+this one for when you name it; `on` makes this one the default again. Inside
+the agent, `/dropin-miner off` and `/dropin-miner on` do the same. The choice
+is one file beside the config, the installed skills are rewritten from it,
+and a reinstall keeps it. While it is off, searches you do not route here
+earn nothing.
 
 ## Config
 

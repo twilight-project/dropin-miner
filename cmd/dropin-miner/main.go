@@ -32,7 +32,10 @@ the tool (what an agent runs):
   agents     agents install|status|uninstall — find Claude Code, Codex,
              Cursor and opencode on this machine and give each the search
              skill and the hooks it supports. -dry-run previews, -yes skips
-             the prompt, -client <name> picks one
+             the prompt, -client <name> picks one.
+             agents prefer on|off — whether this search or the agent's own
+             is the default (off keeps this one for when you name it);
+             in the agent, /dropin-miner off and /dropin-miner on do the same
   hook       internal: the hook runner the agents call around a search;
              TOKENDROP_TRACE=off turns traces off entirely
   flush      the mining plane, once: join the open epoch, promote recorded

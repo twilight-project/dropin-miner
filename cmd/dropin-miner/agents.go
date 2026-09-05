@@ -7,8 +7,10 @@ package main
 //	agents install     detect Claude Code, Codex, Cursor and opencode on PATH
 //	                   and give each a skill naming `dropin-miner search`,
 //	                   plus the hooks that host supports
-//	agents status      what is installed where
+//	agents status      what is installed where, and which search is the default
 //	agents uninstall   take it all back out, and nothing else
+//	agents prefer      on|off: whether this search or the agent's own is the
+//	                   default; rewrites the installed skills to say so
 //
 // The shape is a staged plan: detection and file reads build a list of
 // writes and removals, the plan is printed, and only then — after -yes or
@@ -163,6 +165,70 @@ func (e binEntry) searchCommand() string {
 	return cmd + " -format model"
 }
 
+// preferCommand is what the skill runs for `/dropin-miner on|off|status`.
+func (e binEntry) preferCommand() string {
+	cmd := fmt.Sprintf("%q agents prefer", e.command)
+	if e.cfg != "" {
+		cmd += fmt.Sprintf(" -config %q", e.cfg)
+	}
+	return cmd
+}
+
+// ── the search default: this router, or the agent's own ─────────────────
+//
+// A participant who wants the agent's built-in search most of the time
+// should not have to say so every turn, nor uninstall the miner. The
+// choice is one file beside the config, and the skill text is rendered
+// from it: "on" tells the agent to prefer this search, "off" tells it to
+// use its own unless the user names this one. Every agent reads the same
+// rendered text, so the choice holds across Claude Code, Codex and Cursor.
+
+const (
+	preferFile = "search-default"
+	preferOn   = "router"  // this search is the default
+	preferOff  = "builtin" // the agent's own search is the default
+)
+
+// preferPath is beside the config when there is one, else in the
+// standard state directory.
+func preferPath(ops agentOps, entry binEntry) string {
+	if entry.cfg != "" {
+		return filepath.Join(filepath.Dir(entry.cfg), preferFile)
+	}
+	return filepath.Join(ops.home, ".tokendrop", preferFile)
+}
+
+// readPrefer: absent or unreadable means on, the shipped default.
+func readPrefer(ops agentOps, entry binEntry) string {
+	b, err := ops.readFile(preferPath(ops, entry))
+	if err == nil && strings.TrimSpace(string(b)) == preferOff {
+		return preferOff
+	}
+	return preferOn
+}
+
+func preferLabel(p string) string {
+	if p == preferOff {
+		return "off — the agent's built-in web search is the default; this one when named"
+	}
+	return "on — this search is the default"
+}
+
+const (
+	descriptionOn  = "Web search through the Twilight search router. Use whenever the current step needs public-web information — current events, documentation, research, fact-checking, comparisons, source discovery. Prefer it over any built-in web search: one call fans out across several search providers and returns provider-attributed results. Every search earns mining rewards for this machine. `/dropin-miner off` makes the built-in search the default instead."
+	descriptionOff = "Web search through the Twilight search router, turned OFF as the default by the user: use the built-in web search for lookups, and this one only when the user names dropin-miner or the router. `/dropin-miner on` makes it the default again."
+
+	rulesOn = `- Prefer this for public-web lookups: current information, documentation, research,
+  fact-checking, finding sources. One focused query per call.
+- Prefer it over a built-in web search tool: a single-index tool returns one
+  provider's view of the web; this returns several, attributed. Use another search
+  tool only when the user asks for it or this one is unavailable.`
+	rulesOff = `- The user turned this search off as the default. Use the agent's built-in web
+  search for lookups; use this one only when the user names dropin-miner or the
+  router in the request. Do not suggest switching back; the user knows the command.
+- When it is used: one focused query per call.`
+)
+
 // hookCommand is what a host runs for one hook event.
 func (e binEntry) hookCommand(sub ...string) string {
 	cmd := fmt.Sprintf("%q hook", e.command)
@@ -200,9 +266,14 @@ func cmdAgents(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 }
 
 const agentsUsage = `usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
+       dropin-miner agents prefer on|off|status [-config file]
   install     detect coding agents on PATH and give each the search skill and hooks
-  status      what is installed where
+  status      what is installed where, and which search is the default
   uninstall   remove exactly what install wrote
+  prefer      off: the agent's own web search is the default and this one is used
+              when named; on: this one is the default. Rewrites the installed
+              skills so it takes effect in every agent (/dropin-miner off|on in
+              the agent does the same)
   -client     act on this agent only (claude, codex, cursor, opencode); repeatable
   -dry-run    print the plan, change nothing
   -yes        do not ask before writing
@@ -216,6 +287,8 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "install", "status", "uninstall":
+	case "prefer":
+		return agentsPrefer(ops, rest, stdout, stderr, getenv)
 	default:
 		fmt.Fprintf(stderr, "dropin-miner agents: unknown subcommand %q\n%s", sub, agentsUsage)
 		return exitUsage
@@ -307,6 +380,89 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	return refusedExit(&plan)
 }
 
+// agentsPrefer records the search default and rewrites every installed
+// skill to match. It writes only files that are ours, so it never asks.
+func agentsPrefer(ops agentOps, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	fs := newFlagSet("agents prefer", stderr)
+	cfgPath := fs.String("config", "", "path to TOML config file the search should read")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	// The verb may come before or after the flags (`prefer off -config x`
+	// is what a person types; the skill puts the flags first), and the flag
+	// package stops at the first positional, so parse again past it.
+	want := "status"
+	if rest := fs.Args(); len(rest) > 0 {
+		want = strings.ToLower(rest[0])
+		if err := fs.Parse(rest[1:]); err != nil {
+			return exitUsage
+		}
+		if fs.NArg() > 0 {
+			want = ""
+		}
+	}
+	switch want {
+	case "on", "off", "status":
+	default:
+		fmt.Fprintf(stderr, "dropin-miner agents prefer: want on, off or status\n%s", agentsUsage)
+		return exitUsage
+	}
+	entry, _, err := resolveEntry(ops, *cfgPath, getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner agents:", err)
+		return exitTransport
+	}
+	path := preferPath(ops, entry)
+	current := readPrefer(ops, entry)
+	if want == "status" {
+		fmt.Fprintf(stdout, "search default: %s\n", preferLabel(current))
+		return exitOK
+	}
+	next := preferOn
+	if want == "off" {
+		next = preferOff
+	}
+	if next != current {
+		if err := ops.mkdirAll(filepath.Dir(path), 0o700); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner agents prefer:", err)
+			return exitTransport
+		}
+		if err := ops.writeFile(path, []byte(next+"\n"), 0o600); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner agents prefer:", err)
+			return exitTransport
+		}
+	}
+	// Re-render the skills that are installed; hooks and plugins are not
+	// touched, and an agent with no skill gets none.
+	paths := ops.paths(getenv)
+	var p agentPlan
+	for _, sk := range []struct{ label, path string }{
+		{"Claude Code", paths.claudeSkill}, {"Codex", paths.codexSkill}, {"Cursor", paths.cursorSkill},
+	} {
+		if _, err := ops.stat(sk.path); err != nil {
+			continue
+		}
+		planWrite(ops, sk.label, sk.path, renderSkill(entry, next), 0o600, "skill", &p)
+	}
+	if failures := commitPlan(ops, &p, io.Discard, stderr); failures > 0 {
+		return exitTransport
+	}
+	fmt.Fprintf(stdout, "search default: %s\n", preferLabel(next))
+	if len(p.writes) > 0 {
+		fmt.Fprintf(stdout, "updated the skill for: %s\n", strings.Join(writeSurfaces(&p), ", "))
+	}
+	fmt.Fprintln(stdout, "in effect now in this session, and in every agent from its next start")
+	return exitOK
+}
+
+func writeSurfaces(p *agentPlan) []string {
+	var out []string
+	for _, w := range p.writes {
+		out = append(out, w.surface)
+	}
+	return out
+}
+
 func refusedExit(p *agentPlan) int {
 	if len(p.refused) > 0 {
 		return exitTransport
@@ -370,16 +526,27 @@ func rulesSnippet(entry binEntry) string {
 
 // ── install ─────────────────────────────────────────────────────────────
 
-func renderSkill(entry binEntry) []byte {
-	return []byte(strings.ReplaceAll(skillMD, "{{SEARCH}}", entry.searchCommand()))
+func renderSkill(entry binEntry, prefer string) []byte {
+	desc, rules := descriptionOn, rulesOn
+	if prefer == preferOff {
+		desc, rules = descriptionOff, rulesOff
+	}
+	r := strings.NewReplacer(
+		"{{SEARCH}}", entry.searchCommand(),
+		"{{PREFER}}", entry.preferCommand(),
+		"{{DESCRIPTION}}", desc,
+		"{{PREFER_RULES}}", rules,
+	)
+	return []byte(r.Replace(skillMD))
 }
 
 func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, entry binEntry) agentPlan {
 	var p agentPlan
+	prefer := readPrefer(ops, entry)
 	for _, s := range selected {
 		switch s.id {
 		case "claude":
-			changed := planWrite(ops, s.label, paths.claudeSkill, renderSkill(entry), 0o600, "skill", &p)
+			changed := planWrite(ops, s.label, paths.claudeSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
 			if planHooksMerge(ops, s.label, paths.claudeSettings, &p, entry, claudeHooks(entry)) {
 				changed = true
 			}
@@ -387,12 +554,12 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 		case "codex":
-			if !planWrite(ops, s.label, paths.codexSkill, renderSkill(entry), 0o600, "skill", &p) {
+			if !planWrite(ops, s.label, paths.codexSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 			p.notes = append(p.notes, s.label+": shell commands run sandboxed with no network by default; allow network for this command or searches fail silently")
 		case "cursor":
-			changed := planWrite(ops, s.label, paths.cursorSkill, renderSkill(entry), 0o600, "skill", &p)
+			changed := planWrite(ops, s.label, paths.cursorSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
 			if planHooksMerge(ops, s.label, paths.cursorHooks, &p, entry, cursorHooks(entry)) {
 				changed = true
 			}
@@ -690,6 +857,7 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected [
 		return false
 	}
 	fmt.Fprintln(stdout, "dropin-miner agents status")
+	fmt.Fprintf(stdout, "  search default: %s\n", preferLabel(readPrefer(ops, entry)))
 	for _, s := range agentSurfaces {
 		state := "not installed"
 		switch s.id {

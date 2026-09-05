@@ -298,6 +298,61 @@ func TestAgentsUninstallRemovesOnlyWhatInstallWrote(t *testing.T) {
 	}
 }
 
+func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
+	m, ops := newFakeMachine("claude", "codex")
+	claudeSkill := "/home/u/.claude/skills/dropin-miner/SKILL.md"
+	codexSkill := "/home/u/.codex/skills/dropin-miner/SKILL.md"
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	on := string(m.files[claudeSkill])
+	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `agents prefer -config "`+testCfg+`" <argument>`) {
+		t.Fatalf("shipped skill should prefer the router and name the prefer command:\n%s", on)
+	}
+	if code, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); code != exitOK || !strings.Contains(out, "search default: on") {
+		t.Errorf("status before: %d %q", code, out)
+	}
+
+	code, out, errOut := runAgents(t, ops, nil, "prefer", "off", "-config", testCfg)
+	if code != exitOK || !strings.Contains(out, "search default: off") || !strings.Contains(out, "Claude Code, Codex") {
+		t.Fatalf("prefer off: %d\n%s%s", code, out, errOut)
+	}
+	if got := strings.TrimSpace(string(m.files["/home/u/.tokendrop/search-default"])); got != "builtin" {
+		t.Errorf("preference file: %q", got)
+	}
+	for _, p := range []string{claudeSkill, codexSkill} {
+		off := string(m.files[p])
+		if strings.Contains(off, "Prefer it over a built-in web search") || !strings.Contains(off, "turned OFF as the default") || !strings.Contains(off, "Use the agent's built-in web") {
+			t.Errorf("%s not rewritten for off:\n%s", p, off)
+		}
+		if !strings.Contains(off, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) {
+			t.Errorf("%s lost the search command", p)
+		}
+	}
+	if _, ok := m.files["/home/u/.cursor/skills/dropin-miner/SKILL.md"]; ok {
+		t.Error("prefer created a skill for an agent that had none")
+	}
+
+	// A reinstall keeps the choice; it is the user's.
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("reinstall: %d\n%s", code, out)
+	}
+	if !strings.Contains(string(m.files[claudeSkill]), "turned OFF as the default") {
+		t.Error("reinstall reverted the preference")
+	}
+	if code, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); !strings.Contains(out, "search default: off") {
+		t.Errorf("status after: %d %q", code, out)
+	}
+
+	code, out, _ = runAgents(t, ops, nil, "prefer", "on", "-config", testCfg)
+	if code != exitOK || !strings.Contains(out, "search default: on") || string(m.files[claudeSkill]) != on {
+		t.Errorf("prefer on did not restore the shipped skill: %d %q", code, out)
+	}
+	if code, _, _ := runAgents(t, ops, nil, "prefer", "maybe", "-config", testCfg); code != exitUsage {
+		t.Errorf("bad argument: %d", code)
+	}
+}
+
 func TestAgentsRefusesToWriteWithoutATerminalOrYes(t *testing.T) {
 	m, ops := newFakeMachine("claude")
 	code, _, errOut := runAgents(t, ops, nil, "install", "-config", testCfg)
