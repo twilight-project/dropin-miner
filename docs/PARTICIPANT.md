@@ -106,7 +106,9 @@ and your shell history on your own machine. It is not a credential.
 
 **Claude Code** gets a skill and five hook entries in `~/.claude/settings.json`:
 one on Bash that threads each search into the current turn, three that track
-context compaction, and one on Stop that flushes.
+context compaction, and one on Stop that flushes. It also adds a permission
+rule for the search command, so Claude Code runs it without asking each
+time; nothing else the binary does is allowed by that rule.
 
 **Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
 cannot rewrite a command, so its hooks maintain the lineage file and the

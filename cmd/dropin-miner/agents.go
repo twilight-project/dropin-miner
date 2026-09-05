@@ -21,7 +21,8 @@ package main
 //	Claude Code   ~/.claude/skills/dropin-miner/SKILL.md, and five hook
 //	              entries merged into ~/.claude/settings.json: PreToolUse on
 //	              Bash (lineage), SessionStart / PreCompact / PostCompact
-//	              (window), Stop (flush).
+//	              (window), Stop (flush); and a permissions.allow rule for
+//	              the search command, so it runs unprompted.
 //	Codex         ~/.codex/skills/dropin-miner/SKILL.md.
 //	Cursor        ~/.cursor/skills/dropin-miner/SKILL.md, and six entries
 //	              merged into ~/.cursor/hooks.json: sessionStart,
@@ -34,7 +35,8 @@ package main
 // Every config edit is a JSON merge that adds our entries and nothing
 // else, refuses a file that is not plain JSON rather than rewrite it
 // without its comments, and removes on uninstall only entries whose
-// command names this binary. The API key is in none of it: `search`
+// command names this binary, plus the Claude Code permissions.allow rules
+// that let the search command run unprompted. The API key is in none of it: `search`
 // resolves it at call time (environment, then the credentials file `login`
 // wrote).
 
@@ -418,6 +420,9 @@ type hooksSpec struct {
 	entries map[string]map[string]any
 	// order keeps the plan deterministic.
 	order []string
+	// allow lists the host's permission rules for the search command
+	// (Claude Code only); empty for hosts that have none.
+	allow []string
 }
 
 func claudeHooks(entry binEntry) hooksSpec {
@@ -441,7 +446,32 @@ func claudeHooks(entry binEntry) hooksSpec {
 			"Stop":         group("", cmd("flush")),
 		},
 		order: []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"},
+		allow: claudeAllowRules(entry),
 	}
+}
+
+// claudeAllowRules are the permission rules that let Claude Code run the
+// search the skill teaches without asking each time. A Bash rule is a
+// prefix match on the command text, so the rule ends where the query
+// begins; both the quoted path the skill prints and a bare one are
+// covered, because a shell that strips the quotes still starts the
+// command with the same binary. Only `search` is allowed: the hooks run
+// outside the permission system, and nothing else needs to.
+func claudeAllowRules(entry binEntry) []string {
+	suffix := " search"
+	if entry.cfg != "" {
+		suffix += fmt.Sprintf(" -config %q", entry.cfg)
+	}
+	return []string{
+		fmt.Sprintf("Bash(%q%s:*)", entry.command, suffix),
+		fmt.Sprintf("Bash(%s%s:*)", entry.command, suffix),
+	}
+}
+
+// ruleIsOurs: does this permissions.allow entry name this binary?
+func ruleIsOurs(e any, bin string) bool {
+	r, ok := e.(string)
+	return ok && strings.Contains(r, bin)
 }
 
 func cursorHooks(entry binEntry) hooksSpec {
@@ -511,6 +541,24 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 		hooks[ev] = append(list, spec.entries[ev])
 		changed = true
 	}
+	if len(spec.allow) > 0 {
+		perms := child(m, "permissions")
+		list, _ := perms["allow"].([]any)
+		for _, rule := range spec.allow {
+			present := false
+			for _, e := range list {
+				if e == rule {
+					present = true
+					break
+				}
+			}
+			if !present {
+				list = append(list, rule)
+				changed = true
+			}
+		}
+		perms["allow"] = list
+	}
 	if !changed {
 		return false
 	}
@@ -531,11 +579,28 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 		p.refused = append(p.refused, fmt.Sprintf("%s: %s is not plain JSON (%v); remove the hooks by hand", label, path, err))
 		return false
 	}
+	changed := false
+	if perms, ok := m["permissions"].(map[string]any); ok {
+		if list, ok := perms["allow"].([]any); ok {
+			kept := make([]any, 0, len(list))
+			for _, e := range list {
+				if ruleIsOurs(e, bin) {
+					changed = true
+					continue
+				}
+				kept = append(kept, e)
+			}
+			if len(kept) == 0 {
+				delete(perms, "allow")
+			} else {
+				perms["allow"] = kept
+			}
+		}
+	}
 	hooks, ok := m[root].(map[string]any)
 	if !ok {
-		return false
+		hooks = map[string]any{}
 	}
-	changed := false
 	for ev, v := range hooks {
 		list, ok := v.([]any)
 		if !ok {

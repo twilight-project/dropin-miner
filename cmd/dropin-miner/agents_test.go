@@ -110,6 +110,21 @@ func hooksOf(t *testing.T, m *fakeMachine, path string) map[string]any {
 	return h
 }
 
+func allowOf(t *testing.T, m *fakeMachine, path string) []string {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(m.files[path], &doc); err != nil {
+		t.Fatalf("%s: %v\n%s", path, err, m.files[path])
+	}
+	perms, _ := doc["permissions"].(map[string]any)
+	list, _ := perms["allow"].([]any)
+	var out []string
+	for _, e := range list {
+		out = append(out, e.(string))
+	}
+	return out
+}
+
 func TestAgentsDryRunDetectsAgentsAndWritesNothing(t *testing.T) {
 	m, ops := newFakeMachine("claude", "cursor")
 	code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-dry-run")
@@ -130,7 +145,7 @@ func TestAgentsDryRunDetectsAgentsAndWritesNothing(t *testing.T) {
 func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) {
 	m, ops := newFakeMachine("claude")
 	settings := "/home/u/.claude/settings.json"
-	m.files[settings] = []byte(`{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"lint"}]}]}}`)
+	m.files[settings] = []byte(`{"model":"opus","permissions":{"allow":["Bash(git status:*)"]},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"lint"}]}]}}`)
 	code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
 	if code != exitOK {
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
@@ -160,6 +175,18 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 	}
 	if bytes.Contains(m.files[settings], []byte("sr-")) || bytes.Contains(m.files[settings], []byte("TOKENDROP_API_KEY")) {
 		t.Error("a key reached settings.json")
+	}
+	allow := allowOf(t, m, settings)
+	if len(allow) != 3 || allow[0] != "Bash(git status:*)" {
+		t.Fatalf("the user's own allow rule must come first, then ours: %v", allow)
+	}
+	if allow[1] != `Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`+testCfg+`":*)` || allow[2] != `Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`+testCfg+`":*)` {
+		t.Errorf("allow rules: %v", allow)
+	}
+	for _, r := range allow[1:] {
+		if strings.Contains(r, "hook") || strings.Contains(r, "flush") || strings.Contains(r, "wallet") {
+			t.Errorf("a rule allows more than search: %s", r)
+		}
 	}
 
 	// Idempotent: a second install changes nothing.
@@ -218,7 +245,7 @@ func TestAgentsInstallRefusesAHooksFileItCannotParse(t *testing.T) {
 
 func TestAgentsUninstallRemovesOnlyWhatInstallWrote(t *testing.T) {
 	m, ops := newFakeMachine("claude", "cursor", "codex", "opencode")
-	m.files["/home/u/.claude/settings.json"] = []byte(`{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
+	m.files["/home/u/.claude/settings.json"] = []byte(`{"permissions":{"allow":["Bash(git status:*)"]},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
 	m.files["/home/u/.cursor/hooks.json"] = []byte(`{"version":1,"hooks":{"stop":[{"command":"./hooks/mine.sh"}]}}`)
 	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
 		t.Fatalf("install: %d\n%s", code, out)
@@ -243,6 +270,9 @@ func TestAgentsUninstallRemovesOnlyWhatInstallWrote(t *testing.T) {
 	}
 	if stop := claude["Stop"].([]any); len(stop) != 1 {
 		t.Errorf("the user's own Stop hook was touched: %v", stop)
+	}
+	if allow := allowOf(t, m, "/home/u/.claude/settings.json"); len(allow) != 1 || allow[0] != "Bash(git status:*)" {
+		t.Errorf("allow rules after uninstall: %v", allow)
 	}
 	for _, ev := range []string{"SessionStart", "PreCompact", "PostCompact"} {
 		if _, ok := claude[ev]; ok {

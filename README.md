@@ -54,7 +54,7 @@ before a search travels only inside that search's request, capped at 32 KB.
 
 | host | tool | lineage | files written by `agents install` |
 |---|---|---|---|
-| Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries in `~/.claude/settings.json` |
+| Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and an allow rule for the search command in `~/.claude/settings.json` |
 | Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
 | Codex | skill | per-shell | `~/.codex/skills/dropin-miner/` (allow network for the command: its sandbox is offline by default) |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
