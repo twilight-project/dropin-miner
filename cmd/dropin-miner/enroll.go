@@ -235,6 +235,13 @@ func cmdJoin(args []string) int {
 	}
 	fmt.Fprintf(os.Stdout, "slot %s epoch %s: phase=%s mode=%s joinable=%t join_status=%s\n",
 		st.SlotID, st.TargetEpoch, st.Phase, st.DistributionMode, st.Joinable, st.JoinStatus)
+	// joinable=false means two different things, and only join_status tells
+	// them apart: already in (a reinstall, a second run — success, nothing
+	// to send) or enrollment closed without us (a failure flush retries).
+	if auth.JoinHeld(st.JoinStatus) {
+		fmt.Fprintf(os.Stdout, "already joined epoch %s (%s); nothing to send\n", st.TargetEpoch, st.JoinStatus)
+		return 0
+	}
 	if !st.Joinable {
 		fmt.Fprintln(os.Stderr, "dropin-miner: the AS reports this target is not joinable; nothing was sent")
 		return 1
@@ -254,7 +261,7 @@ func cmdJoin(args []string) int {
 	// down a path that ends in a refusal.
 	if accepts, err := mining.AcceptsOpenRouterProfile(ctx); err == nil && !accepts {
 		fmt.Fprintln(os.Stdout, "next: nothing. This Slot holds no participant provider credential;")
-		fmt.Fprintln(os.Stdout, "      verification runs on the operator's own. Your daemon can run unattended.")
+		fmt.Fprintln(os.Stdout, "      verification runs on the operator's own. Searches from your agents do the rest.")
 		return 0
 	}
 	fmt.Fprintln(os.Stdout, "next: dropin-miner provider -config <file>   (reads the key from stdin)")
