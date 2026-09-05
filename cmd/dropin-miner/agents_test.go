@@ -180,8 +180,13 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 	if len(allow) != 3 || allow[0] != "Bash(git status:*)" {
 		t.Fatalf("the user's own allow rule must come first, then ours: %v", allow)
 	}
-	if allow[1] != `Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`+testCfg+`":*)` || allow[2] != `Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`+testCfg+`":*)` {
-		t.Errorf("allow rules: %v", allow)
+	// The config path is absolutized by the host (a drive letter on Windows),
+	// so match around it rather than on it.
+	for i, prefix := range []string{`Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`, `Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`} {
+		r := allow[i+1]
+		if !strings.HasPrefix(r, prefix) || !strings.HasSuffix(r, `tokendrop.toml":*)`) {
+			t.Errorf("allow rule %d: %s", i+1, r)
+		}
 	}
 	for _, r := range allow[1:] {
 		if strings.Contains(r, "hook") || strings.Contains(r, "flush") || strings.Contains(r, "wallet") {
