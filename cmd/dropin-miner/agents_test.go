@@ -306,7 +306,9 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 		t.Fatalf("install: %d\n%s", code, out)
 	}
 	on := string(m.files[claudeSkill])
-	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `agents prefer -config "`+testCfg+`" <argument>`) {
+	// The config path is host-absolutized (a drive letter on Windows), so
+	// match around it.
+	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `" agents prefer -config "`) || !strings.Contains(on, `tokendrop.toml" <argument>`) {
 		t.Fatalf("shipped skill should prefer the router and name the prefer command:\n%s", on)
 	}
 	if code, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); code != exitOK || !strings.Contains(out, "search default: on") {
@@ -317,8 +319,17 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, "search default: off") || !strings.Contains(out, "Claude Code, Codex") {
 		t.Fatalf("prefer off: %d\n%s%s", code, out, errOut)
 	}
-	if got := strings.TrimSpace(string(m.files["/home/u/.tokendrop/search-default"])); got != "builtin" {
-		t.Errorf("preference file: %q", got)
+	prefFiles := 0
+	for p, b := range m.files {
+		if strings.HasSuffix(p, "/.tokendrop/search-default") {
+			prefFiles++
+			if got := strings.TrimSpace(string(b)); got != "builtin" {
+				t.Errorf("preference file: %q", got)
+			}
+		}
+	}
+	if prefFiles != 1 {
+		t.Errorf("want one preference file beside the config, found %d in %v", prefFiles, keysOf(m.files))
 	}
 	for _, p := range []string{claudeSkill, codexSkill} {
 		off := string(m.files[p])
