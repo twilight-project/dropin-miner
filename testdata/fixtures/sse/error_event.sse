@@ -1,0 +1,4 @@
+data: {"id":"gen-sse-err","choices":[{"index":0,"delta":{"content":"partial fic"},"finish_reason":null}]}
+
+data: {"error":{"type":"synthetic_overloaded","code":"fixture_529","message":"synthetic message, never captured"}}
+

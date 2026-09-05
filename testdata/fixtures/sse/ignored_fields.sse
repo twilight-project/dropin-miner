@@ -1,0 +1,7 @@
+event: message
+id: 41
+retry: 3000
+data: {"id":"gen-sse-fields","model":"synthetic/model-s","choices":[{"delta":{"content":"fic"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

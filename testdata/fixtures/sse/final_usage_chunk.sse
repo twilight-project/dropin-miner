@@ -1,0 +1,8 @@
+data: {"id":"gen-sse-usage","model":"synthetic/model-s","choices":[{"index":0,"delta":{"content":"hand-written"},"finish_reason":null}]}
+
+data: {"id":"gen-sse-usage","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"gen-sse-usage","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":9,"total_tokens":14}}
+
+data: [DONE]
+

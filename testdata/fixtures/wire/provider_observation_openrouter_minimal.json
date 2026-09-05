@@ -1,0 +1,20 @@
+{
+  "version": "provider-observation-v1",
+  "client_record_id": "019c7a8e-2c3e-7d4f-9a51-6b7c8d9e0f10",
+
+  "source_profile": "OPENROUTER_V1",
+  "provider_event_id": "gen-1786534200-aBcDeFgHiJkLmNoPqRsT",
+
+  "streaming": false,
+
+  "outcome": {
+    "type": "COMPLETE",
+    "termination": "client_disconnect"
+  },
+
+  "saw_done": false,
+  "saw_usage": false,
+  "saw_finish_reason": false,
+  "parse_degraded": false,
+  "metadata_conflict": false
+}

@@ -1,0 +1,1 @@
+{"id":"gen-fx-unknown","model":"synthetic/model-b","x_vendor_extension":{"nested":[1,2,{"deep":true}],"note":"hand-written"},"system_fingerprint":"fp_fixture","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5},"choices":[{"finish_reason":"length"}]}

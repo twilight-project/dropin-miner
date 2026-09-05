@@ -1,0 +1,1008 @@
+{
+  "format": "twilight-tokendrop-draw-v1-golden-vectors",
+  "version": 1,
+  "revision": 2,
+  "normative": true,
+  "spec_status": "post-review round-2 correction candidate",
+  "encoding_notes": {
+    "integers": "unsigned 64-bit big-endian unless explicitly stated otherwise",
+    "chain_id": "U16BE(UTF-8 byte length) || UTF-8 bytes",
+    "hash_fields": "lowercase hexadecimal is presentation only; cryptographic preimages use raw bytes",
+    "draw_ids": "exactly 32 raw bytes; lowercase 64-char hex in JSON",
+    "ordering": "draw IDs and tickets compare as raw-byte lexicographic ascending values"
+  },
+  "generation_provenance": {
+    "generated_with": "Python standard library hashlib/hmac only",
+    "block_hash_fixture_rule": "SHA256(ASCII('TWILIGHT/TOKENDROP/GOLDEN-BLOCK/R2:' || decimal_height))",
+    "independent_check_required": true,
+    "note": "All expected cryptographic outputs are derivable solely from fields/rules in this pack and the Draw V1 spec."
+  },
+  "primitives": {
+    "draw_id_v1": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "participation_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expected_draw_id_hex": "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+    },
+    "candidate_set_hash_v1": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "draw_ids_hex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "expected_candidate_set_hash_hex": "fc700f61be716bc52900a37aade5128a891c23cfd250c397289faad9bf2b7f04"
+    },
+    "candidate_set_hash_empty_v1": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "draw_ids_hex": [],
+      "expected_candidate_set_hash_hex": "ab9eaace20f9955b12eba84e79556c5d23101c18d7aa90e6c035a39b63e92b47"
+    },
+    "beacon_hash_v1": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "candidate_set_hash_hex": "fc700f61be716bc52900a37aade5128a891c23cfd250c397289faad9bf2b7f04",
+      "beacon_start_height": "1048",
+      "beacon_end_height": "1071",
+      "included_entries": [
+        {
+          "height": "1049",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "ebd5a63bdcf5aff21e86997468bf6022acc8b41c0fc2351444517d672c7c28f4"
+        },
+        {
+          "height": "1050",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "74fe726c3df51d37720e162f7fbdddb756b92176d189f762bcf82a21387cbe91"
+        },
+        {
+          "height": "1051",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "b2ff2f051ca447a34c47134decb4497587db7be6272eda885db804ab96e1897b"
+        },
+        {
+          "height": "1053",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "ba6d82d47e1c3fef67068dc2cde29b4ac97e93ba68e205f12fe1a8a37a9b28f9"
+        },
+        {
+          "height": "1054",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "7f59a59a8bb4cc9f2c992538232f8dd4068690a7bc3e6e6a94ce31d5759c679a"
+        },
+        {
+          "height": "1055",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "c9721b9e24081eaa7d5d60c8a469a1fa91c0f0ac3b36008235666ac5982a6a12"
+        },
+        {
+          "height": "1057",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "5ab68b39743e45a8c16901354ef89e26606fceda3755a4157b2ff6de529687fd"
+        },
+        {
+          "height": "1058",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "cd3ed210193b4516c1d4ca4e22ab98be243c0b49637f82a9195fd24b1ee78339"
+        },
+        {
+          "height": "1059",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "4baacd0b1e28e175a33ece64fafc6af7ef5a3cb1931431fe48afbf0cf1ce66b0"
+        },
+        {
+          "height": "1061",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "4ea277a19c935728b8d52f9b0f23f55957eeefee069a5f51a0477b55a13119f0"
+        },
+        {
+          "height": "1062",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "0dd03b744c71a5a490ecbae38800cbed33ee7dccd159951dd178353d60e7f579"
+        },
+        {
+          "height": "1063",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "8c69f42dd933d4517f56118fe3882a576623a1a2dd627c65304f5f0099ba15cb"
+        }
+      ],
+      "expected_beacon_hash_hex": "f5bbc1043a5ff82f0fb976342354d61becfe07aca477fc10dc855aed99f65fc8",
+      "committed_height_intentionally_absent": true
+    },
+    "ticket_v1": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "candidate_set_hash_hex": "fc700f61be716bc52900a37aade5128a891c23cfd250c397289faad9bf2b7f04",
+      "beacon_hash_hex": "f5bbc1043a5ff82f0fb976342354d61becfe07aca477fc10dc855aed99f65fc8",
+      "draw_id_hex": "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3",
+      "expected_ticket_hex": "00f1dd5333dafe6c9d63e45539de11ed290c5b2317dda5983f42359a0624741b"
+    }
+  },
+  "winner_count_vectors": [
+    {
+      "candidate_count": "0",
+      "selection_rate_bps": "1000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "0",
+      "rate_k": null,
+      "expected_k": "0"
+    },
+    {
+      "candidate_count": "1",
+      "selection_rate_bps": "1000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "1",
+      "rate_k": null,
+      "expected_k": "1"
+    },
+    {
+      "candidate_count": "2",
+      "selection_rate_bps": "2500",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "2",
+      "rate_k": "0",
+      "expected_k": "1"
+    },
+    {
+      "candidate_count": "3",
+      "selection_rate_bps": "1000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "3",
+      "rate_k": "0",
+      "expected_k": "1"
+    },
+    {
+      "candidate_count": "100",
+      "selection_rate_bps": "1000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "100",
+      "rate_k": "10",
+      "expected_k": "10"
+    },
+    {
+      "candidate_count": "5000",
+      "selection_rate_bps": "1000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "5000",
+      "rate_k": "500",
+      "expected_k": "100"
+    },
+    {
+      "candidate_count": "100",
+      "selection_rate_bps": "5000",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "100",
+      "rate_k": "50",
+      "expected_k": "50"
+    },
+    {
+      "candidate_count": "11",
+      "selection_rate_bps": "2500",
+      "slot_max_winners": "1",
+      "protocol_max_winners_per_draw": "1000",
+      "quotient_q": "0",
+      "remainder_rem": "11",
+      "rate_k": "2",
+      "expected_k": "1"
+    },
+    {
+      "candidate_count": "11",
+      "selection_rate_bps": "2500",
+      "slot_max_winners": "100",
+      "protocol_max_winners_per_draw": "2",
+      "quotient_q": "0",
+      "remainder_rem": "11",
+      "rate_k": "2",
+      "expected_k": "2"
+    },
+    {
+      "candidate_count": "18446744073709551615",
+      "selection_rate_bps": "5000",
+      "slot_max_winners": "18446744073709551615",
+      "protocol_max_winners_per_draw": "18446744073709551615",
+      "quotient_q": "1844674407370955",
+      "remainder_rem": "1615",
+      "rate_k": "9223372036854775807",
+      "expected_k": "9223372036854775807"
+    }
+  ],
+  "end_to_end": {
+    "success_with_target_slot_exclusion": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "epoch_n_minus_1_start_height": "1000",
+      "epoch_n_start_height": "1360",
+      "draw_commitment": {
+        "candidate_count": "3",
+        "candidate_set_hash_hex": "fc700f61be716bc52900a37aade5128a891c23cfd250c397289faad9bf2b7f04",
+        "committed_height": "1002",
+        "selection_rate_bps": "2500",
+        "slot_max_winners": "100"
+      },
+      "draw_params": {
+        "beacon_start_offset_blocks": "48",
+        "beacon_window_blocks": "24",
+        "min_external_beacon_blocks": "12",
+        "min_distinct_external_proposers": "3",
+        "protocol_max_winners_per_draw": "1000"
+      },
+      "candidate_list_draw_ids_hex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "observed_beacon_window": [
+        {
+          "height": "1048",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "06f1e3d5997fd6c505a6844450a2064090c8d917be929699db505f0e7d8a776f"
+        },
+        {
+          "height": "1049",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "ebd5a63bdcf5aff21e86997468bf6022acc8b41c0fc2351444517d672c7c28f4"
+        },
+        {
+          "height": "1050",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "74fe726c3df51d37720e162f7fbdddb756b92176d189f762bcf82a21387cbe91"
+        },
+        {
+          "height": "1051",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "b2ff2f051ca447a34c47134decb4497587db7be6272eda885db804ab96e1897b"
+        },
+        {
+          "height": "1052",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "af4ec9dd7e4cb5b439807c617c47b656039940968e32893319d183524430f54a"
+        },
+        {
+          "height": "1053",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "ba6d82d47e1c3fef67068dc2cde29b4ac97e93ba68e205f12fe1a8a37a9b28f9"
+        },
+        {
+          "height": "1054",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "7f59a59a8bb4cc9f2c992538232f8dd4068690a7bc3e6e6a94ce31d5759c679a"
+        },
+        {
+          "height": "1055",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "c9721b9e24081eaa7d5d60c8a469a1fa91c0f0ac3b36008235666ac5982a6a12"
+        },
+        {
+          "height": "1056",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "db76555bce3b6774acdc01e0569dd5e50dc97fa4d48e0c5a707ea807d60fd3d8"
+        },
+        {
+          "height": "1057",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "5ab68b39743e45a8c16901354ef89e26606fceda3755a4157b2ff6de529687fd"
+        },
+        {
+          "height": "1058",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "cd3ed210193b4516c1d4ca4e22ab98be243c0b49637f82a9195fd24b1ee78339"
+        },
+        {
+          "height": "1059",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "4baacd0b1e28e175a33ece64fafc6af7ef5a3cb1931431fe48afbf0cf1ce66b0"
+        },
+        {
+          "height": "1060",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "2d01bcd5e8feb526c1027d21c91bc9e1422cbd15a7c0c7ec40e0fd76f0c9399d"
+        },
+        {
+          "height": "1061",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "4ea277a19c935728b8d52f9b0f23f55957eeefee069a5f51a0477b55a13119f0"
+        },
+        {
+          "height": "1062",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "0dd03b744c71a5a490ecbae38800cbed33ee7dccd159951dd178353d60e7f579"
+        },
+        {
+          "height": "1063",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "8c69f42dd933d4517f56118fe3882a576623a1a2dd627c65304f5f0099ba15cb"
+        },
+        {
+          "height": "1064",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "6d7f45eb5a019b578a7fc23987a1f73c7d04daa8a84f29044e94914315d57f71"
+        },
+        {
+          "height": "1065",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "c254fd963dda83a70035b3849b63d7ab39b6d3dfe1527d5b65d91156fc378f1c"
+        },
+        {
+          "height": "1066",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "e5f64954939226e998c8af6b4925dd5cfcbb942ded03a25594cff16ba727ad41"
+        },
+        {
+          "height": "1067",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "0d2dd3b716d504456ac055619170d935697789c4a3f9fa6cf554e77848215a75"
+        },
+        {
+          "height": "1068",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "984e29297284b85ab6af3cae7f6f54c8b5f81c6e4ef54f7a7268e404bd873aba"
+        },
+        {
+          "height": "1069",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "75877f6e42bd3520bc598601fbe446b2af46dffe4623db8d396880184d13cb21"
+        },
+        {
+          "height": "1070",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "f99fd421391bfefc15947e4c26d8e33b8109759a89350e58283c621be0b325ca"
+        },
+        {
+          "height": "1071",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "c102b401722206a596f5ab36fc3c474f12c1809cf839eda54e9a28c5fee74c33"
+        }
+      ],
+      "expected_included_entries": [
+        {
+          "height": "1049",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "ebd5a63bdcf5aff21e86997468bf6022acc8b41c0fc2351444517d672c7c28f4"
+        },
+        {
+          "height": "1050",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "74fe726c3df51d37720e162f7fbdddb756b92176d189f762bcf82a21387cbe91"
+        },
+        {
+          "height": "1051",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "b2ff2f051ca447a34c47134decb4497587db7be6272eda885db804ab96e1897b"
+        },
+        {
+          "height": "1053",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "ba6d82d47e1c3fef67068dc2cde29b4ac97e93ba68e205f12fe1a8a37a9b28f9"
+        },
+        {
+          "height": "1054",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "7f59a59a8bb4cc9f2c992538232f8dd4068690a7bc3e6e6a94ce31d5759c679a"
+        },
+        {
+          "height": "1055",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "c9721b9e24081eaa7d5d60c8a469a1fa91c0f0ac3b36008235666ac5982a6a12"
+        },
+        {
+          "height": "1057",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "5ab68b39743e45a8c16901354ef89e26606fceda3755a4157b2ff6de529687fd"
+        },
+        {
+          "height": "1058",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "cd3ed210193b4516c1d4ca4e22ab98be243c0b49637f82a9195fd24b1ee78339"
+        },
+        {
+          "height": "1059",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "4baacd0b1e28e175a33ece64fafc6af7ef5a3cb1931431fe48afbf0cf1ce66b0"
+        },
+        {
+          "height": "1061",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "4ea277a19c935728b8d52f9b0f23f55957eeefee069a5f51a0477b55a13119f0"
+        },
+        {
+          "height": "1062",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "0dd03b744c71a5a490ecbae38800cbed33ee7dccd159951dd178353d60e7f579"
+        },
+        {
+          "height": "1063",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "8c69f42dd933d4517f56118fe3882a576623a1a2dd627c65304f5f0099ba15cb"
+        },
+        {
+          "height": "1065",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "c254fd963dda83a70035b3849b63d7ab39b6d3dfe1527d5b65d91156fc378f1c"
+        },
+        {
+          "height": "1066",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "e5f64954939226e998c8af6b4925dd5cfcbb942ded03a25594cff16ba727ad41"
+        },
+        {
+          "height": "1067",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "0d2dd3b716d504456ac055619170d935697789c4a3f9fa6cf554e77848215a75"
+        },
+        {
+          "height": "1069",
+          "proposer_slot_id": "2",
+          "block_hash_hex": "75877f6e42bd3520bc598601fbe446b2af46dffe4623db8d396880184d13cb21"
+        },
+        {
+          "height": "1070",
+          "proposer_slot_id": "3",
+          "block_hash_hex": "f99fd421391bfefc15947e4c26d8e33b8109759a89350e58283c621be0b325ca"
+        },
+        {
+          "height": "1071",
+          "proposer_slot_id": "4",
+          "block_hash_hex": "c102b401722206a596f5ab36fc3c474f12c1809cf839eda54e9a28c5fee74c33"
+        }
+      ],
+      "expected_usable_block_count": "18",
+      "expected_distinct_external_proposers": "3",
+      "expected_beacon_hash_hex": "b6a16e717f6d833794d0f58390f41fee9e76d1690bc5449234277b92cc97472f",
+      "expected_k": "1",
+      "expected_ranking": [
+        {
+          "draw_id_hex": "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3",
+          "ticket_hex": "3aa82dd79945dc2a5f05519354fabbb6cf963a32db8fc084adda749c3040532d"
+        },
+        {
+          "draw_id_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "ticket_hex": "4fd379f329e965de0a88eeaaa2143c0bd43aa63e9e75301d77b51e1dacd0d0eb"
+        },
+        {
+          "draw_id_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "ticket_hex": "c43429d57989c2953ff20051ffc187ec6853e103b687e7f322a82f4cac28b9cd"
+        }
+      ],
+      "expected_winner_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+      ],
+      "expected_outcome": "SUCCESS"
+    },
+    "commitment_height_invariance": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "epoch_n_minus_1_start_height": "1000",
+      "beacon_start_height": "1048",
+      "commitment_heights": [
+        "1001",
+        "1047"
+      ],
+      "expected_same_beacon_hash_hex": "b6a16e717f6d833794d0f58390f41fee9e76d1690bc5449234277b92cc97472f",
+      "expected_same_winner_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+      ],
+      "assertion": "Changing committed_height within the valid pre-beacon window changes neither beacon inputs nor BeaconHashV1 nor winners."
+    },
+    "no_candidates": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1043",
+      "candidate_list_draw_ids_hex": [],
+      "expected_candidate_set_hash_hex": "80fde3c6c5f28d15bcfd7cdd67a16bab5814dbdf01aa380d3be4a7335a0d4399",
+      "expected_k": "0",
+      "beacon_required": false,
+      "expected_outcome": "NO_CANDIDATES",
+      "expected_winner_draw_ids_hex": []
+    },
+    "single_candidate": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "candidate_list_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+      ],
+      "expected_candidate_set_hash_hex": "44bda50479bb8cc5cce06512efb96838cc7fa8723bc0535e2d37d1442a4256fe",
+      "expected_k": "1",
+      "beacon_required": false,
+      "expected_outcome": "SUCCESS",
+      "expected_winner_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+      ]
+    },
+    "no_valid_beacon_insufficient_usable_blocks": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "2042",
+      "draw_params": {
+        "beacon_start_offset_blocks": "48",
+        "beacon_window_blocks": "24",
+        "min_external_beacon_blocks": "12",
+        "min_distinct_external_proposers": "3"
+      },
+      "observed_beacon_window": [
+        {
+          "height": "2048",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "84d4f694cf70ae2f2bfb59f37a9347666152b2a88ac9f0308bc145e576d14e69"
+        },
+        {
+          "height": "2049",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "380f42ab3b0ac2bb299151ad89c2817f789c4f66ca763448aab9f3b24691fa15"
+        },
+        {
+          "height": "2050",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "27e0e16a338a2404701b66a5a8e44002eabbe7a29a1cffe0fbd5ad1fd3a3f506"
+        },
+        {
+          "height": "2051",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "c7039af9c9cfe077120c7ec3d2fa10fb6bd08e3bfead41f2a18aae66db7e8507"
+        },
+        {
+          "height": "2052",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "540cff219f58ddb0c488f74ebcc2ba96b896bae32d564bbe240200c265bdf005"
+        },
+        {
+          "height": "2053",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "70e723bdb2945dc3b6f425f39f4dcda00f7688bd9d11355ce95ca54677cf47e6"
+        },
+        {
+          "height": "2054",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "bb575ffde032d3d79aa849766f9764c580d62eb9dcba892f4b091c643b56e657"
+        },
+        {
+          "height": "2055",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "8ba1e1e9e07f32ccb383042c2988b662fe9bc751cc47824f49e58b0f86bffabe"
+        },
+        {
+          "height": "2056",
+          "resolved_proposer_slot_id": "4",
+          "block_hash_hex": "4abc765ba9d096258ac7ab3778712823dd00b59c8c7ff31dda7e76698a3dc0f9"
+        },
+        {
+          "height": "2057",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "a80dc87b4e657eff70d43743bbd68274b6e161aea6bb39ca493e42ece9711c66"
+        },
+        {
+          "height": "2058",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "40249e6488cf604c52dfebb88acc74bd4516c545dd3159bf516d8b69af424ef9"
+        },
+        {
+          "height": "2059",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "22fc9973dbe78013adc06699066c4fa64b577f4c73098b76fa69fe1df2c94993"
+        },
+        {
+          "height": "2060",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "74b2bcd061bfdf1e4c68a038cbe1b254dc209a751b8a839b168b2dbf9aaf64fb"
+        },
+        {
+          "height": "2061",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "93b3c4847bb54a782d1ca73e49fd7148c76010cf9e0c2275d596f8f6e5736cf1"
+        },
+        {
+          "height": "2062",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "780cbed0340af5a86c64275058cacfe0b9fc172ccfba895301b73f95344a8bde"
+        },
+        {
+          "height": "2063",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "eba6cf5b3586a0fa3700fc78970e7162d05e5a4cd96298332cb04d180f710064"
+        },
+        {
+          "height": "2064",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "83dd0dc0523ab2a5fb38b6d1f0d6bcb0fa6474cc7ae501f7fefcd1d21582267b"
+        },
+        {
+          "height": "2065",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "300a1d756c7901f5341c2acd0d863b42170740e7cfd5d7bed272527defed8e61"
+        },
+        {
+          "height": "2066",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "188d6ac2c91de580b34fefe423053904dfc05a6eb856a4502b0cbbe7dc09c256"
+        },
+        {
+          "height": "2067",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "3dce33afa951a214532bc3079cd9dac81bb982ab22a292478e0e90aa853e5ec5"
+        },
+        {
+          "height": "2068",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "3249cd57e46ba25f397364e4819eeeda9bb9317053753bfbd093073794d8970e"
+        },
+        {
+          "height": "2069",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "068b0c2ace7966da44c048ab8b1fc88a2170d9a0a384bfd36be44c84afa864e7"
+        },
+        {
+          "height": "2070",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "ea717f0c807186f6b67e72f2fe156959d14982bd6ef3594cd7c0cd9aeccaf38b"
+        },
+        {
+          "height": "2071",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "b8ca4325b34928cd393d552f942f1cf232f444b9ca79ba68e7a3370c663ea7bb"
+        }
+      ],
+      "expected_usable_block_count": "10",
+      "expected_distinct_external_proposers": "3",
+      "expected_outcome": "NO_VALID_BEACON",
+      "beacon_hash_defined": false
+    },
+    "no_valid_beacon_insufficient_distinct_proposers": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "3042",
+      "draw_params": {
+        "beacon_start_offset_blocks": "48",
+        "beacon_window_blocks": "24",
+        "min_external_beacon_blocks": "12",
+        "min_distinct_external_proposers": "3"
+      },
+      "observed_beacon_window": [
+        {
+          "height": "3048",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "3712845f195f2ffe1d9bfbfb95c0f7612021dd585f3c31473c86d589d72febb5"
+        },
+        {
+          "height": "3049",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "2c1a9c64797b085352024bee0e59b021216dec33dd5f17d314564176d3292079"
+        },
+        {
+          "height": "3050",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "4b261db9fbc7202cea42719821db6996720c74cc29da4fbccd0008acf3bdf085"
+        },
+        {
+          "height": "3051",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "5476c04e14251d62ec0890674371a380364e9173f8cf8c09f8a5094eaef9dda8"
+        },
+        {
+          "height": "3052",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "53dea237a34061f24b0c9f88eabc86bcee303ad6bc32cdc30c7aafd8e58a5ac9"
+        },
+        {
+          "height": "3053",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "37f1331c058673b8bd3123e95d5cd7837be44839a48652d7f01f084f2a73df39"
+        },
+        {
+          "height": "3054",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "3cd7b5149880a0967e8f374bcb17eca6b48e4d5963827751ad923a0c67b52e19"
+        },
+        {
+          "height": "3055",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "ea4131f9a8f8f8f9786a335cbd3392d33fb2083b238fb7aefc30a6b26d593841"
+        },
+        {
+          "height": "3056",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "fff1698144e58319681787eb1e60af396e9bc6b77a177ba4d7034ecb4a19c2b9"
+        },
+        {
+          "height": "3057",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "b0f1035f940410ad36865e2f2cbdc085a64ef86dbf09854c12bae44abd19982d"
+        },
+        {
+          "height": "3058",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "13a0b0d599cfde095d296800bac7c93797f56b26201800d5407bc454fc2ffae3"
+        },
+        {
+          "height": "3059",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "0f50d79a81bde8d092e4d9dc935e8187d2986c7ef0468bf598f5f4d19354875b"
+        },
+        {
+          "height": "3060",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "9c3cdee4bf41c91d46d6fac1a58cc0f1866d67c339fe01478d725881b8a93b26"
+        },
+        {
+          "height": "3061",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "0b2c7b2c2dcc676cbe7e76c9d5a4851efb48af200ab9cc4c35dde41b4a322e18"
+        },
+        {
+          "height": "3062",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "5cdb58ae31c4ab7ea208bf02a8a7a90ab9f50dcc941d4ddc236abdf7bf0dd735"
+        },
+        {
+          "height": "3063",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "186fc790bcb273bbd61942e541a54ca472ca913ef8d7803a170c0b372886462e"
+        },
+        {
+          "height": "3064",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "d000a58b15f4a52ebe2328bf2139a2eb06dffa6e533464260240833a91b4e7a8"
+        },
+        {
+          "height": "3065",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "36f5cb8f0460f5c4370a1d99897003b1faa2b2f5c7fbdd1867156ddd3cb23598"
+        },
+        {
+          "height": "3066",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "675933d7b85bd8d744b657048c912e75d22a5b7ce6f4cc72f5c6b897356423ba"
+        },
+        {
+          "height": "3067",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "26e9ef6afdea18bad7ad88a9695936cda16b465f7ef59e934e123a9710109fe5"
+        },
+        {
+          "height": "3068",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "224db9473d01f8724ef234ed56d8666076971ff49ac0bad54a266e50cc942a7c"
+        },
+        {
+          "height": "3069",
+          "resolved_proposer_slot_id": "7",
+          "block_hash_hex": "239b716ae1d0d759693d38ba66a12bc3911666225bb2a03ac0cf4daa16239361"
+        },
+        {
+          "height": "3070",
+          "resolved_proposer_slot_id": "2",
+          "block_hash_hex": "839ad094fbfa29923abc9adb87e9932280cdc3ec7518ea6b6da1019b0b14bd21"
+        },
+        {
+          "height": "3071",
+          "resolved_proposer_slot_id": "3",
+          "block_hash_hex": "12c52b7761e49262313180aa49cd452cd083058200579eba2e1a95a9a406f6c4"
+        }
+      ],
+      "expected_usable_block_count": "16",
+      "expected_distinct_external_proposers": "2",
+      "expected_outcome": "NO_VALID_BEACON",
+      "beacon_hash_defined": false
+    }
+  },
+  "proposer_resolution_vectors": [
+    {
+      "name": "validator_update_effective_u_plus_2",
+      "slot_id": "7",
+      "validator_update_emitted_height_u": "1018",
+      "old_consensus_address_hex": "1111111111111111111111111111111111111111",
+      "new_consensus_address_hex": "2222222222222222222222222222222222222222",
+      "old_valid_until_height_exclusive": "1020",
+      "new_valid_from_height": "1020",
+      "assertions": [
+        {
+          "height": "1018",
+          "consensus_address_hex": "1111111111111111111111111111111111111111",
+          "expected_slot_id": "7"
+        },
+        {
+          "height": "1019",
+          "consensus_address_hex": "1111111111111111111111111111111111111111",
+          "expected_slot_id": "7"
+        },
+        {
+          "height": "1020",
+          "consensus_address_hex": "2222222222222222222222222222222222222222",
+          "expected_slot_id": "7"
+        },
+        {
+          "height": "1021",
+          "consensus_address_hex": "2222222222222222222222222222222222222222",
+          "expected_slot_id": "7"
+        }
+      ],
+      "note": "ValidatorUpdates emitted in FinalizeBlock(U) become active for proposer attribution at U+2."
+    }
+  ],
+  "timing_vectors": [
+    {
+      "name": "valid_commit_first_block",
+      "epoch_n_minus_1_start_height": "1000",
+      "epoch_n_start_height": "1360",
+      "beacon_start_offset_blocks": "48",
+      "beacon_window_blocks": "24",
+      "committed_height": "1000",
+      "expected": "ACCEPT"
+    },
+    {
+      "name": "valid_commit_last_pre_beacon_block",
+      "epoch_n_minus_1_start_height": "1000",
+      "epoch_n_start_height": "1360",
+      "beacon_start_offset_blocks": "48",
+      "beacon_window_blocks": "24",
+      "committed_height": "1047",
+      "expected": "ACCEPT"
+    },
+    {
+      "name": "commit_at_beacon_start_rejected",
+      "epoch_n_minus_1_start_height": "1000",
+      "epoch_n_start_height": "1360",
+      "beacon_start_offset_blocks": "48",
+      "beacon_window_blocks": "24",
+      "committed_height": "1048",
+      "expected": "REJECT_COMMITMENT_WINDOW"
+    },
+    {
+      "name": "beacon_fit_rejection",
+      "epoch_n_minus_1_start_height": "1000",
+      "epoch_n_start_height": "1060",
+      "beacon_start_offset_blocks": "48",
+      "beacon_window_blocks": "24",
+      "derived_beacon_start_height": "1048",
+      "derived_beacon_end_height": "1071",
+      "latest_permitted_beacon_end_height": "1058",
+      "expected": "REJECT_DRAW_PARAMS_OR_COMMIT"
+    },
+    {
+      "name": "late_result_rejection",
+      "target_epoch_start_height": "1360",
+      "published_height": "1360",
+      "expected": "REJECT_LATE_RESULT"
+    },
+    {
+      "name": "valid_result_last_block",
+      "target_epoch_start_height": "1360",
+      "published_height": "1359",
+      "expected": "ACCEPT_IF_OTHER_RULES_PASS"
+    }
+  ],
+  "negative_vectors": [
+    {
+      "name": "candidate_list_not_strictly_sorted",
+      "candidate_list_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "expected_error": "CANDIDATE_LIST_NOT_CANONICAL"
+    },
+    {
+      "name": "candidate_set_hash_mismatch",
+      "expected_candidate_set_hash_hex": "fc700f61be716bc52900a37aade5128a891c23cfd250c397289faad9bf2b7f04",
+      "published_candidate_set_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "CANDIDATE_SET_HASH_MISMATCH"
+    },
+    {
+      "name": "candidate_count_mismatch",
+      "draw_commitment_candidate_count": "3",
+      "candidate_list_candidate_count": "2",
+      "candidate_list_length": "2",
+      "expected_error": "CANDIDATE_COUNT_MISMATCH"
+    },
+    {
+      "name": "wrong_published_winner",
+      "expected_winner_draw_ids_hex": [
+        "4779843297ece3a95590eee123f80a846cc2cecbfcda1fd88c7d2b3cc2ce91e3"
+      ],
+      "published_winner_draw_ids_hex": [
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "expected_error": "WINNER_SET_MISMATCH"
+    },
+    {
+      "name": "wrong_beacon_hash",
+      "expected_beacon_hash_hex": "b6a16e717f6d833794d0f58390f41fee9e76d1690bc5449234277b92cc97472f",
+      "published_beacon_hash_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_error": "BEACON_HASH_MISMATCH"
+    },
+    {
+      "name": "duplicate_winner",
+      "winner_count": "2",
+      "winner_draw_ids_hex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "expected_error": "DUPLICATE_WINNER_ID"
+    },
+    {
+      "name": "non_32_byte_winner",
+      "winner_count": "1",
+      "winner_draw_ids_hex": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "expected_error": "INVALID_WINNER_ID_LENGTH"
+    },
+    {
+      "name": "draw_result_key_mismatch",
+      "commitment_slot_id": "7",
+      "commitment_target_epoch": "1042",
+      "result_slot_id": "8",
+      "result_target_epoch": "1042",
+      "expected_error": "DRAW_RESULT_KEY_MISMATCH"
+    },
+    {
+      "name": "winner_count_list_length_mismatch",
+      "winner_count": "2",
+      "winner_draw_ids_hex": [
+        "0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "expected_error": "WINNER_COUNT_MISMATCH"
+    }
+  ],
+  "comparator_vectors": [
+    {
+      "name": "ticket_tie_break_by_draw_id",
+      "synthetic_ticket_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "candidates": [
+        {
+          "draw_id_hex": "0000000000000000000000000000000000000000000000000000000000000002",
+          "ticket_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "draw_id_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "ticket_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "expected_order_draw_ids_hex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002"
+      ],
+      "note": "Synthetic comparator-only vector; it does not claim a real SHA-256 collision."
+    }
+  ],
+  "empty_set_cross_check": {
+    "input_a": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "draw_ids_hex": []
+    },
+    "input_b": {
+      "chain_id": "twilight-1",
+      "slot_id": "7",
+      "target_epoch": "1042",
+      "draw_ids_hex": []
+    },
+    "expected_hash_a_hex": "ab9eaace20f9955b12eba84e79556c5d23101c18d7aa90e6c035a39b63e92b47",
+    "expected_hash_b_hex": "ab9eaace20f9955b12eba84e79556c5d23101c18d7aa90e6c035a39b63e92b47",
+    "expected_equal": true,
+    "note": "Different epochs legitimately produce different empty-set hashes because target_epoch is domain context."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "version": "twilight-mining-as-v1",
+  "chain_id": "twilight-1",
+  "slot_id": "7",
+
+  "authorization_server": "https://as.example.com",
+
+  "join_epoch_endpoint_template": "https://as.example.com/v1/mining/slots/{slot_id}/epochs/{target_epoch}/join",
+
+  "epoch_status_endpoint_template": "https://as.example.com/v1/mining/slots/{slot_id}/epochs/{target_epoch}/status",
+
+  "candidate_list_endpoint_template": "https://as.example.com/v1/selection/slots/{slot_id}/epochs/{target_epoch}/candidates",
+
+  "current_target_endpoint_template": "https://as.example.com/v1/mining/slots/{slot_id}/current-target",
+
+  "participation_resource": "https://as.example.com/v1/mining/observations",
+
+  "observations_endpoint": "https://as.example.com/v1/mining/observations",
+
+  "observations_batch_endpoint": "https://as.example.com/v1/mining/observations/batch",
+
+  "observation_status_endpoint_template": "https://as.example.com/v1/mining/observations/{observation_id}",
+
+  "activity_status_endpoint_template": "https://as.example.com/v1/mining/slots/{slot_id}/epochs/{target_epoch}/activity",
+
+  "provider_verification_endpoint_template": "https://as.example.com/v1/provider-verification/{provider}",
+
+  "source_profiles": [
+    "OPENROUTER_V1",
+    "SEARCH_ROUTER_V1"
+  ],
+
+  "max_observation_bytes": 16384,
+  "max_observation_batch_size": 100,
+  "max_observation_batch_bytes": 1048576
+}

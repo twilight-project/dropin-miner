@@ -1,0 +1,4 @@
+data: {"id":"gen-sse-nousage","model":"synthetic/model-s","choices":[{"index":0,"delta":{"content":"fictional"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

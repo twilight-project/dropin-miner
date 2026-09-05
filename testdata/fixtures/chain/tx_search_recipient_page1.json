@@ -1,0 +1,393 @@
+{
+  "jsonrpc": "2.0",
+  "id": -1,
+  "result": {
+    "txs": [
+      {
+        "hash": "E5F1CFD664326EB5DABA8B4AB1BA23684D464FC70100B549BFEBB58F4987024B",
+        "height": "161479",
+        "index": 0,
+        "tx_result": {
+          "code": 0,
+          "data": "EkEKMS90d2lsaWdodC5taW5pbmcudjEuTXNnRmluYWxpemVTZXR0bGVtZW50UmVzcG9uc2USDAgBEggzNzQ1NzEwMA==",
+          "log": "",
+          "info": "",
+          "gas_wanted": "200000",
+          "gas_used": "72132",
+          "events": [
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "fee",
+                  "value": "",
+                  "index": true
+                },
+                {
+                  "key": "fee_payer",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "acc_seq",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2/3",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "signature",
+                  "value": "AO/S7p761u/mVOhVS3uEBYArXNRNik6bBlrBnAzprWUGiiHTqDUum1QNn3auYN1WXwkqZkIPL55crb6/yZ9DdA==",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "message",
+              "attributes": [
+                {
+                  "key": "action",
+                  "value": "/twilight.mining.v1.MsgFinalizeSettlement",
+                  "index": true
+                },
+                {
+                  "key": "sender",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2",
+                  "index": true
+                },
+                {
+                  "key": "module",
+                  "value": "mining",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "coin_spent",
+              "attributes": [
+                {
+                  "key": "spender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "coin_received",
+              "attributes": [
+                {
+                  "key": "receiver",
+                  "value": "twilight1xm9xxt24meqqpzt3lc5725t3d764j0j2w6jl6c",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "transfer",
+              "attributes": [
+                {
+                  "key": "recipient",
+                  "value": "twilight1xm9xxt24meqqpzt3lc5725t3d764j0j2w6jl6c",
+                  "index": true
+                },
+                {
+                  "key": "sender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "message",
+              "attributes": [
+                {
+                  "key": "sender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "mining_settlement_finalized",
+              "attributes": [
+                {
+                  "key": "slot_id",
+                  "value": "4",
+                  "index": true
+                },
+                {
+                  "key": "epoch",
+                  "value": "447",
+                  "index": true
+                },
+                {
+                  "key": "finalization_reason",
+                  "value": "SETTLEMENT_FINALIZATION_REASON_AUTHORIZED_EARLY",
+                  "index": true
+                },
+                {
+                  "key": "released_remainder",
+                  "value": "37457100",
+                  "index": true
+                },
+                {
+                  "key": "finalized_height",
+                  "value": "161479",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            }
+          ],
+          "codespace": ""
+        },
+        "tx": "CmUKYwopL3R3aWxpZ2h0Lm1pbmluZy52MS5Nc2dGaW5hbGl6ZVNldHRsZW1lbnQSNgovdHdpbGlnaHQxOG1laHR6amduOXZwNHd4NnhrYXc3OHAzbXI1amMyeTM4eXc4ajIQBBi/AxJYClAKRgofL2Nvc21vcy5jcnlwdG8uc2VjcDI1NmsxLlB1YktleRIjCiECG2EO/tF0TAEmj4Q8F3nIxLqbPq4NBWnY8hbaGyygUgYSBAoCCAEYAxIEEMCaDBpAAO/S7p761u/mVOhVS3uEBYArXNRNik6bBlrBnAzprWUGiiHTqDUum1QNn3auYN1WXwkqZkIPL55crb6/yZ9DdA=="
+      },
+      {
+        "hash": "9A7FFED463DC63EF6BA48F21B6A68332DE2FED5580E6F3CF5990029B9848F009",
+        "height": "159663",
+        "index": 0,
+        "tx_result": {
+          "code": 0,
+          "data": "EkEKMS90d2lsaWdodC5taW5pbmcudjEuTXNnRmluYWxpemVTZXR0bGVtZW50UmVzcG9uc2USDAgBEggzNzQ1NzEwMA==",
+          "log": "",
+          "info": "",
+          "gas_wanted": "200000",
+          "gas_used": "72129",
+          "events": [
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "fee",
+                  "value": "",
+                  "index": true
+                },
+                {
+                  "key": "fee_payer",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "acc_seq",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2/2",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "tx",
+              "attributes": [
+                {
+                  "key": "signature",
+                  "value": "EgYBLuQS/oa6QG1sXQTbD1OPBQ582Yo5o6sx/K42ZQtIdFsOHa3EGN11Kjk6heu76UxPZ4k8UPj1n6OvHRiWig==",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "message",
+              "attributes": [
+                {
+                  "key": "action",
+                  "value": "/twilight.mining.v1.MsgFinalizeSettlement",
+                  "index": true
+                },
+                {
+                  "key": "sender",
+                  "value": "twilight18mehtzjgn9vp4wx6xkaw78p3mr5jc2y38yw8j2",
+                  "index": true
+                },
+                {
+                  "key": "module",
+                  "value": "mining",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "coin_spent",
+              "attributes": [
+                {
+                  "key": "spender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "coin_received",
+              "attributes": [
+                {
+                  "key": "receiver",
+                  "value": "twilight1xm9xxt24meqqpzt3lc5725t3d764j0j2w6jl6c",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "transfer",
+              "attributes": [
+                {
+                  "key": "recipient",
+                  "value": "twilight1xm9xxt24meqqpzt3lc5725t3d764j0j2w6jl6c",
+                  "index": true
+                },
+                {
+                  "key": "sender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "amount",
+                  "value": "37457100utwlt",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "message",
+              "attributes": [
+                {
+                  "key": "sender",
+                  "value": "twilight1245yut9zht8q4hz39sd0lzqtzkuw5us5pd3c3u",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            },
+            {
+              "type": "mining_settlement_finalized",
+              "attributes": [
+                {
+                  "key": "slot_id",
+                  "value": "4",
+                  "index": true
+                },
+                {
+                  "key": "epoch",
+                  "value": "443",
+                  "index": true
+                },
+                {
+                  "key": "finalization_reason",
+                  "value": "SETTLEMENT_FINALIZATION_REASON_AUTHORIZED_EARLY",
+                  "index": true
+                },
+                {
+                  "key": "released_remainder",
+                  "value": "37457100",
+                  "index": true
+                },
+                {
+                  "key": "finalized_height",
+                  "value": "159663",
+                  "index": true
+                },
+                {
+                  "key": "msg_index",
+                  "value": "0",
+                  "index": true
+                }
+              ]
+            }
+          ],
+          "codespace": ""
+        },
+        "tx": "CmUKYwopL3R3aWxpZ2h0Lm1pbmluZy52MS5Nc2dGaW5hbGl6ZVNldHRsZW1lbnQSNgovdHdpbGlnaHQxOG1laHR6amduOXZwNHd4NnhrYXc3OHAzbXI1amMyeTM4eXc4ajIQBBi7AxJYClAKRgofL2Nvc21vcy5jcnlwdG8uc2VjcDI1NmsxLlB1YktleRIjCiECG2EO/tF0TAEmj4Q8F3nIxLqbPq4NBWnY8hbaGyygUgYSBAoCCAEYAhIEEMCaDBpAEgYBLuQS/oa6QG1sXQTbD1OPBQ582Yo5o6sx/K42ZQtIdFsOHa3EGN11Kjk6heu76UxPZ4k8UPj1n6OvHRiWig=="
+      }
+    ],
+    "total_count": "3"
+  }
+}

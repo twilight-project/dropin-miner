@@ -1,0 +1,6 @@
+data: {"id":"gen-sse-cm","model":"synthetic/model-a","choices":[{"delta":{"content":"a"},"finish_reason":null}]}
+
+data: {"id":"gen-sse-cm","model":"synthetic/model-b","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

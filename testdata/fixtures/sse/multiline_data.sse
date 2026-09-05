@@ -1,0 +1,7 @@
+data: {"id":"gen-sse-multi",
+data: "model":"synthetic/model-s",
+data: "choices":[{"delta":{"content":"joined across lines"},"finish_reason":"stop"}],
+data: "usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}
+
+data: [DONE]
+

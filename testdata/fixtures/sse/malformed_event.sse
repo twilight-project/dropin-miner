@@ -1,0 +1,8 @@
+data: {"id":"gen-sse-malformed","model":"synthetic/model-s","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}
+
+data: {this is not json at all}
+
+data: {"id":"gen-sse-malformed","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+

@@ -1,0 +1,1 @@
+{"id":"gen-fx-nousage","object":"chat.completion","model":"synthetic/model-a","choices":[{"index":0,"message":{"role":"assistant","content":"fictional, no usage reported"},"finish_reason":"stop"}]}

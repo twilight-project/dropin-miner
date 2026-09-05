@@ -1,0 +1,71 @@
+# ─── Design documents must never enter this repository's history ───────────────
+# This repo is private today and intended to go public. Git history is forever:
+# committing a file and deleting it later does NOT remove it — anyone can recover
+# it with `git log -p`. Removing it afterwards requires rewriting history and
+# force-pushing, which breaks every existing clone and fork.
+#
+# The design plan, ADRs, and originating specs live in a separate private repo.
+# These patterns are a guard against them being copied in by accident.
+design_plan.md
+master_plan.md
+open_questions.md
+tokendrop-*-spec.md
+docs/architecture/adr/
+docs/private/
+*.private.md
+
+# ─── Go ────────────────────────────────────────────────────────────────────────
+/dropin-miner
+/bin/
+/dist/
+/build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+go.work
+go.work.sum
+
+# Fuzzing corpora can capture whatever was fed to the parser. Seed corpora belong
+# in testdata/fixtures/ and are reviewed; generated corpora are never committed.
+testdata/fuzz/
+
+# ─── Local state — may contain keys, spooled records, or a socket ──────────────
+*.key
+*.pem
+.tokendrop/
+*.sock
+/spool/
+tokendrop.toml
+config.local.toml
+
+# ─── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ─── Additions after review: things that can carry keys, prompts, or heap ──────
+# Go fuzz corpora land under any package's testdata/, not just the root one.
+**/testdata/fuzz/
+.env
+.env.*
+*.prof
+*.pprof
+*.trace
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.jwt
+*.jwk
+*.jwks
+
+# go build ./scripts/e2e/fixture drops its binary in the repo root
+/fixture

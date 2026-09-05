@@ -1,0 +1,11 @@
+: keepalive ping, ignored
+
+data: {"id":"gen-sse-keep","model":"synthetic/model-s","choices":[{"delta":{"content":"fic"},"finish_reason":null}]}
+
+: another comment
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-sse-keep","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}
+
+data: [DONE]
+

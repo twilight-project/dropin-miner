@@ -1,0 +1,6 @@
+data: {"id":"gen-sse-crlf","model":"synthetic/model-s","choices":[{"delta":{"content":"fic"},"finish_reason":"stop"}]}
+
+data: {"id":"gen-sse-crlf","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+
+data: [DONE]
+

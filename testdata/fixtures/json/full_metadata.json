@@ -1,0 +1,1 @@
+{"id":"gen-fx-full","object":"chat.completion","created":1760000000,"model":"synthetic/model-a","choices":[{"index":0,"message":{"role":"assistant","content":"canary-completion-2b9d fictional text, hand-written for this fixture"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}

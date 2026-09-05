@@ -1,0 +1,42 @@
+{
+  "version": "provider-observation-v1",
+  "client_record_id": "019c7a8e-1b2d-7c3e-8f40-5a6b7c8d9e0f",
+
+  "source_profile": "OPENROUTER_V1",
+  "provider_event_id": "gen-1786534171-wtMaaOr8tBpzPotDLmyD",
+
+  "resolved_model": "anthropic/claude-sonnet-5-20260630",
+
+  "started_at": "2026-08-12T11:29:24.492Z",
+  "finished_at": "2026-08-12T11:29:31.178Z",
+
+  "streaming": true,
+  "status_code": 200,
+
+  "usage": {
+    "prompt_tokens": "252020",
+    "completion_tokens": "39",
+    "total_tokens": "252059",
+    "cached_tokens": "0",
+    "reasoning_tokens": "0",
+    "cost": "0.50443"
+  },
+
+  "finish_reason": "stop",
+
+  "outcome": {
+    "type": "COMPLETE",
+    "termination": "done"
+  },
+
+  "saw_done": true,
+  "saw_usage": true,
+  "saw_finish_reason": true,
+  "parse_degraded": false,
+  "metadata_conflict": false,
+
+  "source_data": {
+    "provider_name": "Anthropic",
+    "native_finish_reason": "end_turn"
+  }
+}

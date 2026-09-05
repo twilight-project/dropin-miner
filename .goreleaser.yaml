@@ -1,0 +1,28 @@
+# Releases: one static binary per platform, checksummed, from a tag.
+version: 2
+project_name: dropin-miner
+builds:
+  - main: ./cmd/dropin-miner
+    binary: dropin-miner
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-X main.version={{.Version}}"]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - src: scripts/setup.sh
+        dst: setup.sh
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+release:
+  draft: false
+changelog:
+  use: git

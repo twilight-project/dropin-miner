@@ -1,0 +1,8 @@
+data: {"id":"gen-sse-early","object":"chat.completion.chunk","model":"synthetic/model-s","choices":[{"index":0,"delta":{"role":"assistant","content":"fic"},"finish_reason":null}]}
+
+data: {"id":"gen-sse-early","choices":[{"index":0,"delta":{"content":"tional"},"finish_reason":null}]}
+
+data: {"id":"gen-sse-early","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
