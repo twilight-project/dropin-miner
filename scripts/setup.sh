@@ -64,15 +64,37 @@ describe_install(){
 }
 adopt_install(){
   src="$1"
+  mkdir -p "$HOME_DIR"
   for piece in wallet state credentials.json spool; do
     [ -e "$src/$piece" ] || continue
-    if [ -e "$HOME_DIR/$piece" ]; then
+    if [ ! -e "$HOME_DIR/$piece" ]; then
+      mv "$src/$piece" "$HOME_DIR/$piece"
+      echo "  adopted $piece"
+    elif [ -d "$src/$piece" ] && [ -d "$HOME_DIR/$piece" ]; then
+      # The installer makes empty state/ and spool/ before setup runs, so a
+      # directory already being there means nothing: merge, file by file,
+      # keeping any file the destination already has. One exception: an
+      # enrollment is the refresh token AND the DPoP key it is bound to,
+      # together. A state/ with a key but no token is an enrollment that
+      # never finished (a run that stopped at the token prompt made the key
+      # first); its key would shadow the real one and every request would
+      # fail "DPoP proof key does not match". Set it aside instead.
+      if [ "$piece" = state ] && [ -f "$src/state/refresh.token" ] && [ ! -f "$HOME_DIR/state/refresh.token" ] && [ -f "$HOME_DIR/state/dpop.key" ]; then
+        mv "$HOME_DIR/state/dpop.key" "$HOME_DIR/state/dpop.key.unenrolled-$(date +%Y%m%d%H%M%S)"
+        echo "  set aside a DPoP key from an unfinished enrollment; the enrolled one is used"
+      fi
+      n=0; kept=0
+      for f in "$src/$piece"/* "$src/$piece"/.[!.]*; do
+        [ -e "$f" ] || continue
+        b=$(basename "$f")
+        if [ -e "$HOME_DIR/$piece/$b" ]; then kept=$((kept+1)); continue; fi
+        mv "$f" "$HOME_DIR/$piece/$b"; n=$((n+1))
+      done
+      rmdir "$src/$piece" 2>/dev/null || true
+      echo "  adopted $piece ($n file(s)$([ $kept -gt 0 ] && echo ", $kept already present kept"))"
+    else
       echo "  keeping the $piece already in $HOME_DIR (not overwritten by $src/$piece)"
-      continue
     fi
-    mkdir -p "$HOME_DIR"
-    mv "$src/$piece" "$HOME_DIR/$piece"
-    echo "  adopted $piece"
   done
 }
 
