@@ -213,16 +213,16 @@ func TestDoctorVerdictsOverTheInputDomain(t *testing.T) {
 
 		{"nothing verified", func(f *doctorFacts) {
 			f.Activity = &auth.EpochActivity{VerifiedActivity: false}
-		}, "earning", verdictNo, "0 observations verified; 1 qualifies", "start"},
+		}, "earning", verdictNo, "0 observations verified; 1 qualifies", "search"},
 		{"verified but the AS says no", func(f *doctorFacts) {
 			f.Activity = &auth.EpochActivity{VerifiedActivity: false, VerifiedObservationCount: 3}
-		}, "earning", verdictNo, "3 observations verified", "start"},
+		}, "earning", verdictNo, "3 observations verified", "search"},
 		{"rejected observations are named", func(f *doctorFacts) {
 			f.Activity = &auth.EpochActivity{VerifiedActivity: true, VerifiedObservationCount: 1, RejectedObservationCount: 2}
 		}, "earning", verdictOK, "2 observations rejected", ""},
 		{"pending observations are named", func(f *doctorFacts) {
 			f.Activity = &auth.EpochActivity{VerifiedActivity: false, PendingObservationCount: 1}
-		}, "earning", verdictNo, "1 observation not yet verified", "start"},
+		}, "earning", verdictNo, "1 observation not yet verified", "search"},
 		{"nothing open to earn in", func(f *doctorFacts) { f.EpochKnown = false },
 			"earning", verdictNo, "no epoch is open", ""},
 		{"activity unavailable", func(f *doctorFacts) { f.ActivityErr = errors.New("503") },
