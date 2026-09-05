@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +255,7 @@ func TestHookLineageReadsTheSubagentsOwnTranscript(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"do it"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"spawning a subagent"}]}}`,
 	}, "\n"))
-	fs.files["/t/sess/subagents/agent-a1.jsonl"] = []byte(strings.Join([]string{
+	fs.files[filepath.Join("/t", "sess", "subagents", "agent-a1.jsonl")] = []byte(strings.Join([]string{
 		`{"type":"user","message":{"role":"user","content":"task"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"the subagent's own reasoning"}]}}`,
 	}, "\n"))
@@ -302,7 +303,7 @@ func TestHookWindowCountsExactlyOnePerCompactionAndSessionStartFlushes(t *testin
 	if got := hookWindowID(ops, hc, "s"); got != "2" {
 		t.Errorf("resume reset the generation: %q", got)
 	}
-	if _, ok := fs.files["/sessions/"+hookStateFile]; !ok {
+	if _, ok := fs.files[filepath.Join("/sessions", hookStateFile)]; !ok {
 		t.Errorf("window state not kept under the sessions dir: %v", keys(fs.files))
 	}
 }

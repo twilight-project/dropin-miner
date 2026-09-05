@@ -36,6 +36,11 @@ type fakeMachine struct {
 	terminal bool
 }
 
+// slash keys every path the same way on every OS: ops.paths joins with
+// the host separator, the tests write forward slashes, and Windows would
+// otherwise see two different files.
+func slash(p string) string { return filepath.ToSlash(p) }
+
 func newFakeMachine(onPath ...string) (*fakeMachine, agentOps) {
 	m := &fakeMachine{files: map[string][]byte{}, onPath: map[string]string{}}
 	for _, p := range onPath {
@@ -51,15 +56,16 @@ func newFakeMachine(onPath ...string) (*fakeMachine, agentOps) {
 		},
 		executable: func() (string, error) { return "/home/u/.tokendrop/bin/dropin-miner", nil },
 		readFile: func(p string) ([]byte, error) {
-			b, ok := m.files[p]
+			b, ok := m.files[slash(p)]
 			if !ok {
 				return nil, fs.ErrNotExist
 			}
 			return b, nil
 		},
-		writeFile: func(p string, b []byte, _ os.FileMode) error { m.files[p] = b; return nil },
+		writeFile: func(p string, b []byte, _ os.FileMode) error { m.files[slash(p)] = b; return nil },
 		mkdirAll:  func(string, os.FileMode) error { return nil },
 		stat: func(p string) (os.FileInfo, error) {
+			p = slash(p)
 			if _, ok := m.files[p]; ok {
 				return fakeFileInfo{name: filepath.Base(p)}, nil
 			}
@@ -71,6 +77,7 @@ func newFakeMachine(onPath ...string) (*fakeMachine, agentOps) {
 			return nil, fs.ErrNotExist
 		},
 		removeAll: func(p string) error {
+			p = slash(p)
 			m.removed = append(m.removed, p)
 			for f := range m.files {
 				if f == p || strings.HasPrefix(f, p+"/") {
@@ -109,6 +116,7 @@ func TestAgentsDryRunDetectsAgentsAndWritesNothing(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
+	out = filepath.ToSlash(out)
 	for _, want := range []string{"agents: Claude Code, Cursor", "skills/dropin-miner/SKILL.md", "settings.json", "hooks.json", "(dry run"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -128,7 +136,7 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}
 	skill := string(m.files["/home/u/.claude/skills/dropin-miner/SKILL.md"])
-	if !strings.Contains(skill, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`+testCfg+`" -format model`) || !strings.Contains(skill, "name: dropin-miner") {
+	if !strings.Contains(skill, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) || !strings.Contains(skill, `tokendrop.toml" -format model`) || !strings.Contains(skill, "name: dropin-miner") {
 		t.Errorf("skill:\n%s", skill)
 	}
 	var doc map[string]any
@@ -142,7 +150,7 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("existing PreToolUse group not preserved first: %v", pre)
 	}
 	ours := pre[1].(map[string]any)
-	if ours["matcher"] != "Bash" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `hook -config "`+testCfg+`" lineage`) {
+	if ours["matcher"] != "Bash" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `tokendrop.toml" lineage`) {
 		t.Errorf("our PreToolUse group: %v", ours)
 	}
 	for _, ev := range []string{"SessionStart", "PreCompact", "PostCompact", "Stop"} {

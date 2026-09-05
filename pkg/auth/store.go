@@ -58,7 +58,7 @@ func OpenStore(dir string) (*Store, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("auth: state dir is not a directory")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if posixModes && info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("auth: state dir is group/world-accessible (%04o); refusing", info.Mode().Perm())
 	}
 	return &Store{dir: dir}, nil
@@ -186,7 +186,7 @@ func (s *Store) readSecret(name string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("auth: %s is not a regular file; refusing", name)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if posixModes && info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("auth: %s is group/world-accessible (%04o); refusing mining startup", name, info.Mode().Perm())
 	}
 	raw, err := os.ReadFile(path) // #nosec G304 -- path is store-dir + fixed name

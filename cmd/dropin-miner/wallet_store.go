@@ -69,7 +69,7 @@ func openWalletDir(dir string, getenv func(string) string) (string, error) {
 	if !info.IsDir() {
 		return "", errors.New("wallet: path is not a directory")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if posixModes && info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("wallet: dir is group/world-accessible (%04o); refusing", info.Mode().Perm())
 	}
 	return dir, nil
