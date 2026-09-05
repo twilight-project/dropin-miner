@@ -40,7 +40,11 @@ the tool (what an agent runs):
              session hooks; run it by hand to see what is pending
              (-force asks the AS even if the last flush just did)
 
-enrollment (one-time, per participant): enroll -> payout -> join
+enrollment (one-time, per participant): enroll -> payout -> join -> login
+  login      store your sr- key for searches: reads it from stdin (or
+             -key-env VAR), checks it against the router without spending,
+             writes ~/.tokendrop/credentials.json owner-only. -show says
+             where a search would get its key; -forget removes the file
   enroll     obtain an authorization grant. Default is the device flow (a
              person approves in a browser); -assertion redeems an
              enrollment token from stdin and needs no browser at all
@@ -66,8 +70,9 @@ wallet (a reward address this installation controls):
 
 Every command takes -config <file>, falling back to TOKENDROP_CONFIG, then
 ./tokendrop.toml. The [mining] block names the AS, chain and slot; the
-[miner] block turns the drop-in miner on. TOKENDROP_API_KEY (your sr- key)
-must be in the environment of the shell the agent runs from.
+[miner] block turns the drop-in miner on. Searches take your sr- key from
+TOKENDROP_API_KEY if it is set, else from the file login wrote, else from
+OPENAI_API_KEY.
 `
 
 func main() {
@@ -88,6 +93,8 @@ func dispatch(name string, args []string) int {
 		return cmdHook(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "flush":
 		return cmdFlush(args, os.Stdout, os.Stderr, os.Getenv)
+	case "login":
+		return cmdLogin(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "enroll":
 		return cmdEnroll(args)
 	case "join":

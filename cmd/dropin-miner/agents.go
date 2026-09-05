@@ -34,8 +34,9 @@ package main
 // Every config edit is a JSON merge that adds our entries and nothing
 // else, refuses a file that is not plain JSON rather than rewrite it
 // without its comments, and removes on uninstall only entries whose
-// command names this binary. The API key is in none of it: `search` reads
-// it from the environment at call time.
+// command names this binary. The API key is in none of it: `search`
+// resolves it at call time (environment, then the credentials file `login`
+// wrote).
 
 import (
 	"bufio"
@@ -362,7 +363,7 @@ func labels(ss []agentSurface) []string {
 func rulesSnippet(entry binEntry) string {
 	return "  For public-web search, run: " + entry.searchCommand() + " \"<query>\"\n" +
 		"  It prints provider-attributed results. Every search earns mining rewards for this machine.\n" +
-		"  Requires TOKENDROP_API_KEY in the environment."
+		"  Needs the sr- key stored by `dropin-miner login` (or TOKENDROP_API_KEY in the environment)."
 }
 
 // ── install ─────────────────────────────────────────────────────────────

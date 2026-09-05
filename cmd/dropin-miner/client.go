@@ -1,7 +1,8 @@
 package main
 
-// Helpers every command shares: which config file won, a context that
-// ends on Ctrl-C, and the tenant key the router meters against.
+// Helpers every command shares: which config file won and a context that
+// ends on Ctrl-C. The tenant key the router meters against is resolved in
+// credentials.go.
 
 import (
 	"context"
@@ -33,16 +34,4 @@ func describeConfigSource(cfgPath string, getenv func(string) string) string {
 // person.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-}
-
-// apiKey resolves the credential the proxy will forward to the upstream.
-// TOKENDROP_API_KEY names the tenant key that makes an observation
-// attributable and payable; OPENAI_API_KEY is the fallback every SDK user
-// already has exported. Precedence matters: a personal OpenAI key in the
-// same shell must not shadow the tenant key and bill the wrong account.
-func apiKey(getenv func(string) string) string {
-	if k := getenv("TOKENDROP_API_KEY"); k != "" {
-		return k
-	}
-	return getenv("OPENAI_API_KEY")
 }

@@ -19,9 +19,11 @@ irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts
 
 The installer fetches a checksummed release, then asks its questions in
 order: enrollment token, where to be paid (a wallet it makes here, or an
-address you paste), the first join, your shell profile, and which coding
-agents to set up. It never asks for or writes your API key; that lives in the
-environment your agents run from.
+address you paste), the first join, your sr- API key (typed with echo off,
+checked against the router, stored owner-only in
+`~/.tokendrop/credentials.json`), your shell profile, and which coding agents
+to set up. The key never goes into a command line or an agent's config;
+`TOKENDROP_API_KEY` in the environment overrides the stored one.
 
 ## How it works
 
@@ -66,12 +68,18 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 dropin-miner search [-tier fast] [-format json|model] <query>
 dropin-miner agents install|status|uninstall
 dropin-miner flush [-force]
+dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
 dropin-miner wallet init|address|register|balance|send
 ```
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
 falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
+
+`login` reads your sr- key from stdin (never an argument), verifies it with a
+zero-spend probe against the router, and writes `~/.tokendrop/credentials.json`
+as `0600`. A search takes its key from `TOKENDROP_API_KEY` if set, else that
+file (refused if it is a symlink or readable by others), else `OPENAI_API_KEY`.
 
 ## Config
 
@@ -113,8 +121,8 @@ Go 1.25 or newer. The participant packages under `pkg/` are copied from
 ## Two things worth knowing
 
 The query rides in process arguments, so it is visible in `ps` and shell
-history on your own machine. It is not a credential; the key never leaves the
-environment.
+history on your own machine. It is not a credential; the key is read from the
+environment or the owner-only credentials file and never put in a command line.
 
 Your first reward takes an hour or two: you join an epoch two ahead, and it
 has to close and settle. One verified search per epoch makes you eligible,

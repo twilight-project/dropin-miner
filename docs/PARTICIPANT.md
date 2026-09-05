@@ -47,24 +47,30 @@ Setup asks, in order:
 |---|---|
 | **An enrollment token** | Generate it when asked, not before: it lasts 15 minutes and works once. `platform.nyks.dev → Mining → Slot 3 → Generate enrollment token` |
 | **Wallet, or your own address?** | The wallet prints its 24 words once. Have paper ready. |
+| **Your sr- API key** | Typed with echo off, checked against the router without spending, stored owner-only in `~/.tokendrop/credentials.json`. Press Enter to skip and run `dropin-miner login` later. |
 | **Add settings to your shell profile?** | Puts the binary on PATH and sets `TOKENDROP_CONFIG`. Saying no just means longer commands. |
 | **Set up the coding agents found here?** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
-
-Then export your key in the shell your agents run from. Setup never writes it
-anywhere:
-
-```bash
-export TOKENDROP_API_KEY=sr-…
-```
 
 Use a key from the **same account you enrolled with**. A key from a different
 account returns a clean 200 and earns nothing, with no error anywhere. That is
 the easiest mistake to make.
 
+To change or check the stored key later:
+
+```bash
+dropin-miner login          # paste a new key; replaces the stored one
+dropin-miner login -show    # where a search would get its key, masked
+dropin-miner login -forget  # remove the stored key
+```
+
+`TOKENDROP_API_KEY` in an agent's environment, when set, takes precedence over
+the stored key — useful for one shell on a second account.
+
 ## Then check
 
 ```bash
 dropin-miner payout show     # ACTIVE, and the address as the chain renders it
+dropin-miner login -show     # which key a search would use
 dropin-miner agents status   # which agents are set up
 dropin-miner doctor          # connected, enrolled, joined, paid, earning
 ```

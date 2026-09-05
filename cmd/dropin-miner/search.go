@@ -22,8 +22,9 @@ package main
 //
 // Two knowing trade-offs, documented rather than hidden: the query rides in
 // process arguments (visible in `ps` and shell history on the user's own
-// machine — it is not a credential; the key stays in the environment), and
-// a search with no hook around it has thinner lineage.
+// machine — it is not a credential; the key comes from the environment or
+// the owner-only credentials file, see credentials.go), and a search with
+// no hook around it has thinner lineage.
 
 import (
 	"bytes"
@@ -105,9 +106,13 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 		fmt.Fprintln(stderr, "dropin-miner: no router configured (miner.router_url or a [[provider]] upstream)")
 		return exitTransport
 	}
-	key := apiKey(getenv)
+	key, keySrc, err := resolveAPIKey(getenv, cfg.Miner)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitClientErr
+	}
 	if key == "" {
-		fmt.Fprintln(stderr, "dropin-miner: TOKENDROP_API_KEY is not set; the router needs your sr- key to meter the search")
+		fmt.Fprintln(stderr, "dropin-miner: no API key; the router needs your sr- key to meter the search. Store it once with: dropin-miner login   (or export TOKENDROP_API_KEY)")
 		return exitClientErr
 	}
 
@@ -208,6 +213,9 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 	case resp.StatusCode >= 500:
 		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s\n", resp.Status)
 		return exitServerErr
+	case resp.StatusCode == http.StatusUnauthorized:
+		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s — the router refused the key (from %s); store a valid one with: dropin-miner login\n", resp.Status, keySrc)
+		return exitClientErr
 	default:
 		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s\n", resp.Status)
 		return exitClientErr

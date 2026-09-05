@@ -87,8 +87,10 @@ Installed. Finish in this window, in order:
        dropin-miner payout set twilight1...
   3. dropin-miner join
   4. dropin-miner agents install
-  5. Set your sr- key for your agents:  setx TOKENDROP_API_KEY sr-...
-     then restart any open agent.
+  5. Store your sr- key for your agents:  dropin-miner login
+     (paste the key when asked; it is checked against the router and
+     written owner-only to $HomeDir\credentials.json — never put it on a
+     command line). Then restart any open agent.
 
 Cursor and Claude Code run shell commands through PowerShell or Git Bash;
 both find dropin-miner on PATH after the next sign-in.

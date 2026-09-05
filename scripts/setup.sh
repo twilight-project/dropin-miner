@@ -1,9 +1,9 @@
 #!/bin/sh
 # dropin-miner setup — everything after the binary, asked as it goes.
 #
-#   config, enrollment, where you get paid, the first join, your shell
-#   profile, your coding agents, and a first flush. No service: the miner
-#   runs inside your agents' tool calls and nowhere else.
+#   config, enrollment, where you get paid, the first join, your API key,
+#   your shell profile, your coding agents, and a first flush. No service:
+#   the miner runs inside your agents' tool calls and nowhere else.
 #
 # Env knobs (all optional):
 #   TOKENDROP_BIN        the dropin-miner binary (default: ./bin/dropin-miner, then PATH)
@@ -134,6 +134,37 @@ fi
 say "Joining the current target epoch"
 "$BIN" join -config "$CFG" || echo "(join did not succeed now; every flush retries it)"
 
+# ── 6b. your API key ─────────────────────────────────────────────────────────
+# The key never goes on a command line: it is handed to `login` through an
+# environment variable that lives only for that one process.
+say "Your API key"
+if [ -f "$HOME_DIR/credentials.json" ]; then
+  echo "A key is already stored in $HOME_DIR/credentials.json — leaving it."
+  echo "  to replace it: $BIN login -config $CFG"
+elif [ ! -t 0 ]; then
+  echo "Not an interactive shell — store the key later with: $BIN login -config $CFG"
+else
+  cat <<'MSG'
+Searches are metered against your sr-… key from platform.nyks.dev → Keys.
+Use a key from the SAME account you enrolled with; another account's key
+returns a clean 200 and earns nothing. It is checked against the router
+without spending and stored owner-only next to your other files.
+
+MSG
+  printf 'Paste your sr- key (Enter to skip): '
+  stty -echo 2>/dev/null || true
+  read -r KEY || KEY=""
+  stty echo 2>/dev/null || true
+  echo
+  if [ -n "$KEY" ]; then
+    DROPIN_SETUP_KEY="$KEY" "$BIN" login -key-env DROPIN_SETUP_KEY -config "$CFG" \
+      || echo "(not stored; when you have a good key: $BIN login -config $CFG)"
+  else
+    echo "Skipped. When you have a key: $BIN login -config $CFG"
+  fi
+  unset KEY
+fi
+
 # ── 7. shell profile ─────────────────────────────────────────────────────────
 BIN_DIR=$(cd "$(dirname "$BIN")" && pwd)
 START='# >>> dropin-miner >>>'
@@ -153,9 +184,9 @@ case "${SHELL:-}" in
 esac
 say "Shell environment"
 cat <<MSG
-Your agents need TOKENDROP_API_KEY (your sr-… key from platform.nyks.dev) in
-the shell they run from. Setup never writes that key anywhere. These lines
-make the other commands short:
+These lines make the other commands short. Your key is not among them: a
+search reads it from the stored credentials file (or TOKENDROP_API_KEY, if a
+shell exports one, which then wins):
 
 $(printf '%s\n' "$ENV_LINES" | sed 's/^/    /')
 MSG
@@ -212,10 +243,10 @@ cat <<MSG
 ──────────────────────────────────────────────────────────────────────────────
 Setup complete.
 
-1. Export your key in the shell your agents run from (setup did not):
-     export TOKENDROP_API_KEY=sr-…      # from platform.nyks.dev → Keys
-   Use a key from the SAME account you enrolled with; another account's key
-   returns a clean 200 and earns nothing.
+1. Your key: "${CMD}login -show$CFG_HINT" says which one a search would use.
+   If you skipped it above:  ${CMD}login$CFG_HINT   (pasted, never typed on a
+   command line). Use a key from the SAME account you enrolled with; another
+   account's key returns a clean 200 and earns nothing.
 
 2. Your payout address: $PAYOUT
    It is in force NOW — "${CMD}payout show$CFG_HINT" says ACTIVE. Changing it
