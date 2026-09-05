@@ -309,7 +309,7 @@ func doctorEarningCheck(f doctorFacts) doctorCheck {
 		c.Verdict = verdictNo
 		c.Detail = fmt.Sprintf("epoch %d — %s verified; %d qualifies",
 			f.Epoch, plural(f.Activity.VerifiedObservationCount, "observation"), auth.MinVerifiedObservations)
-		c.Fix = "the daemon has to be running and agent traffic has to go through it: dropin-miner start"
+		c.Fix = "searches have to go through it: run one from an agent, or by hand: dropin-miner search -format model \"<query>\"  (then: dropin-miner flush)"
 	}
 	if n := f.Activity.PendingObservationCount; n > 0 {
 		c.Detail += fmt.Sprintf("; %s not yet verified", plural(n, "observation"))
