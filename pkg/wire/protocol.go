@@ -82,6 +82,22 @@ type DiscoveryDocument struct {
 
 	ProviderVerificationEndpointTemplate string `json:"provider_verification_endpoint_template"`
 
+	// EnrollmentAuthorizationTemplate is where the participant authorizes
+	// at the PROVIDER, carrying a literal {code_challenge} the client
+	// substitutes (§37.2). OPTIONAL, and therefore not in Validate, on the
+	// same terms as CurrentTargetEndpointTemplate: absence means this AS
+	// does not offer that enrollment door, never that the client should
+	// assemble the URL itself.
+	//
+	// It is the ONE advertised value in this document that does not live on
+	// the AS's own origin, and the same-origin rule is not punctured for it
+	// — it is exempt because it is DISPLAYED and never fetched, which is a
+	// different kind of thing from every endpoint that rule was written
+	// for. What constrains it instead is a compiled-in per-profile host
+	// allowlist held by the client, because a metadata document that could
+	// nominate its own trust anchor would be checking itself.
+	EnrollmentAuthorizationTemplate string `json:"enrollment_authorization_template,omitempty"`
+
 	SourceProfiles []string `json:"source_profiles"`
 
 	MaxObservationBytes      int64 `json:"max_observation_bytes"`

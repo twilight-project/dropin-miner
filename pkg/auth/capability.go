@@ -133,7 +133,7 @@ func (c *CapabilityClient) exchange(ctx context.Context, targetEpoch uint64) (*s
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := (&http.Client{Transport: c.mining.oauth.transport, Timeout: 30 * time.Second}).Do(req)
+	resp, err := newCredentialClient(c.mining.oauth.transport).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("auth: capability exchange: %w", err)
 	}

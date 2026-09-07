@@ -25,6 +25,8 @@
 
   "provider_verification_endpoint_template": "https://as.example.com/v1/provider-verification/{provider}",
 
+  "enrollment_authorization_template": "https://openrouter.ai/auth?code_challenge={code_challenge}&code_challenge_method=S256",
+
   "source_profiles": [
     "OPENROUTER_V1",
     "SEARCH_ROUTER_V1"
