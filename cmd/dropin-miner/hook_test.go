@@ -123,7 +123,7 @@ func decodeBridgeFromCommand(t *testing.T, cmd string) *traceEnvelope {
 	return env
 }
 
-func TestIsSearchCommandRecognisesOursAndNothingElse(t *testing.T) {
+func TestIsSearchCommandRecognizesOursAndNothingElse(t *testing.T) {
 	yes := []string{
 		`dropin-miner search "how do ports work"`,
 		`"/Users/x y/.tokendrop/bin/dropin-miner" search -config "/a b/c.toml" -format model "q"`,
@@ -143,12 +143,12 @@ func TestIsSearchCommandRecognisesOursAndNothingElse(t *testing.T) {
 	}
 	for _, c := range yes {
 		if !isSearchCommand(c) {
-			t.Errorf("not recognised: %q", c)
+			t.Errorf("not recognized: %q", c)
 		}
 	}
 	for _, c := range no {
 		if isSearchCommand(c) {
-			t.Errorf("wrongly recognised: %q", c)
+			t.Errorf("wrongly recognized: %q", c)
 		}
 	}
 }

@@ -15,13 +15,6 @@ import (
 	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
 
-// capabilityRenewInterval is how often the driver ticks: it asks the AS
-// what is open, joins that target if it has not, and renews the
-// capability. CapabilityClient.Ensure is a no-op while the cached one is
-// still comfortably valid, so this only needs to be well under the
-// capability lifetime (≤15 min) — not tuned to it.
-const capabilityRenewInterval = time.Minute
-
 // driverTickTimeout bounds one tick's AS calls. A hung AS costs this
 // loop one tick; it may never cost the loop itself.
 const driverTickTimeout = 30 * time.Second
@@ -172,24 +165,6 @@ func newEpochDriver(mining *auth.MiningClient, caps *auth.CapabilityClient, pinn
 		joined:   make([]uint64, 0, joinedMemory),
 		notes:    make(map[string]note, 3),
 		repeat:   noteRepeat,
-	}
-}
-
-// run ticks until ctx is done. There is no backoff and no failure count:
-// a broken AS must not wedge the loop, so every tick starts clean and
-// the loop simply keeps asking until the AS comes back.
-func (d *epochDriver) run(ctx context.Context) {
-	ticker := time.NewTicker(capabilityRenewInterval)
-	defer ticker.Stop()
-
-	d.tick(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			d.tick(ctx)
-		}
 	}
 }
 

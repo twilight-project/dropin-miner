@@ -179,7 +179,7 @@ func TestFlushStampRoundTrip(t *testing.T) {
 		t.Fatalf("stamp: %+v", got)
 	}
 	var raw map[string]any
-	b, _ := os.ReadFile(path)
+	b, _ := os.ReadFile(path) // #nosec G304 -- reading back the temp file this same test just wrote
 	_ = json.Unmarshal(b, &raw)
 	if raw["v"] != float64(1) {
 		t.Errorf("stamp lacks a version: %v", raw)

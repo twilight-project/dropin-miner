@@ -55,7 +55,7 @@ const (
 	credentialsFile    = "credentials.json"
 	credentialsVersion = 1
 
-	apiKeyEnv    = "TOKENDROP_API_KEY"
+	apiKeyEnv    = "TOKENDROP_API_KEY" // #nosec G101 -- an env var NAME, not a credential value
 	openAIKeyEnv = "OPENAI_API_KEY"
 
 	// loginProbeTimeout bounds the verification round trip; a router that
@@ -151,7 +151,7 @@ func writeCredentials(path string, c credentials) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := json.MarshalIndent(c, "", "  ") // #nosec G117 -- this IS the credential's one legitimate persisted home: ~/.tokendrop/credentials.json, written 0600 below
 	if err != nil {
 		return err
 	}
