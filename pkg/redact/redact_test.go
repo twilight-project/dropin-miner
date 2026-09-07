@@ -58,6 +58,39 @@ func TestCredentialPatternsInValues(t *testing.T) {
 	mustNotContain(t, out, fakeKey, "0000synthetic0000")
 }
 
+// Batch-1 T3: the shapes redact.String missed before the trace path wired
+// it in — sr- (this system's own router key), a dashless sk- key (no
+// second word segment between the prefix and the random run), a GitHub
+// token, an AWS access key id, a bare JWT, an email address, and a home
+// directory path. Each assembled at runtime so no credential-shaped
+// literal exists in source (gosec G101).
+func TestNewCredentialShapesAreScrubbed(t *testing.T) {
+	srKey := "sr-" + strings.Repeat("c", 24) + "canary"
+	dashlessSK := "sk" + "-" + strings.Repeat("1", 32)
+	ghToken := "ghp_" + strings.Repeat("a", 36)
+	awsKey := "AKIA" + strings.Repeat("Q", 16)
+	jwt := "eyJ" + strings.Repeat("h", 10) + "." + strings.Repeat("p", 10) + "." + strings.Repeat("s", 10)
+	email := "quasarai" + "@" + "protonmail.com"
+	homePath := "/Users/" + "realname" + "/.aws/credentials"
+
+	for name, secret := range map[string]string{
+		"sr- key": srKey, "dashless sk- key": dashlessSK, "github token": ghToken,
+		"aws key": awsKey, "jwt": jwt, "email": email,
+	} {
+		if out := String("value: " + secret + " end"); strings.Contains(out, secret) {
+			t.Errorf("%s not scrubbed: %q", name, out)
+		}
+	}
+
+	out := String("file: " + homePath)
+	if strings.Contains(out, homePath) {
+		t.Errorf("home path not scrubbed: %q", out)
+	}
+	if !strings.Contains(out, ".aws/credentials") {
+		t.Errorf("home path scrubbing ate more than the username: %q", out)
+	}
+}
+
 func TestURLUserinfoScrubbed(t *testing.T) {
 	out := logAndCapture(t, func(l *slog.Logger) {
 		l.Info("dial", "url", "https://user:pass@openrouter.ai/api")

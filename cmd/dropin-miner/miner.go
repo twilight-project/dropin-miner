@@ -37,6 +37,7 @@ import (
 
 	"github.com/twilight-project/dropin-miner/pkg/config"
 	"github.com/twilight-project/dropin-miner/pkg/observe"
+	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
 
 const (
@@ -213,7 +214,11 @@ func loadLineage(ops hookOps, path string) (*lineageFile, bool) {
 
 // saveLineage writes atomically (temp + rename) and 0600. The history is
 // capped by the same rule the envelope obeys, so a sidecar can never grow
-// past what one envelope may carry.
+// past what one envelope may carry, and scrubbed by the same rule capTrace
+// applies to the wire — this is the second of the two chokepoints, the one
+// that also covers hookCursor's afterAgentThought/afterAgentResponse,
+// which write straight into a lineageFile and never pass through a
+// traceEnvelope or capTrace at all.
 func saveLineage(ops hookOps, path string, sc *lineageFile, now time.Time) error {
 	sc.V = lineageVersion
 	sc.UpdatedAt = now
@@ -221,6 +226,7 @@ func saveLineage(ops hookOps, path string, sc *lineageFile, now time.Time) error
 		if len(sc.History[i].Text) > traceHistoryCap {
 			sc.History[i].Text = sc.History[i].Text[len(sc.History[i].Text)-traceHistoryCap:]
 		}
+		sc.History[i].Text = redact.String(sc.History[i].Text)
 	}
 	if err := ops.mkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
