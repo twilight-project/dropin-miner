@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 )
@@ -103,7 +102,7 @@ func (m *MiningClient) authedRequest(ctx context.Context, method, endpoint strin
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "DPoP "+tok.AccessToken)
-	resp, err := (&http.Client{Transport: m.oauth.transport, Timeout: 30 * time.Second}).Do(req)
+	resp, err := newCredentialClient(m.oauth.transport).Do(req)
 	if err != nil {
 		return nil, err
 	}
