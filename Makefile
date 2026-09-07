@@ -21,12 +21,10 @@ fmt:
 	$(GO) run golang.org/x/tools/cmd/goimports@v0.30.0 -local github.com/twilight-project/dropin-miner -w .
 
 # Matches the CI golangci-lint job (config in .golangci.yml; version pinned in ci.yml).
-# Not yet part of `verify` — see AGENTS.md and the commit that adds it there.
 lint:
 	golangci-lint run
 
 # Dependency vulnerability scan (matches CI; pinned there).
-# Not yet part of `verify` — see AGENTS.md and the commit that adds it there.
 vuln:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
 
@@ -40,4 +38,4 @@ cross:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -o /dev/null ./... || exit 1; \
 	done; done
 
-verify: build test race vet tidy cross
+verify: build test race vet lint vuln tidy cross
