@@ -2,6 +2,8 @@ module github.com/twilight-project/dropin-miner
 
 go 1.25.0
 
+toolchain go1.25.3
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/conductorone/dpop v0.2.7
