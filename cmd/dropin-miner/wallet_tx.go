@@ -206,7 +206,14 @@ func newRPCClient(base string) *rpcClient {
 	return &rpcClient{
 		base: strings.TrimRight(base, "/"),
 		// Never consult HTTP_PROXY for a node endpoint the operator named.
-		http: &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 30 * time.Second},
+		// CheckRedirect: no bearer credential here, but a broadcast body
+		// (a signed transaction) would still be replayed to whatever host a
+		// 307/308 named, on the operator-configured chain node.
+		http: &http.Client{
+			Transport:     &http.Transport{Proxy: nil},
+			Timeout:       30 * time.Second,
+			CheckRedirect: auth.SameOriginRedirects,
+		},
 	}
 }
 

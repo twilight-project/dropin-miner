@@ -47,6 +47,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
@@ -223,7 +224,10 @@ func probeKey(ctx context.Context, routerURL, key string) (probeOutcome, string,
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", searchUserAgent+"/"+strings.TrimPrefix(buildVersion(), "v"))
 	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := (&http.Client{Timeout: loginProbeTimeout}).Do(req)
+	// CheckRedirect: this probe exists to verify the key before it is ever
+	// stored, and it carries that key in Authorization to do it — the same
+	// reasoning as search.go's client, and it is the same key.
+	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects}).Do(req)
 	if err != nil {
 		return probeUnavailable, "", err
 	}

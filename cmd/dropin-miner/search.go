@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
@@ -130,7 +131,14 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 	}
 
 	endpoint := strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search"
-	client := &http.Client{Timeout: 0}
+	// CheckRedirect: this request carries the participant's sr- key in
+	// Authorization. net/http's default follows up to ten redirects and
+	// replays both the header and the body on a 307/308 — a compromised or
+	// misconfigured router redirecting this request would hand the key to
+	// whatever host it named. Same-origin bounded, not refused outright: a
+	// router legitimately redirecting within its own origin must not break
+	// every search.
+	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects}
 	do := func() (*http.Response, error) {
 		payload, err := json.Marshal(body)
 		if err != nil {
