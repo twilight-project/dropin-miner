@@ -1,11 +1,12 @@
 package main
 
 // The import-boundary tests: the package graph IS the argument for
-// AGENTS.md's invariant 8, so a test fails loudly when someone adds the
-// wrong import. Ported from tokendrop-proxy's cmd/tokendrop/boundary_test.go
-// (goList/moduleRoot, the machinery), stating this repo's own two
-// boundaries rather than the proxy's — this module has no
-// internal/forward, internal/observe, or internal/mining/sign to guard.
+// AGENTS.md's import-boundary invariants, so a test fails loudly when
+// someone adds the wrong import. Ported from tokendrop-proxy's
+// cmd/tokendrop/boundary_test.go (goList/moduleRoot, the machinery),
+// stating this repo's own boundaries rather than the proxy's — this
+// module has no internal/forward, internal/observe, or
+// internal/mining/sign to guard.
 
 import (
 	"fmt"
@@ -55,6 +56,30 @@ func TestPkgDoesNotImportCmd(t *testing.T) {
 	for _, dep := range goList(t, "./pkg/...") {
 		if dep == forbidden {
 			t.Fatalf("pkg/ reaches %s: pkg/ must not import the cmd/ wrapper (AGENTS.md invariant 8)", forbidden)
+		}
+	}
+}
+
+// TestNoChainImportsAnywhere is AGENTS.md invariant 9. Ported from the
+// proxy's cmd/tokendrop/boundary_test.go rule 1, adapted to this module:
+// twilight-core is the same forbidden chain application, and the
+// Cosmos/CometBFT graph is banned for the same reason it is there — a
+// lean binary shipped to users must not pull the SDK's module tree.
+// wallet_tx.go hand-encodes the six protobuf messages a bank send needs
+// instead of importing cosmos-sdk to build them; this is what proves
+// that decision holds, not just documents it.
+func TestNoChainImportsAnywhere(t *testing.T) {
+	banned := []string{
+		"github.com/twilight-project/twilight-core",
+		"cosmossdk.io/",
+		"github.com/cosmos/",
+		"github.com/cometbft/",
+	}
+	for _, dep := range goList(t, "./...") {
+		for _, b := range banned {
+			if strings.HasPrefix(dep, b) {
+				t.Errorf("banned dependency in module graph: %s", dep)
+			}
 		}
 	}
 }
