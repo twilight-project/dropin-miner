@@ -71,6 +71,10 @@ govulncheck.
 8. **`pkg/` MUST NOT import `cmd/`.** Keeping `pkg/` wrapper-agnostic is what makes it importable and
    is why this repo owns it and can hand it back to the proxy by import, not copy. Enforced by
    `boundary_test.go`.
+9. **The chain SDK module tree is banned.** The client hand-builds the protobuf messages a payout
+   needs rather than importing the Cosmos SDK — a lean binary shipped to users must not pull the
+   SDK's module tree. `go.mod` carries no cosmos-sdk/cometbft dependency. Enforced by
+   `TestNoChainImportsAnywhere`.
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
@@ -102,6 +106,9 @@ govulncheck.
   (connection-counted, not request-counted). Not import-expressible — `flush.go`/`driver.go`
   legitimately import `net/http` to reach the AS, so there is no package to deny — which is why it
   lives as a behavioral test rather than a second depguard rule.
+- No package in the module graph reaches the chain application or the Cosmos/CometBFT SDK
+  (invariant 9) — `TestNoChainImportsAnywhere`. `wallet_tx.go` hand-encodes the six protobuf
+  messages a bank send needs instead.
 - State YOUR forbidden edges here and nowhere else. Don't import another repo's edges; a boundary with
   no argument you can state should not exist.
 
