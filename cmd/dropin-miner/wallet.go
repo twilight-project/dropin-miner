@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 )
 
@@ -94,7 +96,7 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitUsage
 	}
 
-	passphrase, code := walletPassphrase(stdin, stderr, getenv, true)
+	passphrase, code := walletPassphrase(stdin, bufio.NewReader(stdin), stderr, getenv, true)
 	if code != 0 {
 		return code
 	}
@@ -219,23 +221,57 @@ func walletRegister(args []string, stdout, stderr io.Writer, getenv func(string)
 	return 0
 }
 
+// readPassphraseLine reads one passphrase line. Echo is suppressed via
+// term.ReadPassword when raw is a terminal — a raw fd read, bypassing br
+// entirely. That is safe specifically because a terminal in canonical mode
+// delivers one line per read: at the point this runs interactively, the
+// user has not typed the passphrase yet, so br (used for a caller's own
+// prior prompt, if any) never buffered past it.
+//
+// A pipe or test buffer is NOT a terminal, and MUST read the next line
+// from br rather than raw directly. Reading raw fresh here would reopen
+// the swallow bug this exists to close: bufio.Reader's first Read() on a
+// pipe can consume far more than one line at once (unlike a TTY), so a
+// second, independent reader over the same underlying stdin never sees
+// what the first already buffered past its line.
+//
+// Unlike readSecret's key line, a passphrase MAY contain spaces, so only
+// the trailing newline is trimmed here — the value itself is not
+// validated the way secretFromLine validates a key.
+func readPassphraseLine(raw io.Reader, br *bufio.Reader) (string, error) {
+	if f, ok := raw.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		data, err := term.ReadPassword(int(f.Fd()))
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	line, err := br.ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
 // walletPassphrase resolves the keyfile passphrase: the env var when set,
-// else read from stdin — twice on create, once otherwise. Terminal echo is
-// not suppressed (that needs a terminal-control dependency this repo does
-// not carry); the provider command set the precedent of reading secrets
-// plainly from stdin, and the env var is the non-interactive path.
-func walletPassphrase(stdin io.Reader, stderr io.Writer, getenv func(string) string, create bool) (string, int) {
+// else read from stdin — twice on create, once otherwise. Echo is
+// suppressed on a real terminal (readPassphraseLine, the same
+// term.ReadPassword primitive readSecret uses for the sr- key); a pipe
+// reads from br, which the caller must share with any prompt of its own
+// that already read from the same stdin (walletSend's "type yes to send"
+// confirmation) — two independent bufio.Readers over one stdin is the bug
+// this signature exists to make impossible to reintroduce.
+func walletPassphrase(stdin io.Reader, br *bufio.Reader, stderr io.Writer, getenv func(string) string, create bool) (string, int) {
 	if p := getenv(walletPassphraseEnv); p != "" {
 		return p, 0
 	}
-	r := bufio.NewReader(stdin)
 	fmt.Fprint(stderr, "keyfile passphrase: ")
-	first, err := r.ReadString('\n')
+	first, err := readPassphraseLine(stdin, br)
+	fmt.Fprintln(stderr)
 	if err != nil && first == "" {
-		fmt.Fprintln(stderr, "\ndropin-miner: no passphrase provided (set "+walletPassphraseEnv+" for non-interactive use)")
+		fmt.Fprintln(stderr, "dropin-miner: no passphrase provided (set "+walletPassphraseEnv+" for non-interactive use)")
 		return "", exitUsage
 	}
-	first = strings.TrimRight(first, "\r\n")
 	if first == "" {
 		fmt.Fprintln(stderr, "dropin-miner: an empty passphrase would store the key effectively unencrypted; refusing")
 		return "", exitUsage
@@ -244,8 +280,9 @@ func walletPassphrase(stdin io.Reader, stderr io.Writer, getenv func(string) str
 		return first, 0
 	}
 	fmt.Fprint(stderr, "again: ")
-	second, _ := r.ReadString('\n')
-	if strings.TrimRight(second, "\r\n") != first {
+	second, _ := readPassphraseLine(stdin, br)
+	fmt.Fprintln(stderr)
+	if second != first {
 		fmt.Fprintln(stderr, "dropin-miner: passphrases do not match")
 		return "", exitUsage
 	}
@@ -384,6 +421,13 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitTransport
 	}
 
+	// One reader, shared with walletPassphrase below: the confirmation and
+	// the passphrase are two reads off the SAME stdin, and a pipe (a
+	// script that cannot use a terminal) delivers both in one chunk. A
+	// second, independent bufio.Reader here would silently lose whatever
+	// this one buffered past the "yes\n" line — the exact bug T4 exists
+	// to close.
+	br := bufio.NewReader(stdin)
 	if !*yes {
 		fmt.Fprintf(stdout, "send %s %s\n", *amount, *denom)
 		fmt.Fprintf(stdout, "  from:  %s\n", sc.Address)
@@ -394,14 +438,14 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			fmt.Fprintf(stdout, "  memo:  %s (public, on chain forever)\n", *memo)
 		}
 		fmt.Fprint(stdout, "\nThis cannot be undone. Type yes to send: ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
+		line, _ := br.ReadString('\n')
 		if strings.TrimSpace(line) != "yes" {
 			fmt.Fprintln(stdout, "canceled; nothing was signed or sent")
 			return exitOK
 		}
 	}
 
-	passphrase, code := walletPassphrase(stdin, stderr, getenv, false)
+	passphrase, code := walletPassphrase(stdin, br, stderr, getenv, false)
 	if code != 0 {
 		return code
 	}
