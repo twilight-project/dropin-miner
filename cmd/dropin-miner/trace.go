@@ -20,6 +20,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+
+	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
 
 const (
@@ -93,8 +95,19 @@ func decodeTraceBridge(s string) *traceEnvelope {
 }
 
 // capTrace enforces the size discipline: truncate history text (keeping the
-// END — the words nearest the search are the ones that explain it), then
-// drop history, then drop the envelope. Returns nil when nothing may ride.
+// END — the words nearest the search are the ones that explain it), scrub
+// it, then drop history, then drop the envelope. Returns nil when nothing
+// may ride.
+//
+// The scrub is here rather than at the point history text is first read
+// (currentAssistantText, hookCursor's afterAgent* handlers) because every
+// one of those paths reassigns env.History and then reaches capTrace before
+// the envelope is used for anything — encoded into the bridge, marshaled
+// into the search body, or copied into the lineage sidecar (hookLineage
+// writes l.History = env.History AFTER this call, not before). One
+// chokepoint downstream of every construction site is proof it always
+// runs, where scrubbing at each call site would be proof only that this
+// author remembered to.
 func capTrace(env *traceEnvelope) *traceEnvelope {
 	if env == nil {
 		return nil
@@ -103,6 +116,7 @@ func capTrace(env *traceEnvelope) *traceEnvelope {
 		if len(env.History[i].Text) > traceHistoryCap {
 			env.History[i].Text = env.History[i].Text[len(env.History[i].Text)-traceHistoryCap:]
 		}
+		env.History[i].Text = redact.String(env.History[i].Text)
 	}
 	if b, err := json.Marshal(env); err == nil && len(b) <= traceEnvelopeCap {
 		return env

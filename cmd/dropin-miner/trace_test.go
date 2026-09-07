@@ -76,6 +76,29 @@ func TestCapTraceTruncatesKeepingTheEndThenDropsHistoryThenTheEnvelope(t *testin
 	}
 }
 
+// TestCapTraceRedactsHistoryText is a direct, isolated check of capTrace's
+// own contribution to Batch-1 T3 — called on a bare envelope, nothing else
+// in the pipeline involved. This matters: an end-to-end test that goes
+// through hookLineage also writes the lineage sidecar via saveLineage
+// first, and saveLineage's in-place redaction mutates the same backing
+// array env.History already points to (l.History = env.History aliases
+// it), so that kind of test can pass even with capTrace's own redaction
+// disabled — a vacuous pass for THIS chokepoint specifically, caught by
+// injection-checking it before trusting the end-to-end test alone.
+func TestCapTraceRedactsHistoryText(t *testing.T) {
+	secret := "sk-or-v1-" + strings.Repeat("a", 24) + "SECRET"
+	env := capTrace(&traceEnvelope{V: traceVersion, History: []traceHistory{{Role: "assistant", Text: "key: " + secret}}})
+	if env == nil || len(env.History) != 1 {
+		t.Fatalf("history lost: %+v", env)
+	}
+	if strings.Contains(env.History[0].Text, secret) {
+		t.Fatalf("capTrace did not redact: %q", env.History[0].Text)
+	}
+	if !strings.Contains(env.History[0].Text, "[REDACTED]") {
+		t.Fatalf("expected a scrub marker: %q", env.History[0].Text)
+	}
+}
+
 func envelopeLen(t *testing.T, env *traceEnvelope) int {
 	t.Helper()
 	b, _ := json.Marshal(env)

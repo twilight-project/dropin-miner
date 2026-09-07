@@ -31,20 +31,48 @@ var keyDenylist = map[string]struct{}{
 }
 
 var (
-	// Provider key material (sk-or-v1-…, sk-ant-…). The trailing run is
-	// swallowed so no fragment of the key survives.
-	skPattern = regexp.MustCompile(`sk-[a-z]+-\S*`)
+	// Provider/router key material: sk-or-v1-…, sk-ant-…, a dashless
+	// vendor key (sk- directly followed by the random run, no second
+	// word segment), and this system's own sr- router key. The trailing
+	// run is swallowed so no fragment of the key survives.
+	skPattern = regexp.MustCompile(`\b(?:sk|sr)-[A-Za-z0-9_-]{6,}`)
 	// Bearer values in free text (error strings, net/http log lines).
 	bearerPattern = regexp.MustCompile(`(?i)\bbearer\s+\S+`)
-	// scheme://user:pass@ userinfo embedded in a URL.
+	// scheme://user:pass@ userinfo embedded in a URL. The match consumes
+	// the trailing "@" and the replacement does not reintroduce one —
+	// deliberately, so the placeholder can never read as
+	// "[REDACTED]@host", which is itself email-shaped and would
+	// re-trigger emailPattern below on a second pass over the output.
 	userinfoPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
+	// GitHub tokens: the short-prefix family (ghp_/gho_/ghu_/ghs_/ghr_)
+	// and fine-grained personal access tokens (github_pat_…).
+	githubTokenPattern = regexp.MustCompile(`\bgh[opsur]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b`)
+	// AWS access key ids: a fixed shape, AKIA + 16 uppercase alnums.
+	awsKeyPattern = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	// A bare JWT (three base64url segments): a token pasted into free
+	// text or logged directly, not only one riding after "Bearer ".
+	jwtPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b`)
+	// Email addresses.
+	emailPattern = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+	// A home-directory path: only the username segment identifies
+	// anyone, so only it is masked — the rest of the path (often useful
+	// for debugging, e.g. which file under it) survives.
+	homePathPattern = regexp.MustCompile(`(/Users/|/home/)[^/\s]+`)
 )
 
-// String scrubs credential-shaped substrings from free text.
+// String scrubs credential-shaped substrings from free text. Order matters:
+// userinfoPattern runs before emailPattern for the reason noted on
+// userinfoPattern above — swap them and a scrubbed URL's host can vanish on
+// the email pass.
 func String(s string) string {
+	s = userinfoPattern.ReplaceAllString(s, "${1}"+placeholder)
 	s = skPattern.ReplaceAllString(s, placeholder)
+	s = githubTokenPattern.ReplaceAllString(s, placeholder)
+	s = awsKeyPattern.ReplaceAllString(s, placeholder)
+	s = jwtPattern.ReplaceAllString(s, placeholder)
 	s = bearerPattern.ReplaceAllString(s, "Bearer "+placeholder)
-	s = userinfoPattern.ReplaceAllString(s, "${1}"+placeholder+"@")
+	s = emailPattern.ReplaceAllString(s, placeholder)
+	s = homePathPattern.ReplaceAllString(s, "${1}"+placeholder)
 	return s
 }
 
