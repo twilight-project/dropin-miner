@@ -1,13 +1,16 @@
 # Changelog
 
 No format has been settled on for this file yet beyond "readable by the person cutting
-the next release" — see `docs/RELEASING.md` for how a release actually gets cut, and
-note that `goreleaser`'s auto-generated changelog (from `git log` between tags) already
-covers the mechanical commit-by-commit record. What belongs here is the handful of
-things a participant or operator should be told in plain language, that a list of
-commit subjects wouldn't make obvious on its own.
+the next release." A separate PR adds `docs/RELEASING.md`, describing how a release
+actually gets cut; not yet in this tree as of this commit, so not linked here directly.
+`goreleaser`'s auto-generated changelog (from `git log` between tags) already covers
+the mechanical commit-by-commit record — what belongs here is the handful of things a
+participant or operator should be told in plain language, that a list of commit
+subjects wouldn't make obvious on its own.
 
 ## Unreleased
+
+### In this PR's own diff
 
 - **Fresh installs now default to the public testnet.** `setup.sh`, `install.ps1`,
   `README.md`, and `npm/README.md` point new installs at `twilight-testnet-1` /
@@ -19,8 +22,17 @@ commit subjects wouldn't make obvious on its own.
   signed payouts differs accordingly. The search router (`router-api.nyks.dev`) is
   unchanged either way.
 
-- **`miner.router_url` now refuses a routable `http://` value at config load**,
-  matching the rule `mining.as_url` already had — every search sends the
+### Landing separately, via PR #1 — not in this PR's diff
+
+Collected here because this branch is the more plausible next tag point, not because
+this PR's diff contains them. If this merges before PR #1 does, these two are not yet
+true of `main`; if PR #1 merges first (more likely, given its review is further along),
+they will already be live before this PR lands, and these entries describe what's
+already true by the time anyone reads this file off `main`. Either way: verify against
+`main` at the point of actually cutting a release, don't take this file's word for it.
+
+- **`miner.router_url` will refuse a routable `http://` value at config load**,
+  matching the rule `mining.as_url` already has — every search sends the
   participant's sr- key in `Authorization` to `router_url`, so this closes the same
   cleartext-credential exposure the `as_url` rule exists for. The loopback carve-out
   is an exact match (`isLoopbackHost`): `127.0.0.1`/`localhost`/`::1` are fine over
@@ -31,13 +43,13 @@ commit subjects wouldn't make obvious on its own.
   call) — an installation whose `router_url` this newly refuses will find lineage and
   tracing quietly stop, with nothing printed, rather than erroring.
 
-- **Trace redaction (`pkg/redact`) patterns narrowed and one output format changed.**
-  Fixed measured false positives (CSS classes and BCP-47 locale tags shaped like
-  `sr-`/`sk-` keys, generic cache keys, ssh/git remote targets, URL path segments,
+- **Trace redaction (`pkg/redact`) patterns will be narrowed and one output format
+  changed.** Fixes measured false positives (CSS classes and BCP-47 locale tags shaped
+  like `sr-`/`sk-` keys, generic cache keys, ssh/git remote targets, URL path segments,
   ordinary prose containing the word "bearer") that were being redacted out of trace
   text. Separately, the URL-userinfo replacement no longer reintroduces a trailing
-  `@` after its placeholder (`user:pass@host` now becomes `[REDACTED]host`, not
-  `[REDACTED]@host`). `pkg/redact` is the shared implementation `AGENTS.md` names as
+  `@` after its placeholder (`user:pass@host` becomes `[REDACTED]host`, not
+  `[REDACTED]@host`). `pkg/redact` is the shared implementation PR #1 establishes as
   eventually consumed by `tokendrop-proxy` by import — this format change will also
   change the proxy's own redacted log output whenever that import happens, not just
   this client's.
