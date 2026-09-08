@@ -25,11 +25,10 @@ subjects wouldn't make obvious on its own.
 ### Landing separately, via PR #1 — not in this PR's diff
 
 Collected here because this branch is the more plausible next tag point, not because
-this PR's diff contains them. If this merges before PR #1 does, these two are not yet
-true of `main`; if PR #1 merges first (more likely, given its review is further along),
-they will already be live before this PR lands, and these entries describe what's
-already true by the time anyone reads this file off `main`. Either way: verify against
-`main` at the point of actually cutting a release, don't take this file's word for it.
+this PR's diff contains them. This PR is a dependent of #1: it must not merge before
+#1 does. Given that ordering, both entries are already true of `main` by the time this
+PR lands — #1 merges first, then this one merges on top of a `main` that already has
+them.
 
 - **`miner.router_url` will refuse a routable `http://` value at config load**,
   matching the rule `mining.as_url` already has — every search sends the
