@@ -9,15 +9,13 @@
 #   TOKENDROP_BIN        the dropin-miner binary (default: ./bin/dropin-miner, then PATH)
 #   TOKENDROP_HOME       state directory (default ~/.tokendrop — shared with a proxy if you run one)
 #   TOKENDROP_SLOT / TOKENDROP_CHAIN / TOKENDROP_AS_URL / TOKENDROP_ROUTER_URL
-#                        the Slot to mine for (defaults: 3, twilight-testnet-1,
-#                        https://rewards.nyks.dev, https://router-api.nyks.dev)
+#                        the Slot to mine for (defaults: 3, twilight-devnet-3,
+#                        https://minis.nyks.dev, https://router-api.nyks.dev)
 set -eu
 
 SLOT="${TOKENDROP_SLOT:-3}"
-# Current target: the public testnet (twilight-testnet-1). Change these four
-# lines (here + install.ps1 + README.md + npm/README.md) at the mainnet cutover.
-CHAIN="${TOKENDROP_CHAIN:-twilight-testnet-1}"
-AS_URL="${TOKENDROP_AS_URL:-https://rewards.nyks.dev}"
+CHAIN="${TOKENDROP_CHAIN:-twilight-devnet-3}"
+AS_URL="${TOKENDROP_AS_URL:-https://minis.nyks.dev}"
 ROUTER="${TOKENDROP_ROUTER_URL:-https://router-api.nyks.dev}"
 HOME_DIR="${TOKENDROP_HOME:-$HOME/.tokendrop}"
 
