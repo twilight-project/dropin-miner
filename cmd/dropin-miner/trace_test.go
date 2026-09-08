@@ -99,6 +99,33 @@ func TestCapTraceRedactsHistoryText(t *testing.T) {
 	}
 }
 
+// TestCapTraceRedactsBeforeTruncatingSoABoundaryStraddleDoesNotSurvive is
+// PR #1 review: a secret positioned so a truncate-THEN-redact order would
+// cut off its identifying prefix (sk-/sr-) at the traceHistoryCap
+// boundary, leaving an unmatchable, unredacted bare tail. Constructed so
+// the cut point (the number of leading bytes truncation removes) falls
+// partway through the secret rather than before or after it.
+func TestCapTraceRedactsBeforeTruncatingSoABoundaryStraddleDoesNotSurvive(t *testing.T) {
+	secret := "sk-or-v1-" + strings.Repeat("a", 24) + "TAILMARKER"
+	tailFillerLen := traceHistoryCap - len(secret)/2
+	text := secret + strings.Repeat("x", tailFillerLen)
+	if len(text) <= traceHistoryCap {
+		t.Fatalf("test setup: text (%d bytes) must exceed traceHistoryCap (%d)", len(text), traceHistoryCap)
+	}
+	cutRemoves := len(text) - traceHistoryCap
+	if cutRemoves <= 0 || cutRemoves >= len(secret) {
+		t.Fatalf("test setup: cut point (%d) does not straddle the secret (len %d) — fix the fixture, not the assertion", cutRemoves, len(secret))
+	}
+
+	env := capTrace(&traceEnvelope{V: traceVersion, History: []traceHistory{{Role: "assistant", Text: text}}})
+	if env == nil || len(env.History) != 1 {
+		t.Fatalf("history lost entirely: %+v", env)
+	}
+	if strings.Contains(env.History[0].Text, "TAILMARKER") {
+		t.Errorf("a fragment of the secret (its identifying prefix truncated away) survived the boundary straddle unredacted (%d bytes in the result)", len(env.History[0].Text))
+	}
+}
+
 func envelopeLen(t *testing.T, env *traceEnvelope) int {
 	t.Helper()
 	b, _ := json.Marshal(env)

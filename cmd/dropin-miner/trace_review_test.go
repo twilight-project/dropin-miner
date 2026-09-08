@@ -51,7 +51,15 @@ func extractBridge(t *testing.T, cmd string) string {
 // remove — but every credential-shaped substring in it is gone by the
 // time the router sees it. End to end: transcript -> hook bridge ->
 // /v1/search body, the real production path, not a direct call to
-// redact.String.
+// redact.TraceText.
+//
+// traceReviewBearer is deliberately NOT in the "must be absent" lists
+// below, and is instead asserted present: PR #1 review measured
+// "bearer tokens expire" (ordinary prose, not a credential) getting
+// redacted, and the fix was to drop bearerPattern from the trace path
+// specifically (redact.TraceText), keeping it only for redact.String's
+// log path. See pkg/redact's TestBearerProseSurvivesTraceTextButNotString
+// for the isolated version of this same claim.
 func TestCompletionSecretsAreRedactedBeforeTheWire(t *testing.T) {
 	assistantText := "I read your config. The key is " + traceReviewKey +
 		", auth header " + traceReviewBearer + ", db " + traceReviewDBURL +
@@ -92,10 +100,13 @@ func TestCompletionSecretsAreRedactedBeforeTheWire(t *testing.T) {
 	if env == nil || len(env.History) != 1 || !strings.Contains(env.History[0].Text, "[REDACTED]") {
 		t.Fatalf("hook did not carry (redacted) completion text: %+v", env)
 	}
-	for _, secret := range []string{traceReviewKey, traceReviewBearer, traceReviewEmail, traceReviewHome} {
+	for _, secret := range []string{traceReviewKey, traceReviewEmail, traceReviewHome} {
 		if strings.Contains(env.History[0].Text, secret) {
 			t.Errorf("capTrace did not scrub %q from the bridge envelope", secret)
 		}
+	}
+	if !strings.Contains(env.History[0].Text, traceReviewBearer) {
+		t.Errorf("bearer-shaped prose was redacted in the trace path; it should survive (see TraceText's doc)")
 	}
 
 	// The wire: feed that bridge to `search` and capture the body sent.
@@ -106,10 +117,13 @@ func TestCompletionSecretsAreRedactedBeforeTheWire(t *testing.T) {
 	_, sent := fr.last(t)
 	body := string(sent)
 
-	for _, secret := range []string{traceReviewKey, traceReviewBearer, traceReviewDBURL, traceReviewEmail, traceReviewHome} {
+	for _, secret := range []string{traceReviewKey, traceReviewDBURL, traceReviewEmail, traceReviewHome} {
 		if strings.Contains(body, secret) {
 			t.Errorf("secret %q reached the wire unredacted, body:\n%s", secret, body)
 		}
+	}
+	if !strings.Contains(body, traceReviewBearer) {
+		t.Errorf("bearer-shaped prose did not reach the wire; TraceText should not touch it")
 	}
 }
 

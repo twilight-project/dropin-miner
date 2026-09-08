@@ -213,20 +213,21 @@ func loadLineage(ops hookOps, path string) (*lineageFile, bool) {
 }
 
 // saveLineage writes atomically (temp + rename) and 0600. The history is
-// capped by the same rule the envelope obeys, so a sidecar can never grow
-// past what one envelope may carry, and scrubbed by the same rule capTrace
-// applies to the wire — this is the second of the two chokepoints, the one
-// that also covers hookCursor's afterAgentThought/afterAgentResponse,
-// which write straight into a lineageFile and never pass through a
-// traceEnvelope or capTrace at all.
+// scrubbed then capped, same order and same reasoning as capTrace (PR #1
+// review: scrub-then-cut, not cut-then-scrub, or a secret straddling the
+// truncation boundary can survive as an unrecognizable bare tail) — this
+// is the second of the two chokepoints, the one that also covers
+// hookCursor's afterAgentThought/afterAgentResponse, which write straight
+// into a lineageFile and never pass through a traceEnvelope or capTrace at
+// all. TraceText, not String: see its doc.
 func saveLineage(ops hookOps, path string, sc *lineageFile, now time.Time) error {
 	sc.V = lineageVersion
 	sc.UpdatedAt = now
 	for i := range sc.History {
+		sc.History[i].Text = redact.TraceText(sc.History[i].Text)
 		if len(sc.History[i].Text) > traceHistoryCap {
 			sc.History[i].Text = sc.History[i].Text[len(sc.History[i].Text)-traceHistoryCap:]
 		}
-		sc.History[i].Text = redact.String(sc.History[i].Text)
 	}
 	if err := ops.mkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

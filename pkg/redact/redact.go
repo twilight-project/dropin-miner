@@ -32,11 +32,17 @@ var keyDenylist = map[string]struct{}{
 
 var (
 	// Provider/router key material: sk-or-v1-…, sk-ant-…, a dashless
-	// vendor key (sk- directly followed by the random run, no second
-	// word segment), and this system's own sr- router key. The trailing
-	// run is swallowed so no fragment of the key survives.
-	skPattern = regexp.MustCompile(`\b(?:sk|sr)-[A-Za-z0-9_-]{6,}`)
+	// vendor key, and this system's own sr- router key. Requires >=16
+	// chars after the prefix-dash, not just 6: a short threshold reads
+	// ordinary hyphenated identifiers as keys — sr-only (a CSS
+	// accessibility class), sr-Latn-RS (a BCP-47 locale tag),
+	// sk-cache-entry-42 (a plain cache key) all measured as false
+	// positives at 6 and are excluded at 16. Every real key shape this
+	// pattern exists for — vendor keys, this system's own sr- key — runs
+	// well past 16 in practice.
+	skPattern = regexp.MustCompile(`\b(?:sk|sr)-[A-Za-z0-9_-]{16,}`)
 	// Bearer values in free text (error strings, net/http log lines).
+	// String applies this; TraceText does not — see TraceText.
 	bearerPattern = regexp.MustCompile(`(?i)\bbearer\s+\S+`)
 	// scheme://user:pass@ userinfo embedded in a URL. The match consumes
 	// the trailing "@" and the replacement does not reintroduce one —
@@ -52,28 +58,156 @@ var (
 	// A bare JWT (three base64url segments): a token pasted into free
 	// text or logged directly, not only one riding after "Bearer ".
 	jwtPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b`)
-	// Email addresses.
+	// Email addresses. Applied via redactEmails, not a bare ReplaceAll —
+	// see there for why: the shape is identical to an ssh/git remote
+	// target, and a naive match redacts those too.
 	emailPattern = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
 	// A home-directory path: only the username segment identifies
 	// anyone, so only it is masked — the rest of the path (often useful
-	// for debugging, e.g. which file under it) survives.
+	// for debugging, e.g. which file under it) survives. Applied via
+	// redactHomePaths, not a bare ReplaceAll — see there for why.
 	homePathPattern = regexp.MustCompile(`(/Users/|/home/)[^/\s]+`)
+	// The Windows sibling: C:\Users\<name>\... . This repo ships Windows
+	// binaries; the Unix-only pattern above missed this entirely.
+	windowsHomePathPattern = regexp.MustCompile(`(?i)([A-Z]:\\Users\\)[^\\\s]+`)
 )
 
-// String scrubs credential-shaped substrings from free text. Order matters:
-// userinfoPattern runs before emailPattern for the reason noted on
-// userinfoPattern above — swap them and a scrubbed URL's host can vanish on
-// the email pass.
+// remoteAccessVerbs precede an ssh/scp/rsync/sftp destination that is
+// shaped exactly like an email address (user@host) but is not one —
+// "ssh deploy@prod.example.com" measured as a false positive. Checked
+// against the token immediately before the match, case-insensitively.
+var remoteAccessVerbs = []string{"ssh", "scp", "rsync", "sftp"}
+
+// String scrubs credential-shaped substrings from free text — the log path.
+// Order matters: userinfoPattern runs before the email pass, for the reason
+// noted on userinfoPattern above.
 func String(s string) string {
+	s = scrubCommon(s)
+	s = bearerPattern.ReplaceAllString(s, "Bearer "+placeholder)
+	s = redactEmails(s)
+	s = redactHomePaths(s)
+	return s
+}
+
+// TraceText scrubs assistant-authored trajectory text before it leaves the
+// machine (trace.go's capTrace, miner.go's saveLineage) — everything String
+// does EXCEPT bearerPattern. "bearer" measured as a false positive here in
+// a way it is not for logs: ordinary prose about tokens ("bearer tokens
+// expire soon") is common in a model's visible narration and is exactly
+// the trajectory data the product exists to collect, whereas a log line
+// is far more likely to actually contain a header value. A real
+// Authorization: Bearer credential is still caught here if it has a
+// recognizable shape (sk-/sr-/JWT/AWS/GitHub); only the generic
+// "bearer <word>" catch-all is skipped.
+func TraceText(s string) string {
+	s = scrubCommon(s)
+	s = redactEmails(s)
+	s = redactHomePaths(s)
+	return s
+}
+
+// scrubCommon is the part of the pipeline String and TraceText share.
+func scrubCommon(s string) string {
 	s = userinfoPattern.ReplaceAllString(s, "${1}"+placeholder)
 	s = skPattern.ReplaceAllString(s, placeholder)
 	s = githubTokenPattern.ReplaceAllString(s, placeholder)
 	s = awsKeyPattern.ReplaceAllString(s, placeholder)
 	s = jwtPattern.ReplaceAllString(s, placeholder)
-	s = bearerPattern.ReplaceAllString(s, "Bearer "+placeholder)
-	s = emailPattern.ReplaceAllString(s, placeholder)
-	s = homePathPattern.ReplaceAllString(s, "${1}"+placeholder)
 	return s
+}
+
+// redactEmails applies emailPattern, but skips a match that looks like a
+// remote-access target rather than an email address — the two are
+// syntactically identical (local@domain.tld), and measured false
+// positives covered both shapes context can rule out:
+//
+//   - immediately followed by ':' — git's SCP-like remote shorthand
+//     (git@github.com:owner/repo.git) or an explicit port
+//     (user@host:2222). A real email is never directly followed by a
+//     colon in ordinary prose.
+//   - immediately preceded by ssh/scp/rsync/sftp — "ssh deploy@host.com"
+//     is a command, not contact information.
+//
+// Neither check is airtight (an email genuinely ending a sentence right
+// before a colon, or "contact ssh@example.com", would slip through this
+// heuristic in the direction of NOT redacting) — but the alternative measured
+// on real assistant text was redacting git remotes and ssh targets wholesale,
+// which is worse for a corpus this is trying to preserve.
+func redactEmails(s string) string {
+	locs := emailPattern.FindAllStringIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		if end < len(s) && s[end] == ':' {
+			continue
+		}
+		if looksLikeRemoteTarget(s[:start]) {
+			continue
+		}
+		b.WriteString(s[last:start])
+		b.WriteString(placeholder)
+		last = end
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// looksLikeRemoteTarget reports whether before ends with a remote-access
+// verb immediately adjacent to where a match starts (only whitespace
+// between) — "ssh deploy@..." qualifies, "contact ssh@..." does not,
+// since "contact" sits between "ssh" and nothing there.
+func looksLikeRemoteTarget(before string) bool {
+	trimmed := strings.ToLower(strings.TrimRight(before, " \t"))
+	for _, verb := range remoteAccessVerbs {
+		if strings.HasSuffix(trimmed, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactHomePaths applies homePathPattern and windowsHomePathPattern, but
+// skips a Unix match immediately preceded by a domain-like character
+// (letter, digit, or '.') — https://example.com/home/page measured as a
+// false positive: "/home/" there is a URL path segment, not a filesystem
+// path, and the character right before it ('m', part of ".com") is exactly
+// what a real filesystem path never has immediately before it (a path
+// starts at whitespace, a quote, '=', ':', or the beginning of the
+// string). The Windows pattern needs no such check: "C:\Users\" does not
+// occur as a URL path segment.
+func redactHomePaths(s string) string {
+	s = windowsHomePathPattern.ReplaceAllString(s, "${1}"+placeholder)
+
+	// Submatch indices, not just the whole-match indices: group 1 is
+	// "/Users/" or "/home/", which the replacement keeps verbatim while
+	// masking only what follows it (the username).
+	matches := homePathPattern.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		prefixStart, prefixEnd := m[2], m[3]
+		if start > 0 && isDomainChar(s[start-1]) {
+			continue
+		}
+		b.WriteString(s[last:start])
+		b.WriteString(s[prefixStart:prefixEnd])
+		b.WriteString(placeholder)
+		last = end
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+func isDomainChar(c byte) bool {
+	return c == '.' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // Error returns an error whose text has been scrubbed. The original error is
