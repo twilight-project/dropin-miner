@@ -706,7 +706,7 @@ func (r *rawConfig) finishMining() (Mining, error) {
 	// not a move — but a config that loads and then fails on the first AS call
 	// contradicts this package's own contract: unsafe states are rejected at
 	// load, not warned about later. Every token, DPoP proof and observation
-	// this proxy sends to the AS would otherwise cross the wire in the clear
+	// this client sends to the AS would otherwise cross the wire in the clear
 	// on a routable plain-http host.
 	//
 	// The loopback carve-out is deliberate and is what makes local development

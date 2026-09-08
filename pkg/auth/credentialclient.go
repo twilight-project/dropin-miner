@@ -71,17 +71,16 @@ func newCredentialClient(rt http.RoundTripper) *http.Client {
 // carries. TestEveryHTTPClientInTheModuleSetsARedirectPolicy enforces that
 // module-wide; this is the thing to install.
 //
-// Exported because the clients that need it are not all in this package. The
-// composition root talks to the local listener and to a chain node, and both
-// have their own timeout and transport reasoning that a shared CONSTRUCTOR
-// would flatten — cmd/tokendrop/client.go deliberately has no overall timeout
-// because a finite one silently caps generation length, and the chain client
-// sets Proxy: nil for a node endpoint the operator named. So what travels is
-// the policy, not the client.
-//
-// (If internal/forward or internal/observe ever need a client, they may not
-// import this package — the boundary tests forbid it — and the policy will
-// need a stdlib-only home. Nothing there constructs one today.)
+// Exported because the clients that need it are not all in this package.
+// cmd/dropin-miner has two of its own that carry a credential outside
+// pkg/auth entirely — search.go's router client and credentials.go's login
+// probe, both bearing the participant's sr- key — plus wallet_tx.go's chain
+// RPC client, which carries no bearer credential but still relays a signed
+// transaction. Each keeps its own timeout/transport reasoning (search.go:
+// no overall timeout, since one silently caps how long a search may run;
+// wallet_tx.go: Proxy: nil, for a node endpoint the operator named) that a
+// shared constructor would flatten. So what travels here is the policy, not
+// the client.
 func SameOriginRedirects(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxCredentialRedirects {
 		return errors.New("auth: too many redirects on a credential-bearing request")

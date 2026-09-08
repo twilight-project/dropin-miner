@@ -57,9 +57,9 @@ govulncheck.
 5. **Never assemble or call an unadvertised URL.** Endpoints come from the discovery document; the
    AS origin is **configured, not discovered**; service-document endpoints are same-origin checked; an
    off-origin provider-authorization template is refused unless on the compiled `providerhosts`
-   allowlist. `as_url` is https-or-loopback, enforced at config load. `router_url` is not yet — it
-   currently accepts a routable plain-http host — which is a known, tracked gap (Batch-1), not a
-   license to add a second one.
+   allowlist. `as_url` and `router_url` are both https-or-loopback, enforced at config load (T2b) —
+   every search sends the participant's sr- key in `Authorization` to `router_url`, the same
+   cleartext-credential exposure `as_url`'s rule closes.
 6. **Strict for the AS wire, permissive for the provider response.** AS-facing types conform to the
    frozen, checksum-verified fixtures. The provider **response** shape is not frozen and is decoded
    permissively (no `DisallowUnknownFields`) on purpose — we own the AS contract, not the provider's
@@ -115,7 +115,9 @@ govulncheck.
 ## Conventions
 - Prose over bullet-soup in docs: state the rule, then the reason.
 - Commits are **single-purpose**; the message carries the reasoning — what was rejected and why. **No
-  `Co-Authored-By` or `Claude-Session` trailers.** Merges are `--no-ff`, subject `merge <branch>: <phrase>`,
-  with a real body.
+  `Co-Authored-By` or `Claude-Session` trailers**, as of this file existing — a handful of commits from
+  before it did (the earliest pkg/ resync work) still carry them under the attribution convention active
+  at the time. Not rewritten retroactively; not a license to add more. Merges are `--no-ff`, subject
+  `merge <branch>: <phrase>`, with a real body.
 - Keep diffs scoped. **Don't copy a rule you can't explain** — an inherited rule without its argument is
   one the next person deletes.

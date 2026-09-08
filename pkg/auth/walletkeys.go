@@ -3,7 +3,7 @@ package auth
 // Wallet key material: BIP39 mnemonic, BIP32 derivation on the Cosmos
 // path, the twilight bech32 address, and the encrypted keyfile.
 //
-// This lives in internal/auth because that is the ADR-0010 boundary: the
+// This lives in pkg/auth because that is the ADR-0010 boundary: the
 // one package permitted to import security libraries, behind an audited
 // surface the composition root reaches through. The curve implementation
 // (decred/dcrd/dcrec/secp256k1) joins the admitted set with the same
