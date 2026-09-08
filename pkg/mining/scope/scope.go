@@ -1,9 +1,10 @@
-// Package scope holds the Participation Context the forwarding path
-// snapshots at request start (contract §4.2, §32). It is deliberately
-// tiny and dependency-free: `internal/forward` may import it — the only
-// mining package it may ever reach — so this package must never import
-// anything from the auth or mining planes, and its read path must be
-// O(1), lock-free, and allocation-free.
+// Package scope holds the Participation Context a mining-plane pass
+// snapshots at capability time (contract §4.2, §32). It is deliberately
+// tiny and dependency-free — no forwarding path to isolate it from here
+// (dropin-miner has none; cmd/dropin-miner is the sole importer, via
+// driver.go/flush.go) — so this package must never import anything from
+// the auth or mining planes, and its read path must be O(1), lock-free,
+// and allocation-free.
 package scope
 
 import (

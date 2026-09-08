@@ -104,9 +104,11 @@ func Build(obs *observe.Observation, clientRecordID string) (*wire.ProviderObser
 // sourceProfileFor names the wire source profile for an observed response
 // shape.
 //
-// The mapping is by ROUTE, decided upstream in internal/forward from the
-// provider route table — /v1/search is a search-router exchange by
-// definition. It is deliberately not inferred from the response body: a
+// The mapping is by ROUTE, decided upstream by the caller — in
+// cmd/dropin-miner, intakeRecord.observation() hardcodes
+// observe.ProfileSearchRouter, because the search command only ever calls
+// /v1/search, a search-router exchange by definition. It is deliberately
+// not inferred from the response body: a
 // payload shape is evidence about a payload, and source_profile is a claim
 // about which provider's vocabulary produced the identifier the AS will
 // resolve. Guessing that wrong sends a request id to be looked up as a

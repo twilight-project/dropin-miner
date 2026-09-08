@@ -58,8 +58,8 @@ upstream = "https://router-api.nyks.dev"
 
 [mining]
 enabled   = true
-as_url    = "https://rewards.nyks.dev"
-chain_id  = "twilight-testnet-1"
+as_url    = "https://minis.nyks.dev"
+chain_id  = "twilight-devnet-3"
 slot_id   = 3
 state_dir = "$($HomeDir -replace '\\','\\')\\state"
 spool_dir = "$($HomeDir -replace '\\','\\')\\spool"
