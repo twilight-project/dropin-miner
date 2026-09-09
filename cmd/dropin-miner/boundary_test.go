@@ -173,3 +173,35 @@ func isHTTPClientLiteral(e ast.Expr) bool {
 	pkg, ok := sel.X.(*ast.Ident)
 	return ok && pkg.Name == "http" && sel.Sel.Name == "Client"
 }
+
+// TestConnectAndMiningNeverImportOSExec is invariant 11 (agent
+// onboarding design §6): the client never launches a process from the
+// connect path — the claim URL is printed, never opened. Scoped to
+// connect.go and mining.go specifically, not the module: os/exec is
+// legitimately imported elsewhere (detach_unix.go's spawnDetached is
+// the one real process spawn in this codebase, which search.go's
+// startFlush/startConnectResume both call into — importing os, not
+// os/exec, themselves) and by this very file, to shell out to `go list`
+// for the test above.
+func TestConnectAndMiningNeverImportOSExec(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	checked := 0
+	for _, name := range []string{"connect.go", "mining.go"} {
+		path := filepath.Join(root, "cmd", "dropin-miner", name)
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		checked++
+		for _, imp := range file.Imports {
+			if imp.Path.Value == `"os/exec"` {
+				t.Errorf("%s imports os/exec: the connect path must never launch a process; "+
+					"the claim URL is printed, never opened", name)
+			}
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d files, want 2 (connect.go, mining.go) — this test is no longer looking at anything", checked)
+	}
+}

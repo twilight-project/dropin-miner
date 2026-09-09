@@ -57,19 +57,29 @@ type searchOps struct {
 	// spawnFlush starts the detached flush after a served search; nil
 	// means "do not" (tests, or -no-flush).
 	spawnFlush func(cfgPath string) error
-	now        func() time.Time
+	// spawnConnectResume starts the detached connect -resume (agent
+	// onboarding design §5.5's "next invocation of anything" — in
+	// practice, search: the one path an agent invokes routinely). Called
+	// after every served search, independent of spawnFlush/-no-flush and
+	// of [mining]/[miner] being configured at all — a search-only
+	// unclaimed participant has neither. shouldResume gates it on a
+	// cheap local disk check first, so this never fires when there is
+	// nothing to resume.
+	spawnConnectResume func(cfgPath string) error
+	now                func() time.Time
 	// hook is the filesystem the lineage file is read and bumped through.
 	hook hookOps
 }
 
 func realSearchOps() searchOps {
 	return searchOps{
-		getppid:    os.Getppid,
-		hostname:   os.Hostname,
-		getwd:      os.Getwd,
-		spawnFlush: startFlush,
-		now:        time.Now,
-		hook:       realHookOps(),
+		getppid:            os.Getppid,
+		hostname:           os.Hostname,
+		getwd:              os.Getwd,
+		spawnFlush:         startFlush,
+		spawnConnectResume: startConnectResume,
+		now:                time.Now,
+		hook:               realHookOps(),
 	}
 }
 
@@ -202,6 +212,16 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 				_ = ops.spawnFlush(*cfgPath) // best effort; the next search or session flushes it
 			}
 		}
+	}
+
+	// Independent of cfg.Miner.Enabled/-no-flush above: a search-only
+	// unclaimed participant has neither [mining] nor [miner] configured
+	// at all, and still needs the claim to resolve eventually. shouldResume
+	// is a cheap local disk check (agent onboarding design §5.5) — it
+	// costs nothing and spawns nothing when there is no stored
+	// registration to resume.
+	if ops.spawnConnectResume != nil && shouldResume(cfg.Mining.StateDir) {
+		_ = ops.spawnConnectResume(*cfgPath) // best effort; the next search resumes it if this one could not even start
 	}
 
 	switch *format {

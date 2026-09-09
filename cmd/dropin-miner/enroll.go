@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -342,6 +343,8 @@ func cmdStatus(args []string) int {
 	ctx, cancel := operatorContext(time.Minute)
 	defer cancel()
 
+	printAgentIdentityStatus(args, os.Stdout, os.Stderr, os.Getenv)
+
 	_, mining, m, code := miningClients(ctx, args, "status")
 	if code != 0 {
 		return code
@@ -377,6 +380,68 @@ func cmdStatus(args []string) int {
 	}
 	printQueue(m)
 	return 0
+}
+
+// printAgentIdentityStatus reports the agent-onboarding identity this
+// installation has, if any (agent onboarding design §5.5: "status —
+// unclaimed | claimed (scopes) | enrolled (slot, payout address)").
+//
+// Deliberately separate from the miningClients() call below it: that
+// one requires [mining] to be enabled and configured, which a
+// search-only unclaimed participant has no reason to have. This prints
+// first and unconditionally, then whatever follows is the existing
+// AS-facing report, unchanged.
+func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv func(string) string) {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cfgPath := fs.String("config", "", "path to TOML config file")
+	if err := fs.Parse(args); err != nil {
+		return // the real parse, in miningClients below, reports the usage error
+	}
+	cfg, _, err := loadConfig(*cfgPath, getenv)
+	if err != nil {
+		return // ditto: miningClients below reports this config error
+	}
+	store, err := auth.OpenStore(cfg.Mining.StateDir)
+	if err != nil {
+		return
+	}
+	reg, ok, err := store.LoadAgentRegistration()
+	if err != nil || !ok {
+		return // never ran connect: nothing to report here
+	}
+
+	switch reg.Status {
+	case "unclaimed":
+		fmt.Fprintf(stdout, "agent:  unclaimed — claim at %s\n", reg.ClaimURL)
+	case "expired":
+		fmt.Fprintln(stdout, "agent:  expired — run `dropin-miner connect` again for a new registration")
+	case "claimed":
+		fmt.Fprintf(stdout, "agent:  claimed (scopes: %s)\n", strings.Join(reg.Scopes, ", "))
+		if reg.LastEnrollmentSlot != "" {
+			address, hasAddr, aerr := store.LoadPayoutAddress()
+			switch {
+			case aerr == nil && hasAddr:
+				fmt.Fprintf(stdout, "        enrolled on %s, payout address %s\n", reg.LastEnrollmentSlot, address)
+			default:
+				fmt.Fprintf(stdout, "        enrolled on %s, no payout address on file yet\n", reg.LastEnrollmentSlot)
+			}
+		} else if hasScope(reg.Scopes, "mining") {
+			if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
+				fmt.Fprintln(stdout, "        mining scope granted, but mining.enabled = false locally; not enrolling")
+			} else if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
+				fmt.Fprintln(stdout, "        mining scope granted, but this installation's [mining] block names no "+
+					"authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true")
+			} else if _, hasAddr, _ := store.LoadPayoutAddress(); !hasAddr {
+				fmt.Fprintln(stdout, "        mining enabled, no wallet yet (no terminal was available at setup) — "+
+					"run `dropin-miner mining enable` at a terminal, or set mining.payout_address")
+			} else {
+				fmt.Fprintln(stdout, "        mining scope granted; enrollment pending the next `search` or `connect`")
+			}
+		}
+	default:
+		fmt.Fprintf(stderr, "agent:  unrecognized status %q from a previous poll\n", reg.Status)
+	}
 }
 
 // printQueue reports the local backlog.
