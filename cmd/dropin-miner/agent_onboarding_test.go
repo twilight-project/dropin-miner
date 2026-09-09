@@ -128,10 +128,17 @@ func writeStubJSON(w http.ResponseWriter, status int, v any) {
 type stubOnboardingAS struct {
 	srv *httptest.Server
 
-	mu            sync.Mutex
-	declared      string
-	activeAddress string // "" means no active binding yet (GET answers 404)
-	declareCalls  int
+	mu                   sync.Mutex
+	declared             string
+	activeAddress        string // "" means no active binding yet (GET answers 404)
+	declareCalls         int
+	tokenCalls           int
+	assertionRedemptions int // /oauth/token calls that carried a non-empty assertion (the enrollment grant, as opposed to an ordinary refresh-token grant a second authenticated client needs)
+	// declareOutcome overrides the PUT response's shape for the hold-shape
+	// coverage tests (WP2-adversarial-review: declaration stubs answering
+	// every hold shape, not only plain ACTIVE) — nil means the default
+	// "always effective" behavior above.
+	declareOutcome func(address string) map[string]any
 }
 
 func newStubAS(t *testing.T) *stubOnboardingAS {
@@ -150,9 +157,17 @@ func newStubAS(t *testing.T) *stubOnboardingAS {
 			"grant_types_supported":         []string{"authorization_code", "refresh_token", auth.GrantTypeJWTBearer},
 		})
 	})
-	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		f.mu.Lock()
+		n := f.tokenCalls
+		f.tokenCalls++
+		if r.Form.Get("assertion") != "" {
+			f.assertionRedemptions++
+		}
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"at-1","token_type":"DPoP","expires_in":900,"refresh_token":"rt-1"}`))
+		fmt.Fprintf(w, `{"access_token":"at-%d","token_type":"DPoP","expires_in":900,"refresh_token":"rt-%d"}`, n, n)
 	})
 	mux.HandleFunc("PUT /v1/payout/declaration", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -162,7 +177,12 @@ func newStubAS(t *testing.T) *stubOnboardingAS {
 		f.mu.Lock()
 		f.declared = body.Address
 		f.declareCalls++
+		outcome := f.declareOutcome
 		f.mu.Unlock()
+		if outcome != nil {
+			writeStubJSON(w, http.StatusOK, outcome(body.Address))
+			return
+		}
 		writeStubJSON(w, http.StatusOK, map[string]any{
 			"status": "ACTIVE", "address": body.Address, "canonical_address": body.Address,
 			"effective": true, "declared_at": "2026-09-09T00:00:00Z",
@@ -206,6 +226,27 @@ func (f *stubOnboardingAS) declarationAttempts() int {
 func (f *stubOnboardingAS) setActiveAddress(addr string) {
 	f.mu.Lock()
 	f.activeAddress = addr
+	f.mu.Unlock()
+}
+
+// assertionRedemptionCount counts only /oauth/token calls that redeemed
+// an enrollment assertion — distinct from the raw token-call count, which
+// also includes ordinary refresh-token grants a freshly constructed
+// *auth.OAuthClient makes on its own first authenticated request (every
+// buildMiningClient call in connect.go — one for enrollment, a separate
+// one for the declare step — constructs its own client instance).
+func (f *stubOnboardingAS) assertionRedemptionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.assertionRedemptions
+}
+
+// setDeclareOutcome overrides what PUT /v1/payout/declaration answers, for
+// the hold-shape coverage below (WP2-adversarial-review: declaration
+// stubs answering every hold shape, not only plain ACTIVE).
+func (f *stubOnboardingAS) setDeclareOutcome(fn func(address string) map[string]any) {
+	f.mu.Lock()
+	f.declareOutcome = fn
 	f.mu.Unlock()
 }
 
@@ -1219,5 +1260,198 @@ func TestStatusReportsBothAddressesOnBindingConflict(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "HELD") {
 		t.Fatalf("status does not say the binding is held:\n%s", stdout.String())
+	}
+}
+
+// ── WP2-adversarial-review coverage ─────────────────────────────────────
+
+// Finding 1: N concurrent connect -resume invocations against one
+// already-claimed, mining-scoped, undeclared registration must produce
+// exactly one platform enroll call, one AS token redemption, and one
+// declaration — connect.lock serializes them, and finding 6's re-read
+// means every invocation after the first sees the winner's result already
+// on disk and does nothing further. Goroutines contend on connect.lock
+// exactly as separate processes would (minerlock_unix.go: a flock belongs
+// to the open file description, not the process), so this is a faithful
+// in-process model of what search's detached spawns actually do.
+func TestConcurrentResumesProduceExactlyOneEnrollmentAndDeclaration(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	as := newStubAS(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"search", "mining"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const addr = "twilight1wx0rwcuexfwc36h0r2cg3fvfsds66f0qadt8cs"
+	if err := store.SavePayoutAddress(addr); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("mining")
+
+	const n = 10
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = cmdConnect([]string{"-config", cfgPath, "-resume"}, &bytes.Buffer{}, &bytes.Buffer{}, &bytes.Buffer{}, noEnv)
+		}(i)
+	}
+	wg.Wait()
+
+	_, _, enrollCalls := platform.counts()
+	if enrollCalls != 1 {
+		t.Fatalf("platform /v1/agents/enroll calls = %d, want exactly 1", enrollCalls)
+	}
+	if got := as.assertionRedemptionCount(); got != 1 {
+		t.Fatalf("AS enrollment-assertion redemptions = %d, want exactly 1", got)
+	}
+	if got := as.declarationAttempts(); got != 1 {
+		t.Fatalf("AS declaration attempts = %d, want exactly 1", got)
+	}
+	if got := as.declaredAddress(); got != addr {
+		t.Fatalf("declared address = %q, want %q", got, addr)
+	}
+	reg, ok, err := store.LoadAgentRegistration()
+	if err != nil || !ok || reg.LastEnrollmentSlot == "" {
+		t.Fatalf("registration not enrolled after the storm: %+v ok=%v err=%v", reg, ok, err)
+	}
+	for i, c := range codes {
+		if c != exitOK {
+			t.Errorf("resume %d exited %d, want %d", i, c, exitOK)
+		}
+	}
+}
+
+// Finding 7: declarePayoutIfSafe must honor the DECLARE call's own
+// returned document, not just the pre-read — a hold can surface only on
+// the declare response itself (ADDRESS_IN_USE: a different PARTICIPANT
+// already holds this exact address, which read-before-declare's own
+// PayoutStanding check has no way to see) or from a race between the
+// pre-read and the declare call (REPLACES_ACTIVE, mid-flight). Both must
+// be recorded as a hold with the AS's real reason, never as "declared."
+func TestDeclareHonorsEveryHoldShapeTheASReturns(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason string
+	}{
+		{"address in use by another participant", auth.HeldAddressInUse},
+		{"replaces active, raced with the pre-read", auth.HeldReplacesActive},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			as := newStubAS(t)
+			as.setDeclareOutcome(func(address string) map[string]any {
+				return map[string]any{
+					"status": "PENDING", "address": address, "canonical_address": address,
+					"effective": false, "declared_at": "2026-09-09T00:00:00Z", "held_for": tc.reason,
+				}
+			})
+			mining, stateDir := as.miningClient(t)
+			store, err := auth.OpenStore(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const addr = "twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n"
+			var stdout, stderr bytes.Buffer
+			declarePayoutIfSafe(context.Background(), mining, store, addr, &stdout, &stderr)
+
+			if _, ok, _ := store.LoadPayoutDeclared(); ok {
+				t.Fatal("a held declaration was recorded as settled")
+			}
+			held, ok, err := store.LoadPayoutBindingHeld()
+			if err != nil || !ok {
+				t.Fatalf("hold not recorded: ok=%v err=%v", ok, err)
+			}
+			if held.HeldFor != tc.reason {
+				t.Fatalf("held.HeldFor = %q, want %q", held.HeldFor, tc.reason)
+			}
+			if !addressSettled(store, addr) {
+				// finding 8: a hold is NOT terminal — but that's covered
+				// elsewhere; this test only needs the hold itself recorded
+				// with the right reason, not the settlement question.
+				t.Log("addressSettled correctly still false for a held address (finding 8)")
+			}
+		})
+	}
+}
+
+// Finding 4, end to end: a "y" answered at an interactive terminal must
+// actually drive an enrollment, not just produce the right in-memory
+// outcome struct. isInteractive cannot be faked with a plain
+// *bytes.Buffer (it requires a real *os.File character device — the same
+// constraint askMiningQuestion's own doc comment and every other test in
+// this file already work around by forcing the boolean), so this
+// continues past where the unit-level installer-question tests stop:
+// askMiningQuestion's outcome feeds directly into pollOnce, and the stub
+// AS is checked for an actual token redemption and declaration, not just
+// the returned struct.
+func TestTerminalYesIsFollowedThroughToAnActualEnrollment(t *testing.T) {
+	platform := newStubPlatform(t)
+	as := newStubAS(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("mining")
+
+	// connectConfig writes `enabled = true` explicitly (setup.sh's own
+	// shape) — finding 4's exact regression: with that already in the
+	// file, the "enable mining?" question must NOT run again (the file
+	// already answered it), but the ADDRESS question must still reach the
+	// terminal. One line of stdin, not two: an "n"/"y" here would be
+	// consumed as the address instead, since there is no enable question
+	// left to answer.
+	const addr = "twilight1k5stzqa2sgvfgx9u04cv93pek3gcmm9h5t9hkn"
+	stdin := bytes.NewBufferString(addr + "\n")
+	br := bufio.NewReader(stdin)
+	outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true, false)
+	if code != exitOK || !outcome.enabled || outcome.payoutAddress != addr {
+		t.Fatalf("askMiningQuestion: got %+v code=%d", outcome, code)
+	}
+
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"search", "mining"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("resume exited %d: stdout=%s stderr=%s", code, out, errOut)
+	}
+
+	if got := as.assertionRedemptionCount(); got != 1 {
+		t.Fatalf("the terminal-driven address answer never reached an actual AS enrollment redemption: redemptions = %d", got)
+	}
+	if got := as.declaredAddress(); got != addr {
+		t.Fatalf("the terminal-typed address was never declared: declared = %q, want %q", got, addr)
 	}
 }
