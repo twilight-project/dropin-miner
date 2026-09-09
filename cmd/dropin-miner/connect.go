@@ -35,7 +35,12 @@ import (
 	"github.com/twilight-project/dropin-miner/pkg/platform"
 )
 
-const (
+// connectPollBudget and resumePollInterval are vars, not consts, solely
+// so a test can shrink them (save, override, t.Cleanup restore) instead
+// of waiting out a real 3-minute bound — the production default is what
+// matters, and nothing in cmd/dropin-miner ever overwrites it outside a
+// test.
+var (
 	// connectPollBudget bounds the foreground poll: a human is watching
 	// for at most this long, then connect stops and finishes on the next
 	// invocation — a detached resume, or a later foreground run.
@@ -69,11 +74,22 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitTransport
 	}
 
-	budget := connectPollBudget
-	if *resume {
-		budget = 30 * time.Second // one round trip's worth of patience, not a second poll loop
+	// ctx bounds SIGINT/SIGTERM cancellation and, for -resume, its one
+	// round trip's worth of patience. It deliberately does NOT carry the
+	// foreground loop's connectPollBudget: that bound is a plain
+	// wall-clock deadline checked between iterations below, each of
+	// which gets its own short-lived derived context. Tying ctx itself
+	// to connectPollBudget raced the graceful "not claimed yet" exit
+	// against ctx.Done() firing mid-select, and ctx.Done() usually won —
+	// every foreground call surfaced as "connect: interrupted" instead
+	// of the friendly timeout message, because the deadline and the
+	// context's own timeout expired at effectively the same instant.
+	roundTrip := 30 * time.Second
+	outerBound := roundTrip
+	if !*resume {
+		outerBound = 24 * time.Hour // signal-cancellation only, in practice
 	}
-	ctx, cancel := operatorContext(budget)
+	ctx, cancel := operatorContext(outerBound)
 	defer cancel()
 
 	client := platform.New(cfg.Platform.BaseURL)
@@ -128,7 +144,7 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// The one-time mining question, first run only: a second run finds
 	// existed=true above and skips straight to polling.
 	if !existed {
-		if _, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store); code != exitOK {
+		if _, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout)); code != exitOK {
 			return code
 		}
 	}
@@ -142,13 +158,17 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 
 	if *resume {
-		_, code := pollOnce(ctx, stdout, stderr, client, store, cfg, &reg, key)
+		callCtx, callCancel := context.WithTimeout(ctx, roundTrip)
+		_, code := pollOnce(callCtx, stdout, stderr, client, store, cfg, &reg, key)
+		callCancel()
 		return code
 	}
 
 	deadline := time.Now().Add(connectPollBudget)
 	for {
-		done, code := pollOnce(ctx, stdout, stderr, client, store, cfg, &reg, key)
+		callCtx, callCancel := context.WithTimeout(ctx, roundTrip)
+		done, code := pollOnce(callCtx, stdout, stderr, client, store, cfg, &reg, key)
+		callCancel()
 		if done {
 			return code
 		}
