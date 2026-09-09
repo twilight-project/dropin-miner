@@ -319,3 +319,103 @@ func (s *Store) LoadEnrollment() (slotID, targetEpoch uint64, ok bool, err error
 	}
 	return rec.SlotID, rec.TargetEpoch, true, nil
 }
+
+// AgentRegistration is this installation's identity on the search
+// platform (agent onboarding design §3): what register minted, what the
+// claim did to it, and what the last enrollment call recorded. It is the
+// client's cache of the platform's own state, re-verified against
+// GET /v1/agents/{id} on every poll — never trusted as an authority on
+// its own, only as what to resume from.
+type AgentRegistration struct {
+	AgentID            string   `json:"agent_id"`
+	ClaimURL           string   `json:"claim_url"`
+	ClaimCode          string   `json:"claim_code"`
+	Status             string   `json:"status"` // "unclaimed" | "claimed" | "expired"
+	Scopes             []string `json:"scopes,omitempty"`
+	ClaimExpiresAt     string   `json:"claim_expires_at,omitempty"`
+	LastEnrollmentSlot string   `json:"last_enrollment_slot,omitempty"`
+	LastEnrollmentAt   string   `json:"last_enrollment_at,omitempty"`
+}
+
+// SaveAgentRegistration persists the platform identity, overwriting
+// whatever was there. Like SaveEnrollment, this record legitimately
+// advances through unclaimed -> claimed -> enrolled, so it is
+// write-and-rename rather than createExclusive.
+func (s *Store) SaveAgentRegistration(rec AgentRegistration) error {
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("auth: encode agent registration: %w", err)
+	}
+	tmp := filepath.Join(s.dir, "agent.json.tmp")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("auth: write agent registration: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(s.dir, "agent.json")); err != nil {
+		return fmt.Errorf("auth: persist agent registration: %w", err)
+	}
+	return nil
+}
+
+// LoadAgentRegistration returns the stored platform identity, ok=false
+// when this installation has never registered.
+func (s *Store) LoadAgentRegistration() (rec AgentRegistration, ok bool, err error) {
+	raw, err := s.readSecret("agent.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return AgentRegistration{}, false, nil
+	}
+	if err != nil {
+		return AgentRegistration{}, false, err
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return AgentRegistration{}, false, fmt.Errorf("auth: decode agent registration: %w", err)
+	}
+	return rec, true, nil
+}
+
+// SavePayoutAddress persists the payout address decided at the terminal
+// (agent onboarding design §5.5): typed directly, or the address of a
+// wallet just created. It is kept in its own file rather than folded into
+// agent.json — one concern per file, matching dpop.key/refresh.token/
+// enrollment.json/receipt-*.jws — because the address is a local mining
+// preference the client owns outright, while agent.json mirrors platform
+// state that a poll can overwrite. A detached resume reads this file as
+// the one thing it needs to declare a payout unattended once enrollment
+// succeeds; it never needs to know how the address was decided.
+func (s *Store) SavePayoutAddress(address string) error {
+	if address == "" {
+		return errors.New("auth: refusing to store an empty payout address")
+	}
+	tmp := filepath.Join(s.dir, "payout.json.tmp")
+	raw, err := json.Marshal(struct {
+		Address string `json:"address"`
+	}{Address: address})
+	if err != nil {
+		return fmt.Errorf("auth: encode payout address: %w", err)
+	}
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("auth: write payout address: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(s.dir, "payout.json")); err != nil {
+		return fmt.Errorf("auth: persist payout address: %w", err)
+	}
+	return nil
+}
+
+// LoadPayoutAddress returns the stored address, ok=false when none has
+// been decided yet.
+func (s *Store) LoadPayoutAddress() (address string, ok bool, err error) {
+	raw, err := s.readSecret("payout.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var rec struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return "", false, fmt.Errorf("auth: decode payout address: %w", err)
+	}
+	return rec.Address, true, nil
+}

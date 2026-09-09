@@ -138,3 +138,93 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 		t.Fatalf("idempotent delete failed: %v", err)
 	}
 }
+
+// Agent onboarding design §3: the client's cache of its own platform
+// identity round-trips, including the fields a resumed poll updates.
+func TestSaveLoadAgentRegistrationRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadAgentRegistration(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	want := AgentRegistration{
+		AgentID:        "agent-1",
+		ClaimURL:       "https://platform.nyks.dev/claim/AB12-CD34",
+		ClaimCode:      "AB12-CD34",
+		Status:         "unclaimed",
+		ClaimExpiresAt: "2026-09-16T00:00:00Z",
+	}
+	if err := s.SaveAgentRegistration(want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadAgentRegistration()
+	if err != nil || !ok || got.AgentID != want.AgentID || got.ClaimURL != want.ClaimURL ||
+		got.ClaimCode != want.ClaimCode || got.Status != want.Status || got.ClaimExpiresAt != want.ClaimExpiresAt ||
+		len(got.Scopes) != 0 {
+		t.Fatalf("got %+v ok=%v err=%v, want %+v", got, ok, err, want)
+	}
+
+	// Later overwrites earlier: a resumed poll advances the same record,
+	// it does not create a second one.
+	claimed := want
+	claimed.Status = "claimed"
+	claimed.Scopes = []string{"credits", "mining"}
+	claimed.LastEnrollmentSlot = "twilight-slot-3"
+	claimed.LastEnrollmentAt = "2026-09-09T00:00:00Z"
+	if err := s.SaveAgentRegistration(claimed); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.LoadAgentRegistration()
+	if err != nil || !ok {
+		t.Fatalf("reload after advance: ok=%v err=%v", ok, err)
+	}
+	if got.Status != "claimed" || len(got.Scopes) != 2 || got.LastEnrollmentSlot != "twilight-slot-3" {
+		t.Fatalf("advance did not persist: %+v", got)
+	}
+}
+
+// The registration is what a resumed process (a detached connect after a
+// later search) reads before making any network call, so it must survive
+// closing and reopening the store exactly as the refresh token does.
+func TestAgentRegistrationSurvivesAcrossStoreReopens(t *testing.T) {
+	_, dir := newStore(t)
+	s1, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := AgentRegistration{AgentID: "agent-1", Status: "claimed", Scopes: []string{"mining"}}
+	if err := s1.SaveAgentRegistration(rec); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s2.LoadAgentRegistration()
+	if err != nil || !ok || got.AgentID != "agent-1" || got.Status != "claimed" {
+		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "agent.json"))
+	if err != nil || (posixModes && info.Mode().Perm() != 0o600) {
+		t.Fatalf("agent.json perms = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// SavePayoutAddress/LoadPayoutAddress round-trip independently of the
+// agent registration — the address is a local mining preference the
+// client owns, not platform state a poll can overwrite.
+func TestSaveLoadPayoutAddressRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadPayoutAddress(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if err := s.SavePayoutAddress("twilight1abc"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadPayoutAddress()
+	if err != nil || !ok || got != "twilight1abc" {
+		t.Fatalf("got %q ok=%v err=%v", got, ok, err)
+	}
+	if err := s.SavePayoutAddress(""); err == nil {
+		t.Fatal("empty payout address accepted")
+	}
+}
