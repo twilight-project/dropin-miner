@@ -411,11 +411,28 @@ func buildMiningClient(ctx context.Context, m config.Mining) (*auth.OAuthClient,
 // ── detached resume ─────────────────────────────────────────────────────
 
 // shouldResume reports whether a stored registration is worth spawning a
-// detached connect -resume for: unclaimed (still waiting on the human),
-// or claimed with the mining scope but not yet enrolled. A pure disk
-// read, no network — search.go calls this after every served search,
-// independent of [mining]/[miner] being configured at all (a
-// search-only unclaimed participant has neither).
+// detached connect -resume for. A pure disk read, no network — search.go
+// calls this after every served search, independent of [mining]/[miner]
+// being configured at all (a search-only unclaimed participant has
+// neither).
+//
+// WP2-review defect 3: the spawn must happen only while a resume can
+// actually do something. "Claimed, mining scope, not yet enrolled" used to
+// be treated as permanently actionable, but two sub-states of it never
+// resolve on their own — a local opt-out (mining.enabled = false,
+// explicit) and a granted scope with no [mining] block configured at all —
+// and a resume in either state just polls the platform and exits, forever,
+// on every single search. Both now return false. There is only one
+// condition for it below, not two: pollOnce checks the opt-out separately
+// from "unconfigured" because it prints a DIFFERENT message for each
+// (opt-out is silent by design; unconfigured tells the operator what to
+// set), but shouldResume has no output to distinguish them by — an
+// explicit mining.enabled = false already makes !cfg.Mining.Enabled true,
+// so a second, separate check here would be dead code no test could
+// meaningfully require. Symmetrically, an ALREADY-enrolled registration is
+// still actionable if it has an on-file payout address that addressSettled
+// (defect 2) says is not yet settled — an enrolled-but-undeclared
+// installation is not done.
 //
 // Deliberately NOT auth.OpenStore(stateDir) first: that creates the
 // state directory (MkdirAll) if it does not exist, which would give
@@ -423,7 +440,8 @@ func buildMiningClient(ctx context.Context, m config.Mining) (*auth.OAuthClient,
 // never run connect and never will. The os.Stat below is read-only and
 // costs nothing when there is nothing to resume — the overwhelmingly
 // common case.
-func shouldResume(stateDir string) bool {
+func shouldResume(cfg *config.Config) bool {
+	stateDir := cfg.Mining.StateDir
 	if stateDir == "" {
 		return false
 	}
@@ -442,9 +460,22 @@ func shouldResume(stateDir string) bool {
 	case "unclaimed":
 		return true
 	case "claimed":
-		return reg.LastEnrollmentSlot == "" && hasScope(reg.Scopes, "mining")
+		if !hasScope(reg.Scopes, "mining") {
+			return false // search-only claim: settled, nothing left to resume
+		}
+		if reg.LastEnrollmentSlot == "" {
+			if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
+				return false // opted out, or nothing configured to enroll against — either way, permanent until reconfigured
+			}
+			return true
+		}
+		address, hasAddr, aerr := store.LoadPayoutAddress()
+		if aerr != nil || !hasAddr {
+			return false // enrolled, nothing to declare
+		}
+		return !addressSettled(store, address)
 	default:
-		return false
+		return false // expired, or unrecognized: nothing a resume can do
 	}
 }
 

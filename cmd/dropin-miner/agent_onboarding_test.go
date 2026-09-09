@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 // ── stubs ──────────────────────────────────────────────────────────────
@@ -648,12 +649,130 @@ func TestDetachedResumePollsOnceAndExits(t *testing.T) {
 }
 
 func TestShouldResumeIsALocalCheckWithNoStoredRegistration(t *testing.T) {
-	if shouldResume(filepath.Join(t.TempDir(), "state")) {
+	if shouldResume(&config.Config{Mining: config.Mining{StateDir: filepath.Join(t.TempDir(), "state")}}) {
 		t.Fatal("shouldResume true with nothing on disk")
 	}
-	if shouldResume("") {
+	if shouldResume(&config.Config{}) {
 		t.Fatal("shouldResume true with an empty state dir")
 	}
+}
+
+// WP2-review defect 3 / coverage gap A: the spawn must stop once there is
+// nothing a resume can do, and — the reviewer's specific finding — every
+// condition that decides that needs a test that fails if THAT condition
+// alone is deleted, not just a return value it happens to share with a
+// neighbor. shouldResumeFixture builds a registration and lets each
+// subtest vary exactly one thing.
+func shouldResumeFixture(t *testing.T, status string, scopes []string, enrolled bool, address string) (stateDir string) {
+	t.Helper()
+	stateDir = filepath.Join(t.TempDir(), "state")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := auth.AgentRegistration{AgentID: "agent-1", Status: status, Scopes: scopes}
+	if enrolled {
+		reg.LastEnrollmentSlot = "twilight-slot-3"
+	}
+	if err := store.SaveAgentRegistration(reg); err != nil {
+		t.Fatal(err)
+	}
+	if address != "" {
+		if err := store.SavePayoutAddress(address); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return stateDir
+}
+
+func TestNoResumeSpawnForEnrolledOptedOutOrUnconfigured(t *testing.T) {
+	configured := config.Mining{Enabled: true, ASBaseURL: "https://as.example"}
+
+	t.Run("unclaimed: still actionable", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "unclaimed", nil, false, "")
+		if !shouldResume(&config.Config{Mining: config.Mining{StateDir: stateDir}}) {
+			t.Fatal("shouldResume false for an unclaimed registration still worth polling")
+		}
+	})
+
+	t.Run("claimed, no mining scope: settled (search-only)", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"credits"}, false, "")
+		cfg := configured
+		cfg.StateDir = stateDir
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true for a search-only claim")
+		}
+	})
+
+	t.Run("expired: settled", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "expired", nil, false, "")
+		if shouldResume(&config.Config{Mining: config.Mining{StateDir: stateDir}}) {
+			t.Fatal("shouldResume true for an expired registration")
+		}
+	})
+
+	t.Run("not enrolled, mining.enabled = false: settled", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, false, "")
+		// ASBaseURL IS set here — isolates "not enabled" from "no AS
+		// configured" below, so deleting either check independently is
+		// each caught by a different subtest.
+		cfg := config.Mining{StateDir: stateDir, Enabled: false, ASBaseURL: "https://as.example"}
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true despite mining.enabled = false")
+		}
+	})
+
+	t.Run("not enrolled, mining.enabled = true but no as_url: settled", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, false, "")
+		cfg := config.Mining{StateDir: stateDir, Enabled: true, ASBaseURL: ""}
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true with no mining.as_url configured")
+		}
+	})
+
+	t.Run("enrolled, no address to declare: settled", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, true, "")
+		cfg := configured
+		cfg.StateDir = stateDir
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true for a fully settled installation")
+		}
+	})
+
+	t.Run("enrolled, address already declared: settled", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, true, "twilight1settled")
+		store, err := auth.OpenStore(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SavePayoutDeclared("twilight1settled"); err != nil {
+			t.Fatal(err)
+		}
+		cfg := configured
+		cfg.StateDir = stateDir
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true for an address already confirmed declared")
+		}
+	})
+
+	// The actionable cases must still spawn.
+	t.Run("still actionable: not yet enrolled, configured", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, false, "")
+		cfg := configured
+		cfg.StateDir = stateDir
+		if !shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume false for an installation that can still enroll")
+		}
+	})
+
+	t.Run("still actionable: enrolled with an undeclared address", func(t *testing.T) {
+		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, true, "twilight1undeclared")
+		cfg := configured
+		cfg.StateDir = stateDir
+		if !shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume false for an enrolled installation with an undeclared address")
+		}
+	})
 }
 
 // ── the installer's mining question ─────────────────────────────────
@@ -930,6 +1049,12 @@ func TestDeclareProceedsWhenNoActiveBinding(t *testing.T) {
 	}
 }
 
+// WP4b's "a declaration of the same address is not a change" makes a
+// redundant re-declare SAFE; it does not make it necessary. WP2-review
+// defect 2's efficiency question resolved to skipping the AS round trip
+// entirely when the active binding already matches — declarePayoutIfSafe
+// records the same outcome (SavePayoutDeclared, no held-binding note)
+// without spending a PUT on it.
 func TestDeclareProceedsWhenActiveMatchesLocal(t *testing.T) {
 	as := newStubAS(t)
 	as.setActiveAddress("twilight1same")
@@ -941,8 +1066,11 @@ func TestDeclareProceedsWhenActiveMatchesLocal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	declarePayoutIfSafe(context.Background(), mining, store, "twilight1same", &stdout, &stderr)
 
-	if got := as.declarationAttempts(); got != 1 {
-		t.Fatalf("declaration attempts = %d, want 1 — WP4b: \"a declaration of the same address is not a change\"", got)
+	if got := as.declarationAttempts(); got != 0 {
+		t.Fatalf("declaration attempts = %d, want 0 (already active and matching; no redundant AS round trip needed)", got)
+	}
+	if declared, ok, derr := store.LoadPayoutDeclared(); derr != nil || !ok || declared != "twilight1same" {
+		t.Fatalf("LoadPayoutDeclared() = %q ok=%v err=%v, want twilight1same recorded as settled", declared, ok, derr)
 	}
 	if _, ok, _ := store.LoadPayoutBindingHeld(); ok {
 		t.Fatal("a matching declaration must not leave a held-binding note")

@@ -220,7 +220,7 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 	// is a cheap local disk check (agent onboarding design §5.5) — it
 	// costs nothing and spawns nothing when there is no stored
 	// registration to resume.
-	if ops.spawnConnectResume != nil && shouldResume(cfg.Mining.StateDir) {
+	if ops.spawnConnectResume != nil && shouldResume(cfg) {
 		_ = ops.spawnConnectResume(*cfgPath) // best effort; the next search resumes it if this one could not even start
 	}
 
