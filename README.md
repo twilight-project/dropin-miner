@@ -72,7 +72,13 @@ dropin-miner flush [-force]
 dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
 dropin-miner wallet init|address|register|balance|send
+dropin-miner connect [-name ...] [-mining]
+dropin-miner mining enable
 ```
+
+`connect` and `mining enable` are the search platform's agent-onboarding path —
+register, get claimed at a printed URL, then mine unattended. `setup.sh` and
+`install.ps1` don't use them yet; they're available to run directly.
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
 falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
