@@ -304,3 +304,69 @@ func TestSaveLoadPayoutBindingHeldRoundTrips(t *testing.T) {
 		t.Fatalf("after clear: ok=%v err=%v, want ok=false", ok, err)
 	}
 }
+
+// WP2-adversarial-review finding 9: SavePayoutAddress is the one place
+// every payout address in the agent-onboarding flow is validated.
+func TestSavePayoutAddressRejectsNonBech32(t *testing.T) {
+	s, _ := newStore(t)
+	for _, bad := range []string{"twilight1abc", "not-an-address", "twilight1", ""} {
+		if err := s.SavePayoutAddress(bad); err == nil {
+			t.Errorf("SavePayoutAddress(%q) accepted, want a bech32-decode refusal", bad)
+		}
+	}
+}
+
+func TestSavePayoutAddressRejectsWrongHRP(t *testing.T) {
+	s, _ := newStore(t)
+	// A syntactically valid bech32 string, but for a different chain's
+	// prefix — the HRP check is a separate rejection from the decode
+	// check above, and needs its own input to exercise it.
+	if err := s.SavePayoutAddress("cosmos1qqnfjqxr5w5c60x5xw24k5zqe0shsrtj04kagr"); err == nil {
+		t.Fatal("an address with the wrong HRP was accepted")
+	}
+}
+
+// WP2-adversarial-review finding 18: the conflict set is capped, oldest
+// first, and a slot_id reconfiguration is prunable.
+func TestEpochConflictsAreBoundedWithOldestFirstEviction(t *testing.T) {
+	s, _ := newStore(t)
+	for i := uint64(0); i < maxEpochConflicts+10; i++ {
+		if err := s.SaveEpochConflict(1, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set, err := s.EpochConflicts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != maxEpochConflicts {
+		t.Fatalf("len(set) = %d, want the cap %d", len(set), maxEpochConflicts)
+	}
+	// Oldest-first eviction: the earliest epochs (0..9) should be gone,
+	// the most recent maxEpochConflicts should remain.
+	for _, c := range set {
+		if c.TargetEpoch < 10 {
+			t.Fatalf("epoch %d should have been evicted as the oldest, found in the set", c.TargetEpoch)
+		}
+	}
+}
+
+func TestPruneEpochConflictsForOtherSlots(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.SaveEpochConflict(1, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEpochConflict(2, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneEpochConflictsForOtherSlots(1); err != nil {
+		t.Fatal(err)
+	}
+	set, err := s.EpochConflicts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != 1 || set[0].SlotID != 1 {
+		t.Fatalf("got %+v, want only the slot-1 entry to survive", set)
+	}
+}

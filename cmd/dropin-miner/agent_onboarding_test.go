@@ -1455,3 +1455,128 @@ func TestTerminalYesIsFollowedThroughToAnActualEnrollment(t *testing.T) {
 		t.Fatalf("the terminal-typed address was never declared: declared = %q, want %q", got, addr)
 	}
 }
+
+// WP2-adversarial-review finding 14: an existing credentials.json that
+// already looks like a platform key must not be silently replaced by a
+// fresh registration's key.
+func TestConnectRefusesToOverwriteAnExistingCredentialsFileUnlessForced(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credPath := credentialsPath(cfg.Miner)
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credPath, credentials{APIKey: "sr-existing-real-key"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code == exitOK {
+		t.Fatalf("connect overwrote an existing credentials.json without -force; stderr=%q", errOut)
+	}
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-existing-real-key") {
+		t.Fatalf("credentials.json was modified despite the refusal: %v %q", err, raw)
+	}
+	if _, ok := loadAgent(t, stateDir); ok {
+		t.Fatal("a registration was persisted despite the refusal")
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-force"); code != exitOK {
+		t.Fatalf("connect -force still refused: %d %s", code, errOut)
+	}
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-stubkey") {
+		t.Fatalf("-force did not overwrite: %v %q", err, raw)
+	}
+}
+
+// WP2-adversarial-review finding 16: status is not a failure for the two
+// most ordinary agent-onboarding states.
+func TestStatusExitsZeroForUnclaimedAndSearchOnly(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, _ := connectConfig(t, platform.srv.URL, "") // no [mining] block at all
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("connect failed: %s", errOut)
+	}
+	needsMining := printAgentIdentityStatus([]string{"-config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}, noEnv)
+	if needsMining {
+		t.Fatal("an unclaimed registration with no [mining] block should not need the AS-facing report")
+	}
+
+	platform.claim("credits") // claimed, no mining scope: search-only
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("resume failed: %s", errOut)
+	}
+	needsMining = printAgentIdentityStatus([]string{"-config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}, noEnv)
+	if needsMining {
+		t.Fatal("a search-only claim should not need the AS-facing report either")
+	}
+}
+
+// WP2-adversarial-review finding 17: an undecodable agent.json must not
+// wedge connect.
+func TestConnectTreatsCorruptRegistrationAsAbsent(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = store
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("connect wedged on a corrupt registration: exit %d, stderr=%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "could not be read") {
+		t.Fatalf("no acknowledgment of the corrupt record on stderr: %q", errOut)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-1" {
+		t.Fatalf("did not re-register after finding a corrupt record: %+v ok=%v", reg, ok)
+	}
+}
+
+// WP2-adversarial-review finding 11 (second half): the foreground loop's
+// own sleep must be bounded by its remaining budget, not just by the
+// platform's (already ceiling-clamped) advertised interval. A platform
+// that never claims and advertises a long interval must still see the
+// loop give up close to connectPollBudget, not wait out the interval.
+func TestForegroundLoopSleepIsBoundedByRemainingBudget(t *testing.T) {
+	origBudget, origInterval := connectPollBudget, resumePollInterval
+	connectPollBudget = 100 * time.Millisecond
+	t.Cleanup(func() { connectPollBudget, resumePollInterval = origBudget, origInterval })
+
+	// newStubPlatform's default register response advertises interval_s: 1,
+	// which clampPollInterval floors to 2s (well past the 100ms budget) —
+	// exactly the gap that matters: if the loop's sleep used that raw
+	// interval instead of min(interval, remaining budget), this test would
+	// time out waiting for connect to return at all. The registration
+	// stays "unclaimed" throughout (nothing calls platform.claim).
+	platform := newStubPlatform(t)
+	cfgPath, _ := connectConfig(t, platform.srv.URL, "")
+
+	start := time.Now()
+	code, out, _ := runConnect(t, cfgPath, nil)
+	elapsed := time.Since(start)
+	if code != exitOK {
+		t.Fatalf("connect exited %d, want %d", code, exitOK)
+	}
+	if !strings.Contains(out, "not claimed yet") {
+		t.Fatalf("expected the timeout message, got: %q", out)
+	}
+	// Generous slack (10x the budget) for scheduling noise, but nowhere
+	// near the multi-second interval a stub's default advertises — this
+	// only needs to prove the sleep did NOT wait out the raw interval.
+	if elapsed > 10*connectPollBudget {
+		t.Fatalf("connect took %v, want close to connectPollBudget (%v) — the sleep was not bounded by the remaining budget", elapsed, connectPollBudget)
+	}
+}

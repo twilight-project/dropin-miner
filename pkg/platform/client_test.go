@@ -294,3 +294,66 @@ func TestClientFollowsASameOriginRedirect(t *testing.T) {
 		t.Fatalf("same-origin redirect refused: %v", err)
 	}
 }
+
+// WP2-adversarial-review finding 12: an off-origin claim_url must be
+// refused outright, not stored or printed.
+func TestClaimURLOffOriginIsRefused(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.register = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"agent_id": "a", "key": "sr-1", "claim_url": "https://not-the-platform.example/claim/X",
+		})
+	}
+	if _, err := New(stub.srv.URL).Register(context.Background(), "", nil); err == nil {
+		t.Fatal("an off-origin claim_url was accepted")
+	}
+}
+
+// A control character (here, a newline) in claim_url could forge the
+// client's own terminal output when printed back.
+func TestClaimURLControlCharacterIsRefused(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.register = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"agent_id": "a", "key": "sr-1", "claim_url": stub.srv.URL + "/claim/X\nfake line",
+		})
+	}
+	if _, err := New(stub.srv.URL).Register(context.Background(), "", nil); err == nil {
+		t.Fatal("a claim_url with a control character was accepted")
+	}
+}
+
+func TestClaimCodeControlCharacterIsRefused(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.register = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"agent_id": "a", "key": "sr-1", "claim_url": stub.srv.URL + "/claim/X",
+			"claim_code": "AB12\r\nCD34",
+		})
+	}
+	if _, err := New(stub.srv.URL).Register(context.Background(), "", nil); err == nil {
+		t.Fatal("a claim_code with a control character was accepted")
+	}
+}
+
+// WP2-adversarial-review finding 13: a status outside {unclaimed,
+// claimed, expired} must never reach a caller as anything more specific
+// than "unclaimed" (keep polling).
+func TestStatusRejectsValueOutsideTheEnum(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.status = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "PENDING_REVIEW", "scopes": []string{"mining"},
+		})
+	}
+	st, err := New(stub.srv.URL).Status(context.Background(), "agent-1", "sr-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != "unclaimed" {
+		t.Fatalf("status = %q, want it normalized to %q", st.Status, "unclaimed")
+	}
+	if st.HasScope("mining") {
+		t.Fatal("an unrecognized status must not be trusted to carry real scopes either")
+	}
+}
