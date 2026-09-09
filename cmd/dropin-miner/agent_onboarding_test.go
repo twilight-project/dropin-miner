@@ -1478,7 +1478,7 @@ func TestConnectRefusesToOverwriteAnExistingCredentialsFileUnlessForced(t *testi
 	if code, _, errOut := runConnect(t, cfgPath, nil); code == exitOK {
 		t.Fatalf("connect overwrote an existing credentials.json without -force; stderr=%q", errOut)
 	}
-	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-existing-real-key") {
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-existing-real-key") { // #nosec G304 -- the test's own credentialsPath output, not an external path
 		t.Fatalf("credentials.json was modified despite the refusal: %v %q", err, raw)
 	}
 	if _, ok := loadAgent(t, stateDir); ok {
@@ -1488,7 +1488,7 @@ func TestConnectRefusesToOverwriteAnExistingCredentialsFileUnlessForced(t *testi
 	if code, _, errOut := runConnect(t, cfgPath, nil, "-force"); code != exitOK {
 		t.Fatalf("connect -force still refused: %d %s", code, errOut)
 	}
-	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-stubkey") {
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-stubkey") { // #nosec G304 -- the test's own credentialsPath output, not an external path
 		t.Fatalf("-force did not overwrite: %v %q", err, raw)
 	}
 }

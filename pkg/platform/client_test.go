@@ -263,7 +263,7 @@ func TestClientRefusesACrossOriginRedirect(t *testing.T) {
 	var good *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, evil.URL+r.URL.Path, http.StatusFound)
+		http.Redirect(w, r, evil.URL+r.URL.Path, http.StatusFound) // #nosec G710 -- deliberately proving the client refuses this, not a real redirect
 	})
 	good = httptest.NewServer(mux)
 	defer good.Close()

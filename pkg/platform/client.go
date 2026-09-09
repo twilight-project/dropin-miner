@@ -229,7 +229,8 @@ func validateClaimURL(raw, baseURL string) error {
 	if !u.IsAbs() {
 		return errors.New("platform: claim_url is not an absolute URL")
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHostname(u.Hostname())) {
+	httpsOrLoopback := u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHostname(u.Hostname()))
+	if !httpsOrLoopback {
 		return fmt.Errorf("platform: claim_url scheme %q is not https (or http on loopback)", u.Scheme)
 	}
 	base, err := url.Parse(baseURL)
