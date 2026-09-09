@@ -439,3 +439,78 @@ func TestMiningRejectsUserinfoURL(t *testing.T) {
 		t.Fatalf("userinfo as_url not rejected: %v", err)
 	}
 }
+
+// platform.base_url defaults to the real platform, with no file at all.
+func TestPlatformBaseURLDefaults(t *testing.T) {
+	cfg := load(t, nil, noEnv)
+	if cfg.Platform.BaseURL != "https://platform.nyks.dev" {
+		t.Fatalf("got %q, want the default", cfg.Platform.BaseURL)
+	}
+}
+
+// platform.base_url is the as_url/router_url rule again: connect and
+// mining enable send the platform-issued sr- key in Authorization to it.
+func TestPlatformBaseURLRejectsRoutablePlainHTTP(t *testing.T) {
+	for _, host := range []string{"platform.example.com", "203.0.113.10", "platform.internal:8080"} {
+		body := "[platform]\nbase_url = \"http://" + host + "\"\n"
+		err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+		if err == nil {
+			t.Errorf("plain http platform.base_url %q was accepted at load", host)
+			continue
+		}
+		if !strings.Contains(err.Error(), "loopback") {
+			t.Errorf("platform.base_url %q: the refusal does not name the rule: %v", host, err)
+		}
+	}
+}
+
+func TestPlatformBaseURLAllowsPlainHTTPOnLoopback(t *testing.T) {
+	body := "[platform]\nbase_url = \"http://127.0.0.1:9090\"\n"
+	if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+		t.Errorf("loopback platform.base_url was refused: %v", err)
+	}
+}
+
+// MiningEnabledExplicit is the signal connect/mining enable use to decide
+// whether to ask their terminal question at all. It must tell "the file
+// wrote enabled = false" apart from "the file said nothing about
+// [mining]" — both decode Mining.Enabled to false identically.
+func TestMiningEnabledExplicitDistinguishesAbsentFromFalse(t *testing.T) {
+	cfg := load(t, nil, noEnv)
+	if cfg.MiningEnabledExplicit {
+		t.Fatal("no config file at all: MiningEnabledExplicit should be false")
+	}
+
+	body := "[mining]\nenabled = false\n"
+	cfg = load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if !cfg.MiningEnabledExplicit {
+		t.Fatal("[mining] enabled = false was written explicitly; MiningEnabledExplicit should be true")
+	}
+	if cfg.Mining.Enabled {
+		t.Fatal("enabled = false must still resolve to Mining.Enabled = false")
+	}
+
+	body = "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
+	cfg = load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if !cfg.MiningEnabledExplicit || !cfg.Mining.Enabled {
+		t.Fatalf("explicit enabled = true: MiningEnabledExplicit=%v Enabled=%v, want true/true",
+			cfg.MiningEnabledExplicit, cfg.Mining.Enabled)
+	}
+
+	body = "[proxy]\nlisten = \"127.0.0.1:9\"\n" // touches the file, never [mining]
+	cfg = load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.MiningEnabledExplicit {
+		t.Fatal("a file that never mentions [mining] should leave MiningEnabledExplicit false")
+	}
+}
+
+// mining.payout_address is the scripted-install answer to the terminal
+// question, read straight through regardless of Enabled — it names an
+// address, connect/mining enable decide what it means.
+func TestMiningPayoutAddressReadThrough(t *testing.T) {
+	body := "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\npayout_address = \"twilight1abc\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Mining.PayoutAddress != "twilight1abc" {
+		t.Fatalf("got %q, want twilight1abc", cfg.Mining.PayoutAddress)
+	}
+}

@@ -26,9 +26,17 @@ import (
 
 // Defaults per design_plan §5.7, §5.8, §6.1, §6.4 and §11.
 const (
-	DefaultListen              = "127.0.0.1:8787"
-	DefaultAdminListen         = "127.0.0.1:8788"
-	defaultUpstream            = "https://openrouter.ai/api"
+	DefaultListen      = "127.0.0.1:8787"
+	DefaultAdminListen = "127.0.0.1:8788"
+	defaultUpstream    = "https://openrouter.ai/api"
+	// defaultPlatformBaseURL is the search platform's control plane
+	// (agent onboarding design, search-platform-agent-onboarding-
+	// design.md §5): what `connect` and `mining enable` talk to. Unlike
+	// the AS (mining.as_url), there is no participant-facing reason to
+	// point this anywhere else in normal operation — it exists as a
+	// config key at all for the same reason as_url does: a devnet or a
+	// local stub during development.
+	defaultPlatformBaseURL     = "https://platform.nyks.dev"
 	defaultProviderName        = "openrouter"
 	defaultShutdownGrace       = 5 * time.Second
 	defaultMaxRequestBodyBytes = 32 << 20
@@ -121,6 +129,20 @@ type Mining struct {
 	CollectorBaseBackoff time.Duration
 	CollectorMaxBackoff  time.Duration
 	CollectorMaxAttempts int
+	// PayoutAddress is the scripted-install answer to connect/mining
+	// enable's terminal question (agent onboarding design §5.5): a
+	// pre-decided payout destination, so an install with no terminal
+	// can still enable mining without a wallet ever being created here.
+	PayoutAddress string
+}
+
+// Platform is the search-platform control plane connect and mining
+// enable talk to (agent onboarding design, search-platform-agent-
+// onboarding-design.md). Unlike Mining, this has no Enabled gate: the
+// base URL is always resolved and validated, and nothing dials it
+// unless connect or mining enable is actually invoked.
+type Platform struct {
+	BaseURL string
 }
 
 // Config is the resolved, immutable configuration.
@@ -168,9 +190,21 @@ type Config struct {
 
 	LogLevel slog.Level
 
-	Observe Observe
-	Mining  Mining
-	Miner   Miner
+	Observe  Observe
+	Mining   Mining
+	Miner    Miner
+	Platform Platform
+
+	// MiningEnabledExplicit is true when the config file itself wrote
+	// `[mining] enabled` (true or false) — distinct from Mining.Enabled
+	// being false because the file said nothing about it at all. There
+	// is no TOKENDROP_* env override or flag for mining.enabled, so the
+	// file is the only source this can come from. connect and mining
+	// enable need the distinction: they ask their one interactive
+	// question only when this is false (nobody has decided yet); when
+	// it's true, whatever the file said is trusted outright, silently,
+	// which is what makes a scripted install possible.
+	MiningEnabledExplicit bool
 }
 
 // fileConfig mirrors the TOML document. Field names follow
@@ -220,6 +254,11 @@ type fileConfig struct {
 		CollectorBaseBackoff duration `toml:"collector_base_backoff"`
 		CollectorMaxBackoff  duration `toml:"collector_max_backoff"`
 		CollectorMaxAttempts int      `toml:"collector_max_attempts"`
+		// PayoutAddress answers connect/mining enable's terminal question
+		// through configuration, for a scripted or headless install
+		// (agent onboarding design §5.5). Read only when Enabled is also
+		// explicit in the file — it names an address, not a decision.
+		PayoutAddress string `toml:"payout_address"`
 	} `toml:"mining"`
 	Miner struct {
 		Enabled       bool     `toml:"enabled"`
@@ -228,6 +267,9 @@ type fileConfig struct {
 		SessionsDir   string   `toml:"sessions_dir"`
 		FlushInterval duration `toml:"flush_interval"`
 	} `toml:"miner"`
+	Platform struct {
+		BaseURL string `toml:"base_url"`
+	} `toml:"platform"`
 }
 
 type duration struct{ time.Duration }
@@ -276,6 +318,7 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		providerTier:          "A",
 		upstream:              defaultUpstream,
 		logLevel:              "info",
+		platformBaseURL:       defaultPlatformBaseURL,
 		observe: Observe{
 			MemoryBudgetBytes:    defaultObservationBudget,
 			RingBytes:            defaultRingBytes,
@@ -369,12 +412,16 @@ type rawConfig struct {
 	miningCollectorBaseBackoff time.Duration
 	miningCollectorMaxBackoff  time.Duration
 	miningCollectorMaxAttempts int
+	miningPayoutAddress        string
+	miningEnabledExplicit      bool
 
 	minerEnabled       bool
 	minerRouterURL     string
 	minerIntakeDir     string
 	minerSessionsDir   string
 	minerFlushInterval time.Duration
+
+	platformBaseURL string
 }
 
 func (r *rawConfig) applyFile(path string) error {
@@ -462,6 +509,16 @@ func (r *rawConfig) applyFile(path string) error {
 		r.observe.MaxJSONKeyBytes = f.Observe.MaxJSONKeyBytes
 	}
 	r.miningEnabled = f.Mining.Enabled
+	// IsDefined, not f.Mining.Enabled itself: connect/mining enable need
+	// to tell "the file wrote enabled = false" apart from "the file
+	// never mentioned [mining] at all", and both decode to Go's zero
+	// value the same way. There is no env override for this key (see
+	// Config.MiningEnabledExplicit's doc comment), so the file is the
+	// only source of the distinction.
+	r.miningEnabledExplicit = md.IsDefined("mining", "enabled")
+	if f.Mining.PayoutAddress != "" {
+		r.miningPayoutAddress = f.Mining.PayoutAddress
+	}
 	if f.Mining.ASURL != "" {
 		r.miningASURL = f.Mining.ASURL
 	}
@@ -507,6 +564,9 @@ func (r *rawConfig) applyFile(path string) error {
 	}
 	if f.Miner.FlushInterval.Duration != 0 {
 		r.minerFlushInterval = f.Miner.FlushInterval.Duration
+	}
+	if f.Platform.BaseURL != "" {
+		r.platformBaseURL = f.Platform.BaseURL
 	}
 	return nil
 }
@@ -569,6 +629,10 @@ func (r *rawConfig) finish() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	platformBaseURL, err := parsePlatformBaseURL(r.platformBaseURL)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		Listen:                listen,
@@ -586,7 +650,32 @@ func (r *rawConfig) finish() (*Config, error) {
 		Observe:               r.observe,
 		Mining:                mining,
 		Miner:                 miner,
+		Platform:              Platform{BaseURL: platformBaseURL},
+		MiningEnabledExplicit: r.miningEnabledExplicit,
 	}, nil
+}
+
+// parsePlatformBaseURL validates platform.base_url the same way
+// mining.as_url and miner.router_url are (invariant 5): https, or http
+// only for loopback — connect and mining enable send the platform-
+// issued sr- key in Authorization to it, the same cleartext-credential
+// exposure the AS and router rules exist for. Unlike as_url, there is no
+// Enabled gate: this always resolves, since nothing dials it unless
+// connect or mining enable actually runs, and the default is always a
+// valid https URL.
+func parsePlatformBaseURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", errors.New("platform.base_url: must be an absolute http(s) URL")
+	}
+	if u.User != nil {
+		return "", errors.New("platform.base_url: must not carry userinfo")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("platform.base_url: plain http is permitted only for loopback hosts, got %q — "+
+			"use https, or a loopback address for local development", u.Host)
+	}
+	return raw, nil
 }
 
 // finishMiner resolves the [miner] block. Its directories default beside
@@ -664,6 +753,7 @@ func (r *rawConfig) finishMining() (Mining, error) {
 		CollectorBaseBackoff: r.miningCollectorBaseBackoff,
 		CollectorMaxBackoff:  r.miningCollectorMaxBackoff,
 		CollectorMaxAttempts: r.miningCollectorMaxAttempts,
+		PayoutAddress:        r.miningPayoutAddress,
 	}
 	if r.miningSlotID != nil {
 		m.SlotID = *r.miningSlotID
