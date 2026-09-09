@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -20,6 +21,11 @@ import (
 type fakeHookFS struct {
 	files   map[string][]byte
 	flushes []string
+
+	// forceWriteErr / forceMkdirErr / forceRenameErr, when set, make every
+	// call to the matching op fail — standing in for a full disk or a
+	// permission error on the durable sidecar, without touching real disk.
+	forceWriteErr, forceMkdirErr, forceRenameErr error
 }
 
 func newFakeHookOps(env map[string]string) (*fakeHookFS, hookOps) {
@@ -33,9 +39,18 @@ func newFakeHookOps(env map[string]string) (*fakeHookFS, hookOps) {
 			}
 			return b, nil
 		},
-		writeFile: func(p string, b []byte, _ os.FileMode) error { f.files[p] = b; return nil },
-		mkdirAll:  func(string, os.FileMode) error { return nil },
+		writeFile: func(p string, b []byte, _ os.FileMode) error {
+			if f.forceWriteErr != nil {
+				return f.forceWriteErr
+			}
+			f.files[p] = b
+			return nil
+		},
+		mkdirAll: func(string, os.FileMode) error { return f.forceMkdirErr },
 		rename: func(from, to string) error {
+			if f.forceRenameErr != nil {
+				return f.forceRenameErr
+			}
 			f.files[to] = f.files[from]
 			delete(f.files, from)
 			return nil
@@ -108,7 +123,7 @@ func decodeBridgeFromCommand(t *testing.T, cmd string) *traceEnvelope {
 	return env
 }
 
-func TestIsSearchCommandRecognisesOursAndNothingElse(t *testing.T) {
+func TestIsSearchCommandRecognizesOursAndNothingElse(t *testing.T) {
 	yes := []string{
 		`dropin-miner search "how do ports work"`,
 		`"/Users/x y/.tokendrop/bin/dropin-miner" search -config "/a b/c.toml" -format model "q"`,
@@ -128,12 +143,12 @@ func TestIsSearchCommandRecognisesOursAndNothingElse(t *testing.T) {
 	}
 	for _, c := range yes {
 		if !isSearchCommand(c) {
-			t.Errorf("not recognised: %q", c)
+			t.Errorf("not recognized: %q", c)
 		}
 	}
 	for _, c := range no {
 		if isSearchCommand(c) {
-			t.Errorf("wrongly recognised: %q", c)
+			t.Errorf("wrongly recognized: %q", c)
 		}
 	}
 }
@@ -379,6 +394,105 @@ func TestHookCursorWithoutAConversationDoesNothingButAllow(t *testing.T) {
 	for name := range fs.files {
 		t.Errorf("a file was written with nothing to key it on: %s", name)
 	}
+}
+
+// writeHookConfig gives hookMain a real config file naming a sessions
+// directory, so lineage's write side is actually exercised: hookMain
+// resolves hc.sessionsDir from disk (loadConfig), not from a test-injected
+// hookContext the way runHook's shadow dispatcher does. Without this,
+// TestHookMain* below would drive the real hookMain but the sidecar write
+// path they mean to inject faults into would never run.
+func writeHookConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tokendrop.toml")
+	if err := os.WriteFile(path, []byte("[miner]\nsessions_dir = \"/sessions\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestHookMainLineageStillRewritesWhenTheSidecarWriteFails is the fail-open
+// contract at the point hook.go's own doc comment states it most strongly:
+// "FAIL-OPEN, ALWAYS... emit nothing (or the one output the host requires
+// to proceed)". The durable sidecar (the workspace lineage file) and the
+// PreToolUse rewrite are two different writes; a disk failure on the
+// FORMER must not withhold the LATTER, because the rewrite is the one
+// output a hung tool call is waiting on. This drives the real hookMain
+// (main.go's cmdHook entry point), not the test-local hookMainWith shadow
+// used elsewhere in this file, so the assertion is about the code that
+// actually ships.
+func TestHookMainLineageStillRewritesWhenTheSidecarWriteFails(t *testing.T) {
+	fs, ops := newFakeHookOps(nil)
+	fs.forceWriteErr = errors.New("disk full")
+	fs.forceMkdirErr = errors.New("disk full")
+	fs.forceRenameErr = errors.New("disk full")
+	cfgPath := writeHookConfig(t)
+
+	cmd := `dropin-miner search -format model "q"`
+	payload, _ := json.Marshal(map[string]any{
+		"session_id": "s", "prompt_id": "p", "tool_use_id": "t", "cwd": "/home/u/project",
+		"tool_input": map[string]any{"command": cmd},
+	})
+	var stdout, stderr bytes.Buffer
+	code := hookMain(ops, []string{"-config", cfgPath, "lineage"}, bytes.NewReader(payload), &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("hookMain exited %d; a disk failure on the sidecar must not fail the tool call (stderr: %s)", code, stderr.String())
+	}
+	var resp struct {
+		Out struct {
+			Event string         `json:"hookEventName"`
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil || resp.Out.Event != "PreToolUse" {
+		t.Fatalf("the rewrite was withheld because the sidecar write failed: %q", stdout.String())
+	}
+	if cmdOut, _ := resp.Out.Input["command"].(string); !strings.Contains(cmdOut, bridgeEnv+"=") {
+		t.Errorf("command was not rewritten with the bridge: %v", resp.Out.Input["command"])
+	}
+	if len(fs.files) != 0 {
+		t.Errorf("the fake reported every write as failing, yet something landed: %v", keys(fs.files))
+	}
+}
+
+// TestHookMainNeverExitsNonZeroForAKnownSubcommand covers the rest of the
+// fail-open surface hookMain's own comment claims: whatever a known
+// subcommand's handler does internally — persistence failing, a refused
+// flush spawn, a malformed payload — hookMain(...) still returns exitOK,
+// because a coding agent's hook step is a gate in front of every tool
+// call and a nonzero exit there is what actually blocks the agent.
+func TestHookMainNeverExitsNonZeroForAKnownSubcommand(t *testing.T) {
+	cfgPath := writeHookConfig(t)
+	cases := []struct {
+		name    string
+		args    []string
+		payload []byte
+	}{
+		{"window session-start, persist fails", []string{"-config", cfgPath, "window", "session-start"}, mustJSON(t, map[string]any{"session_id": "s"})},
+		{"cursor sessionStart, persist fails", []string{"-config", cfgPath, "cursor", "sessionStart"}, mustJSON(t, map[string]any{"conversation_id": "c"})},
+		{"flush, spawn refused", []string{"-config", cfgPath, "flush"}, nil},
+		{"lineage, malformed payload", []string{"-config", cfgPath, "lineage"}, []byte("not json")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, ops := newFakeHookOps(nil)
+			ops.spawnFlush = func(string) error { return errors.New("spawn refused") }
+			var stdout, stderr bytes.Buffer
+			code := hookMain(ops, c.args, bytes.NewReader(c.payload), &stdout, &stderr)
+			if code != exitOK {
+				t.Fatalf("%s: exited %d, want %d (fail-open): stderr=%q", c.name, code, exitOK, stderr.String())
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func keys(m map[string][]byte) []string {

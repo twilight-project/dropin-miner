@@ -47,6 +47,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
@@ -54,7 +55,7 @@ const (
 	credentialsFile    = "credentials.json"
 	credentialsVersion = 1
 
-	apiKeyEnv    = "TOKENDROP_API_KEY"
+	apiKeyEnv    = "TOKENDROP_API_KEY" // #nosec G101 -- an env var NAME, not a credential value
 	openAIKeyEnv = "OPENAI_API_KEY"
 
 	// loginProbeTimeout bounds the verification round trip; a router that
@@ -150,7 +151,7 @@ func writeCredentials(path string, c credentials) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := json.MarshalIndent(c, "", "  ") // #nosec G117 -- this IS the credential's one legitimate persisted home: ~/.tokendrop/credentials.json, written 0600 below
 	if err != nil {
 		return err
 	}
@@ -223,7 +224,10 @@ func probeKey(ctx context.Context, routerURL, key string) (probeOutcome, string,
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", searchUserAgent+"/"+strings.TrimPrefix(buildVersion(), "v"))
 	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := (&http.Client{Timeout: loginProbeTimeout}).Do(req)
+	// CheckRedirect: this probe exists to verify the key before it is ever
+	// stored, and it carries that key in Authorization to do it — the same
+	// reasoning as search.go's client, and it is the same key.
+	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects}).Do(req)
 	if err != nil {
 		return probeUnavailable, "", err
 	}

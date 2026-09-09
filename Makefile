@@ -1,7 +1,7 @@
 GO ?= go
 VERSION ?= dev
 
-.PHONY: build test race vet fmt cross tidy verify
+.PHONY: build test race vet fmt lint vuln cross tidy verify
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/dropin-miner ./cmd/dropin-miner
@@ -20,6 +20,14 @@ vet:
 fmt:
 	$(GO) run golang.org/x/tools/cmd/goimports@v0.30.0 -local github.com/twilight-project/dropin-miner -w .
 
+# Matches the CI golangci-lint job (config in .golangci.yml; version pinned in ci.yml).
+lint:
+	golangci-lint run
+
+# Dependency vulnerability scan (matches CI; pinned there).
+vuln:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+
 tidy:
 	$(GO) mod tidy
 
@@ -30,4 +38,4 @@ cross:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -o /dev/null ./... || exit 1; \
 	done; done
 
-verify: build test race vet cross
+verify: build test race vet lint vuln tidy cross

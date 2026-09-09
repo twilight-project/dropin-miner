@@ -222,10 +222,7 @@ func (c *OAuthClient) JKT() string { return c.proofer.JKT() }
 
 // httpCtx routes every x/oauth2 request through the DPoP transport.
 func (c *OAuthClient) httpCtx(ctx context.Context) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
-		Transport: c.transport,
-		Timeout:   30 * time.Second,
-	})
+	return context.WithValue(ctx, oauth2.HTTPClient, newCredentialClient(c.transport))
 }
 
 // persist writes the rotated refresh authorization durably BEFORE the
@@ -525,7 +522,7 @@ func (c *OAuthClient) Revoke(ctx context.Context) error {
 		return fmt.Errorf("auth: build revocation request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := (&http.Client{Transport: c.transport, Timeout: 30 * time.Second}).Do(req)
+	resp, err := newCredentialClient(c.transport).Do(req)
 	if err != nil {
 		return fmt.Errorf("auth: revocation: %w", err)
 	}
@@ -580,7 +577,7 @@ func (c *OAuthClient) RedeemEnrollmentAssertion(ctx context.Context, assertion s
 	// Through the DPoP transport: the proof is what binds the resulting
 	// tokens to this installation's key, and it is the same transport the
 	// capability exchange uses.
-	resp, err := (&http.Client{Transport: c.transport, Timeout: 30 * time.Second}).Do(req)
+	resp, err := newCredentialClient(c.transport).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("auth: assertion redemption: %w", err)
 	}
@@ -618,6 +615,257 @@ func (c *OAuthClient) RedeemEnrollmentAssertion(ctx context.Context, assertion s
 	}
 	if out.RefreshToken == "" {
 		return nil, errors.New("auth: assertion grant returned no refresh token; this installation could never renew")
+	}
+	tok := &oauth2.Token{
+		AccessToken:  out.AccessToken,
+		RefreshToken: out.RefreshToken,
+		TokenType:    out.TokenType,
+	}
+	if out.ExpiresIn > 0 {
+		tok.Expiry = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
+	}
+	if err := c.persistLocked(ctx, tok); err != nil {
+		return nil, err
+	}
+	return tok, nil
+}
+
+// --- provider authorization (§37.2, headless PKCE at the provider) ---
+
+// GrantTypeProviderAuthorization is the extension grant the AS redeems a
+// provider authorization code under (contract §37.2,
+// TWILIGHT_MINING_PROXY_AS_V1_12).
+//
+// Deliberately not authorization_code: that grant means the AS issued the
+// code, and it did not — the provider did. It would also collide the day the
+// AS issues its own, which the loopback door above already implies.
+const GrantTypeProviderAuthorization = "urn:twilight:params:oauth:grant-type:provider-authorization" // #nosec G101 -- a grant-type URN, not a credential
+
+// ErrNoProviderAuthorization reports that this AS advertises no
+// enrollment_authorization_template. The key is OPTIONAL in the discovery
+// document (§19), so its absence means this AS does not offer this
+// enrollment door — not that the proxy should assemble the URL itself. It is
+// the same shape as ErrNoCurrentTargetEndpoint, and the same refusal to
+// guess: an authorization URL the AS did not advertise is not one.
+var ErrNoProviderAuthorization = errors.New("auth: this AS advertises no enrollment_authorization_template")
+
+// ErrProviderAuthorizationGrantUnsupported reports an AS that advertises the
+// door but does not offer the grant that completes it. Distinct from
+// ErrNoProviderAuthorization because it is a different fault — that one is a
+// deployment without the feature, this one is a deployment with half of it —
+// and because a participant should learn it BEFORE authorizing, not after.
+var ErrProviderAuthorizationGrantUnsupported = errors.New(
+	"auth: this AS does not offer the provider-authorization grant (" +
+		GrantTypeProviderAuthorization + " is not in grant_types_supported)")
+
+// AuthorizationRefusedError is the AS's refusal of a provider authorization,
+// kept structured rather than flattened into a string.
+//
+// §37.2 requires the AS to name the remedy and to say that an
+// over-privileged key should be deleted. That text is the most useful thing
+// the participant will see, and wrapping it in "enrollment failed" would
+// bury the only part they can act on. Keeping Description separate is what
+// lets the caller relay it verbatim, on its own lines.
+type AuthorizationRefusedError struct {
+	// Status is the HTTP status the token endpoint returned.
+	Status int
+	// Code is the OAuth error code (RFC 6749 §5.2).
+	Code string
+	// Description is the AS's own text, to be shown unedited.
+	Description string
+}
+
+func (e *AuthorizationRefusedError) Error() string {
+	if e.Description != "" {
+		return fmt.Sprintf("auth: the authorization server refused this authorization (%d %s): %s",
+			e.Status, e.Code, e.Description)
+	}
+	return fmt.Sprintf("auth: the authorization server refused this authorization (%d %s)", e.Status, e.Code)
+}
+
+// PendingProviderAuthorization is a started provider authorization: show the
+// participant Host and URL, then Redeem the code they bring back.
+//
+// The verifier is unexported and never leaves this package. cmd/tokendrop is
+// forbidden from importing a security library directly (ADR-0010, asserted by
+// TestSecurityDependenciesConfinedToAuth), so PKCE generation has to live
+// here anyway — but the confinement is worth more than the boundary test: a
+// verifier that crossed into the command would be one refactor away from a
+// log line.
+type PendingProviderAuthorization struct {
+	// URL is the provider authorization URL, challenge substituted, for the
+	// participant to open.
+	URL string
+	// Host is URL's host, already checked against the compiled-in
+	// allowlist, for disclosure before sending anyone to it.
+	Host string
+
+	c *OAuthClient
+
+	mu sync.Mutex
+	// verifier is emptied by the first Redeem. PKCE binds one challenge to
+	// one code, so a second attempt against a held verifier could only
+	// fail; emptying it makes "start again" the structural outcome rather
+	// than an instruction in a comment.
+	verifier string
+}
+
+// StartProviderAuthorization prepares a headless provider authorization for
+// a source profile: it resolves the advertised template, checks it, and
+// generates the PKCE verifier whose challenge the URL carries.
+//
+// THE PROXY NEVER EXCHANGES THE CODE WITH THE PROVIDER. It is sent to the
+// AS, which exchanges it and learns the identity itself. If the proxy
+// exchanged and then told the AS who the participant was, that would be a
+// participant-supplied identifier, which MINIS-VER-003 forbids at MUST
+// level. The exchange is one request and the key would be in hand; that is
+// exactly why the rule is written down.
+//
+// Nothing here fetches the template. It is displayed, and that is the whole
+// reason it is exempt from the same-origin rule every other advertised value
+// is held to.
+//
+// The three refusals are kept distinct because they are three different
+// faults with three different remedies: no template (this AS does not offer
+// the door), no grant (it offers half of it), and a template the allowlist
+// rejects (it is trying to send participants somewhere this build does not
+// permit).
+func (c *OAuthClient) StartProviderAuthorization(ctx context.Context, profile string) (*PendingProviderAuthorization, error) {
+	return c.startProviderAuthorization(ctx, profile, providerAuthorizationHosts)
+}
+
+// startProviderAuthorization takes the allowlist as a parameter for the
+// reason checkProviderAuthorizationTemplate does: it is what lets a test
+// point a template at a local server and prove this function never fetches
+// it. The exported entry point passes the compiled-in map, and
+// TestNoLoopbackInTheProductionAllowlist proves no release can reach the
+// loopback path.
+func (c *OAuthClient) startProviderAuthorization(ctx context.Context, profile string, hosts map[string]string) (*PendingProviderAuthorization, error) {
+	doc, err := c.disc.Document(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if doc.EnrollmentAuthorizationTemplate == "" {
+		return nil, ErrNoProviderAuthorization
+	}
+	meta, err := c.disc.OAuthMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !meta.Supports(GrantTypeProviderAuthorization) {
+		return nil, ErrProviderAuthorizationGrantUnsupported
+	}
+	host, err := checkProviderAuthorizationTemplate(doc.EnrollmentAuthorizationTemplate, profile, hosts)
+	if err != nil {
+		return nil, err
+	}
+
+	verifier := oauth2.GenerateVerifier()
+	return &PendingProviderAuthorization{
+		URL:      expandChallenge(doc.EnrollmentAuthorizationTemplate, oauth2.S256ChallengeFromVerifier(verifier)),
+		Host:     host,
+		c:        c,
+		verifier: verifier,
+	}, nil
+}
+
+// consume takes the verifier and empties it, so one pending authorization
+// redeems at most once.
+func (p *PendingProviderAuthorization) consume() (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.verifier == "" {
+		return "", errors.New("auth: this authorization has already been redeemed; PKCE binds one " +
+			"challenge to one code, so a retry needs a fresh authorization URL")
+	}
+	v := p.verifier
+	p.verifier = ""
+	return v, nil
+}
+
+// Redeem sends the code the participant pasted, with the verifier that
+// matches the challenge they authorized against, to the AS token endpoint —
+// and persists the refresh token exactly as every other enrollment door
+// does.
+//
+// The artifact this leaves is the same artifact the device flow leaves, on
+// purpose: nothing downstream of enrollment can tell which door was used,
+// and so nothing downstream can come to depend on one.
+//
+// code_challenge_method is NOT sent. The AS published the method in the
+// template it advertised, so it already knows, and a method the client
+// supplies is a downgrade vector — plain is legal PKCE. §37.2 forbids the AS
+// to accept one, and the AS hardcodes S256 on its own exchange.
+func (p *PendingProviderAuthorization) Redeem(ctx context.Context, code string) (*oauth2.Token, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, errors.New("auth: provider authorization code is empty")
+	}
+	verifier, err := p.consume()
+	if err != nil {
+		return nil, err
+	}
+	c := p.c
+
+	meta, err := c.disc.OAuthMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	form := url.Values{
+		"grant_type":    {GrantTypeProviderAuthorization},
+		"code":          {code},
+		"code_verifier": {verifier},
+		"client_id":     {ClientID},
+		"scope":         {strings.Join(NormalScopes, " ")},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, meta.TokenEndpoint,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("auth: build provider authorization request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Through the DPoP transport, as the assertion grant is: the proof is
+	// what binds the resulting tokens to this installation's key.
+	resp, err := newCredentialClient(c.transport).Do(req)
+	if err != nil {
+		// The code is in the request body and must not be wrapped into an
+		// error; the transport's own error never sees it.
+		return nil, errors.New("auth: provider authorization redemption request failed")
+	}
+	defer drainAndClose(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("auth: read provider authorization response: %w", err)
+	}
+	var out struct {
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		TokenType        string `json:"token_type"`
+		ExpiresIn        int64  `json:"expires_in"`
+		Scope            string `json:"scope"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("auth: parse provider authorization response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &AuthorizationRefusedError{
+			Status:      resp.StatusCode,
+			Code:        out.Error,
+			Description: out.ErrorDescription,
+		}
+	}
+	if !strings.EqualFold(out.TokenType, "DPoP") {
+		// An unbound token here would be replayable by anyone who saw it,
+		// and accepting one would silently drop the sender constraint the
+		// rest of this client assumes.
+		return nil, fmt.Errorf("auth: provider authorization grant returned token_type %q, want DPoP", out.TokenType)
+	}
+	if out.RefreshToken == "" {
+		return nil, errors.New("auth: provider authorization grant returned no refresh token; this installation could never renew")
 	}
 	tok := &oauth2.Token{
 		AccessToken:  out.AccessToken,

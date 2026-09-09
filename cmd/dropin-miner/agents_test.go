@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -417,6 +418,49 @@ func TestAgentsOpencodePluginRewritesOurCommandOnly(t *testing.T) {
 	}
 	if strings.Contains(js, "{{") {
 		t.Error("an unexpanded placeholder is in the plugin")
+	}
+}
+
+// TestAgentsUninstallSparesAHookEntryForADifferentInstallationOfTheSameName
+// probes the boundary TestAgentsUninstallRemovesOnlyWhatInstallWrote does
+// not: entryIsOurs/ruleIsOurs decide "ours" by strings.Contains(command,
+// bin), where bin is THIS process's full absolute path (ops.executable()).
+// A hook or allow rule left by a DIFFERENT dropin-miner installation — a
+// stale entry from before a reinstall moved the binary, or a second copy
+// entirely, sharing only the basename — must survive uninstall exactly
+// like any other foreign entry. If the match were ever loosened to the
+// basename alone, this is the entry that would start disappearing.
+func TestAgentsUninstallSparesAHookEntryForADifferentInstallationOfTheSameName(t *testing.T) {
+	m, ops := newFakeMachine("claude")
+	other := "/opt/other-vendor/dropin-miner"
+	m.files["/home/u/.claude/settings.json"] = []byte(fmt.Sprintf(`{
+		"permissions":{"allow":["Bash(%s search:*)"]},
+		"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":%q}]}]}
+	}`, other, other+" hook lineage"))
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	code, out, _ := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
+	if code != exitOK {
+		t.Fatalf("uninstall: %d\n%s", code, out)
+	}
+	claude := hooksOf(t, m, "/home/u/.claude/settings.json")
+	pre, _ := claude["PreToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Fatalf("a different installation's PreToolUse group was removed: %v", pre)
+	}
+	if got := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]; got != other+" hook lineage" {
+		t.Errorf("the foreign group survived but was altered: %v", got)
+	}
+	allow := allowOf(t, m, "/home/u/.claude/settings.json")
+	found := false
+	for _, r := range allow {
+		if strings.Contains(r, other) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a different installation's allow rule was removed: %v", allow)
 	}
 }
 

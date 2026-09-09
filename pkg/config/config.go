@@ -621,6 +621,17 @@ func (r *rawConfig) finishMiner(upstream *url.URL, mining Mining) (Miner, error)
 		if u.User != nil {
 			return Miner{}, errors.New("miner.router_url: must not carry userinfo")
 		}
+		// as_url's rule, unchanged in substance: every search sends the
+		// participant's sr- key in Authorization, so a routable plain-http
+		// router is the same cleartext-credential exposure a routable
+		// plain-http AS would be. The loopback carve-out is deliberate,
+		// for local development without TLS; testing against a ROUTABLE
+		// devnet router needs TLS on the devnet, or the client co-located
+		// over loopback — that is the intended consequence, not a gap.
+		if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+			return Miner{}, fmt.Errorf("miner.router_url: plain http is permitted only for loopback hosts, got %q — "+
+				"use https, or a loopback address for local development", u.Host)
+		}
 		m.RouterURL = u
 	} else {
 		m.RouterURL = upstream
@@ -689,6 +700,22 @@ func (r *rawConfig) finishMining() (Mining, error) {
 	}
 	if u.User != nil {
 		return Mining{}, errors.New("mining.as_url: must not carry userinfo (it would surface in Authorization headers and error strings)")
+	}
+	// §18, and rejected HERE rather than at first use. auth.NewDiscoverer
+	// applies the same rule and keeps applying it — this is defense in depth,
+	// not a move — but a config that loads and then fails on the first AS call
+	// contradicts this package's own contract: unsafe states are rejected at
+	// load, not warned about later. Every token, DPoP proof and observation
+	// this client sends to the AS would otherwise cross the wire in the clear
+	// on a routable plain-http host.
+	//
+	// The loopback carve-out is deliberate and is what makes local development
+	// possible without TLS. It also means testing against a ROUTABLE devnet
+	// requires TLS on the devnet, or the client co-located over loopback;
+	// that is the intended consequence, not a gap.
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return Mining{}, fmt.Errorf("mining.as_url: plain http is permitted only for loopback hosts (§18), got %q — "+
+			"use https, or a loopback address for local development", u.Host)
 	}
 	if m.ChainID == "" {
 		return Mining{}, errors.New("mining.chain_id: required when mining is enabled")

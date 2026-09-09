@@ -20,6 +20,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+
+	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
 
 const (
@@ -92,14 +94,38 @@ func decodeTraceBridge(s string) *traceEnvelope {
 	return &env
 }
 
-// capTrace enforces the size discipline: truncate history text (keeping the
-// END — the words nearest the search are the ones that explain it), then
-// drop history, then drop the envelope. Returns nil when nothing may ride.
+// capTrace enforces the size discipline: scrub history text, THEN truncate
+// it (keeping the END — the words nearest the search are the ones that
+// explain it), then drop history, then drop the envelope. Returns nil when
+// nothing may ride.
+//
+// Scrub before truncate, not after: PR #1 review caught that the reverse
+// order lets a secret straddle the truncation boundary — its identifying
+// prefix (sk-, sr-, ...) falls before the cut, and what remains is a bare,
+// unrecognizable tail that no pattern matches. Scrubbing the full text
+// first means a secret is either fully replaced by the (short, fixed-size)
+// placeholder before truncation ever runs, or it never matched at all;
+// either way there is no fragment left for truncation to create. This also
+// makes traceHistoryCap an exact bound again rather than an approximate
+// one — redaction can only shrink text (a real secret is always longer
+// than "[REDACTED]"), never grow it past the cap after the fact.
+//
+// The scrub is here rather than at the point history text is first read
+// (currentAssistantText, hookCursor's afterAgent* handlers) because every
+// one of those paths reassigns env.History and then reaches capTrace before
+// the envelope is used for anything — encoded into the bridge, marshaled
+// into the search body, or copied into the lineage sidecar (hookLineage
+// writes l.History = env.History AFTER this call, not before). One
+// chokepoint downstream of every construction site is proof it always
+// runs, where scrubbing at each call site would be proof only that this
+// author remembered to. TraceText, not String: see its doc — "bearer" in
+// ordinary prose is trajectory data here, not a log line.
 func capTrace(env *traceEnvelope) *traceEnvelope {
 	if env == nil {
 		return nil
 	}
 	for i := range env.History {
+		env.History[i].Text = redact.TraceText(env.History[i].Text)
 		if len(env.History[i].Text) > traceHistoryCap {
 			env.History[i].Text = env.History[i].Text[len(env.History[i].Text)-traceHistoryCap:]
 		}

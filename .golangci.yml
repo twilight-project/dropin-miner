@@ -1,0 +1,51 @@
+# golangci-lint v2 config. All issues gate once verify/CI depend on this (see the commit that
+# flips that on) — this is a launch client that carries a bearer credential and a payout wallet,
+# and gosec is enabled for the same reason tokendrop-proxy enables it.
+version: "2"
+run:
+  # The module's minimum LANGUAGE version (go.mod's `go` directive), not
+  # the toolchain it's built with. go.mod additionally pins `toolchain
+  # go1.26.8` — a patched build toolchain (govulncheck gates on stdlib
+  # CVEs; 1.25.0 alone failed it) — but that's an orthogonal, purely
+  # build-environment concern: it doesn't mean this module suddenly
+  # requires 1.26 language features. These two numbers are deliberately
+  # different; don't "sync" them.
+  go: "1.25"
+linters:
+  enable:
+    - gosec
+    - misspell
+    - unconvert
+    - depguard
+  settings:
+    misspell:
+      locale: US
+    depguard:
+      rules:
+        # AGENTS.md invariant 8: pkg/ is the shared protocol implementation this repo owns and
+        # hands to the proxy by import. A pkg/ package importing the cmd/ wrapper would make that
+        # impossible and is the one import-graph rule this repo actually has today. The other
+        # boundary named in AGENTS.md — the mining path (flush/driver/collector) never dialing the
+        # router — is not import-expressible (flush.go/driver.go legitimately import net/http to
+        # reach the AS), so it is proven behaviorally in cmd/dropin-miner/flush_test.go instead of
+        # invented as a second rule here.
+        pkg-never-cmd:
+          files: ["**/pkg/**"]
+          deny:
+            - pkg: github.com/twilight-project/dropin-miner/cmd/dropin-miner
+              desc: "pkg/ must not import cmd/dropin-miner (AGENTS.md invariant 8): it is the shared protocol implementation, owned here and consumed elsewhere by import"
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/twilight-project/dropin-miner

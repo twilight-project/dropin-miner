@@ -5,8 +5,6 @@ package main
 // because env beats the config file in config.Load's precedence.
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -16,17 +14,6 @@ func noEnv(string) string { return "" }
 // envOf builds a getenv from a literal map.
 func envOf(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
-}
-
-// writeListenConfig writes a minimal config naming addr as the listener
-// and returns its path.
-func writeListenConfig(t *testing.T, addr string) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "tokendrop.toml")
-	if err := os.WriteFile(p, []byte("[proxy]\nlisten = \""+addr+"\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
 }
 
 // The env-only half of key resolution; the credentials file's place in the

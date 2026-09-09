@@ -23,7 +23,7 @@ import (
 )
 
 // Submitter delivers one record and reports the AS's answer. The real
-// implementation lives in internal/auth (it needs the capability and
+// implementation lives in pkg/auth (it needs the capability and
 // DPoP machinery); this seam keeps the collector free of auth imports
 // and trivially testable.
 type Submitter interface {

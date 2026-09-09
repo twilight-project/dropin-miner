@@ -62,7 +62,7 @@ func (s *Submitter) Submit(ctx context.Context, rec *spool.Record) (bool, bool, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "DPoP "+cap.Capability)
 
-	resp, err := (&http.Client{Transport: s.mining.oauth.transport, Timeout: 30 * time.Second}).Do(req)
+	resp, err := newCredentialClient(s.mining.oauth.transport).Do(req)
 	if err != nil {
 		// Network failure: retryable, nothing is lost.
 		return false, false, 0, fmt.Errorf("auth: submission transport failed")

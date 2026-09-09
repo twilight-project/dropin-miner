@@ -29,7 +29,7 @@ func TestResolveAPIKeyOrderIsEnvThenFileThenOpenAI(t *testing.T) {
 	if filepath.Dir(path) != filepath.Dir(m.IntakeDir) || filepath.Base(path) != credentialsFile {
 		t.Fatalf("credentials file is not beside the intake dir: %s", path)
 	}
-	if err := writeCredentials(path, credentials{APIKey: "sr-canary-stored", Router: "https://router.fictional.test"}); err != nil {
+	if err := writeCredentials(path, credentials{APIKey: "sr-canary-stored", Router: "https://router.fictional.test"}); err != nil { // #nosec G101 -- "sr-canary-stored", not a credential
 		t.Fatal(err)
 	}
 	if posixModes {
@@ -38,7 +38,7 @@ func TestResolveAPIKeyOrderIsEnvThenFileThenOpenAI(t *testing.T) {
 		}
 	}
 
-	k, src, err := resolveAPIKey(envOf(map[string]string{"TOKENDROP_API_KEY": "sr-canary-env", "OPENAI_API_KEY": "sk-canary"}), m)
+	k, src, err := resolveAPIKey(envOf(map[string]string{"TOKENDROP_API_KEY": "sr-canary-env", "OPENAI_API_KEY": "sk-canary"}), m) // #nosec G101 -- synthetic canaries, not credentials
 	if err != nil || k != "sr-canary-env" || src != keyFromEnv {
 		t.Errorf("env should win: %q %q %v", k, src, err)
 	}
@@ -61,10 +61,10 @@ func TestResolveAPIKeyRefusesAFileOthersCanRead(t *testing.T) {
 	}
 	m := emptyMiner(t)
 	path := credentialsPath(m)
-	if err := writeCredentials(path, credentials{APIKey: "sr-canary-stored"}); err != nil {
+	if err := writeCredentials(path, credentials{APIKey: "sr-canary-stored"}); err != nil { // #nosec G101 -- "sr-canary-stored", not a credential
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := os.Chmod(path, 0o644); err != nil { // #nosec G302 -- intentionally permissive mode, to exercise the refusal path
 		t.Fatal(err)
 	}
 	// Refused, and NOT silently replaced by the OpenAI fallback.
@@ -87,7 +87,7 @@ func TestResolveAPIKeyRefusesASymlinkAndACorruptFile(t *testing.T) {
 	m := emptyMiner(t)
 	path := credentialsPath(m)
 	real := filepath.Join(t.TempDir(), "elsewhere.json")
-	if err := writeCredentials(real, credentials{APIKey: "sr-canary-linked"}); err != nil {
+	if err := writeCredentials(real, credentials{APIKey: "sr-canary-linked"}); err != nil { // #nosec G101 -- "sr-canary-linked", not a credential
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -200,7 +200,7 @@ func TestLoginVerifiesWithoutSpendingThenStoresAndSearchUsesIt(t *testing.T) {
 		t.Errorf("search did not send the stored key: %q", req.Header.Get("Authorization"))
 	}
 	// And the environment still wins over the file.
-	runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-canary-env"}, "-config", cfg, "q")
+	runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-canary-env"}, "-config", cfg, "q") // #nosec G101 -- synthetic canary, not a credential
 	if req, _ := fr.last(t); req.Header.Get("Authorization") != "Bearer sr-canary-env" {
 		t.Errorf("env did not override the file: %q", req.Header.Get("Authorization"))
 	}
@@ -274,7 +274,7 @@ func TestLoginShowAndForget(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, "sr-…good from credentials file") || strings.Contains(out, "sr-canary-good") {
 		t.Errorf("show: %d %q", code, out)
 	}
-	code, out, _ = runLogin(t, "", map[string]string{"TOKENDROP_API_KEY": "sr-canary-envkey"}, "-config", cfg, "-show")
+	code, out, _ = runLogin(t, "", map[string]string{"TOKENDROP_API_KEY": "sr-canary-envkey"}, "-config", cfg, "-show") // #nosec G101 -- synthetic canary, not a credential
 	if code != exitOK || !strings.Contains(out, "from TOKENDROP_API_KEY") || !strings.Contains(out, "shadowed by the environment") {
 		t.Errorf("show with env set: %d %q", code, out)
 	}
@@ -311,7 +311,7 @@ func TestSearchWithoutAnyKeyNamesLogin(t *testing.T) {
 func TestSearch401NamesTheKeySourceAndLogin(t *testing.T) {
 	_, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
 	h := fixedSearchOps(root)
-	code, _, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-canary-env"}, "-config", cfg, "q")
+	code, _, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-canary-env"}, "-config", cfg, "q") // #nosec G101 -- synthetic canary, not a credential
 	if code != exitClientErr || !strings.Contains(errOut, "from TOKENDROP_API_KEY") || !strings.Contains(errOut, "dropin-miner login") {
 		t.Errorf("exit %d err %q", code, errOut)
 	}

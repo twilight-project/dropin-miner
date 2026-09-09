@@ -167,7 +167,7 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 	return exitOK
 }
 
-// ── our command, recognised ─────────────────────────────────────────────
+// ── our command, recognized ─────────────────────────────────────────────
 
 // searchCommandRe matches a shell command that runs OUR search: the binary
 // by bare name or any path, optionally quoted, optionally .exe, followed by

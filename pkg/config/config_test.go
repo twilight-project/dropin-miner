@@ -349,6 +349,90 @@ func TestMiningTargetEpochIsAnOptionalOverride(t *testing.T) {
 	}
 }
 
+// §18: plain http reaches the AS only on loopback, and the refusal happens at
+// LOAD.
+//
+// The discoverer applies the same rule, so this is defense in depth rather
+// than the only guard — but a config that loads and then fails on the first
+// AS call contradicts this package's stated contract, and it hands an
+// operator a working-looking setup that mines nothing. Every token, DPoP
+// proof and observation would cross a routable plain-http hop in the clear.
+func TestMiningRejectsRoutablePlainHTTPASURL(t *testing.T) {
+	for _, host := range []string{"as.example.com", "203.0.113.10", "as.internal:8080"} {
+		body := "[mining]\nenabled = true\nas_url = \"http://" + host + "\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
+		err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+		if err == nil {
+			t.Errorf("plain http as_url %q was accepted at load", host)
+			continue
+		}
+		if !strings.Contains(err.Error(), "loopback") {
+			t.Errorf("as_url %q: the refusal does not name the rule: %v", host, err)
+		}
+	}
+}
+
+// The carve-out that makes local development work without TLS. Losing it
+// would be as much a defect as losing the rule — it is what a developer runs
+// against a local AS all day.
+func TestMiningAllowsPlainHTTPOnLoopback(t *testing.T) {
+	for _, host := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		body := "[mining]\nenabled = true\nas_url = \"http://" + host + "\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
+		if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+			t.Errorf("loopback as_url %q was refused: %v", host, err)
+		}
+	}
+}
+
+// https is unaffected on any host.
+func TestMiningAllowsHTTPSAnywhere(t *testing.T) {
+	body := "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
+	if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+		t.Fatalf("https as_url was refused: %v", err)
+	}
+}
+
+// The router_url sibling of the as_url rule above: every search sends the
+// participant's sr- key in Authorization to router_url, so a routable
+// plain-http router is the same cleartext-credential exposure a routable
+// plain-http AS would be. This was the "known gap" AGENTS.md invariant 5
+// stated honestly (as_url fixed, router_url not yet); closing it here is
+// what makes that invariant true rather than aspirational.
+//
+// Inverted from the review's TestA7_RouterURLAcceptsCleartextHTTP, which
+// demonstrated the leak (asserted http:// was accepted) and the asymmetry
+// against parseUpstream, which already refused the identical host. Both
+// checks are kept: the refusal, and that the asymmetry the repro found is
+// now closed.
+func TestMinerRejectsRoutablePlainHTTPRouterURL(t *testing.T) {
+	for _, host := range []string{"router.example.com", "203.0.113.10", "router.internal:8080"} {
+		body := "[miner]\nrouter_url = \"http://" + host + "\"\n"
+		err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+		if err == nil {
+			t.Errorf("plain http router_url %q was accepted at load", host)
+			continue
+		}
+		if !strings.Contains(err.Error(), "loopback") {
+			t.Errorf("router_url %q: the refusal does not name the rule: %v", host, err)
+		}
+	}
+	if _, err := parseUpstream("http://router.attacker.example"); err == nil {
+		t.Fatal("parseUpstream unexpectedly accepted http:// — the asymmetry the repro found is gone")
+	}
+}
+
+// The carve-out that makes local development work without TLS — losing it
+// would be as much a defect as losing the rule. Testing against a ROUTABLE
+// devnet router still needs TLS on the devnet, or the client co-located
+// over loopback: the intended consequence, not a gap.
+func TestMinerAllowsPlainHTTPRouterURLOnLoopback(t *testing.T) {
+	for _, host := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		body := "[miner]\nrouter_url = \"http://" + host + "\"\n"
+		if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+			t.Errorf("loopback router_url %q was refused: %v", host, err)
+		}
+	}
+}
+
 func TestMiningRejectsUserinfoURL(t *testing.T) {
 	body := "[mining]\nenabled = true\nas_url = \"https://token@as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
 	if err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv); !strings.Contains(err.Error(), "userinfo") {

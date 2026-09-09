@@ -15,6 +15,6 @@ by one field, and nothing noticed for two phases because nothing was watching. `
 what that drift turned out to be hiding — a proxy-visible field that no specification
 defined, invisible precisely because a tolerant consumer ignores what it does not recognize.
 
-`TestFixtureChecksums` (in `internal/wire`) fails if these files and `SHA256SUMS` disagree.
+`TestFixtureCorpusChecksums` (in `pkg/wire`) fails if these files and `SHA256SUMS` disagree.
 It cannot tell you that both were changed together to something upstream does not have; the
 rule above is what covers that, and the rule is the point.
