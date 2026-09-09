@@ -93,30 +93,50 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	}
 
 	// If the key doesn't yet have the mining scope, this is §2.2's
-	// re-approval case. reg.ClaimURL is the original one-time claim
-	// code's URL — already consumed by the first claim, and confirmed
-	// live that resubmitting it 404s even for the original owner
-	// (handleAgentClaim refuses any claimed registration outright). The
-	// real mechanism is a portal-console grant (POST
-	// /internal/v1/agents/{id}/scopes, owner-only, never the sr- key —
-	// search-router commit d20a6ac). Prefer the direct console_url this
-	// same poll just returned (search-router added it specifically to
-	// close this gap — live testing found the generic claim address
-	// routes a human through submitting a doomed code first, only
-	// discovering the real console from the resulting error page); fall
-	// back to the generic address when it's absent (an older platform,
-	// or this poll call itself failed above). connect's own resume still
-	// picks up the enrollment automatically once granted — no second
-	// flag, no new registration needed, the granted scope is the
-	// instruction (decision 3).
+	// re-approval case — but only when the agent is actually CLAIMED
+	// already. Three statuses reach here, each needing a different
+	// destination:
+	//   - unclaimed: never claimed at all, so reg.ClaimURL is still the
+	//     original, valid, UNCONSUMED link — claiming it grants mining
+	//     as part of the same visit, nothing separate to "re-approve"
+	//     yet. Printing the console/generic fallback here would be
+	//     actively worse: a human would land on a claim form with no
+	//     code to type, when they already have a working one.
+	//   - expired: no valid path forward at all; a fresh registration is
+	//     the only option (matches pollOnce's identical wording).
+	//   - claimed (the actual re-approval case): reg.ClaimURL IS already
+	//     consumed by the first claim — confirmed live that resubmitting
+	//     it 404s even for the original owner (handleAgentClaim refuses
+	//     any claimed registration outright). The real mechanism is a
+	//     portal-console grant (POST /internal/v1/agents/{id}/scopes,
+	//     owner-only, never the sr- key — search-router commit d20a6ac).
+	//     Prefer the direct console_url this same poll just returned
+	//     (search-router added it specifically to close this gap — live
+	//     testing found the generic claim address routes a human through
+	//     submitting a doomed code first, only discovering the real
+	//     console from the resulting error page); fall back to the
+	//     generic address when it's absent (an older platform, or this
+	//     poll call itself failed above).
+	// connect's own resume still picks up the enrollment automatically
+	// once granted — no second flag, no new registration needed, the
+	// granted scope is the instruction (decision 3).
 	if !hasScope(reg.Scopes, "mining") {
-		dest := consoleURL
-		if dest == "" {
-			dest = strings.TrimRight(cfg.Platform.BaseURL, "/") + "/claim"
+		switch reg.Status {
+		case "unclaimed":
+			fmt.Fprintln(stdout, "\nthis agent has not been claimed yet. Claim it (and grant mining) at:")
+			fmt.Fprintln(stdout, "  "+reg.ClaimURL)
+			fmt.Fprintln(stdout, "\nOnce claimed, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
+		case "expired":
+			fmt.Fprintln(stdout, "\nthis registration expired before being claimed; run `dropin-miner connect` again for a new one")
+		default:
+			dest := consoleURL
+			if dest == "" {
+				dest = strings.TrimRight(cfg.Platform.BaseURL, "/") + "/claim"
+			}
+			fmt.Fprintln(stdout, "\nmining is not yet granted for this agent. Sign in and grant it at:")
+			fmt.Fprintln(stdout, "  "+dest)
+			fmt.Fprintln(stdout, "\nOnce granted, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
 		}
-		fmt.Fprintln(stdout, "\nmining is not yet granted for this agent. Sign in and grant it at:")
-		fmt.Fprintln(stdout, "  "+dest)
-		fmt.Fprintln(stdout, "\nOnce granted, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
 		return exitOK
 	}
 
