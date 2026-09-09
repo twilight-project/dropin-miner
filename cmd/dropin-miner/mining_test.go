@@ -604,7 +604,9 @@ func TestFlushOnEnrollmentConflictRecordsStatusNotFailure(t *testing.T) {
 // non-failure treatment, same persisted record.
 func TestFlushOnProxyBindingMismatchRecordsStatusNotFailure(t *testing.T) {
 	as := newFakeAS(t)
-	as.set(func(s *asState) { s.epoch, s.joinable, s.capabilityTwilightError = 1042, true, "PROXY_BINDING_MISMATCH" })
+	as.set(func(s *asState) {
+		s.epoch, s.joinable, s.capabilityTwilightError = 1042, true, "PROXY_BINDING_MISMATCH"
+	})
 	f := newDriverFixture(t, as, nil)
 	f.tick() // join succeeds (no joinRefusalCode set); the exchange is what refuses here
 
