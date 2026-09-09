@@ -120,7 +120,7 @@ participant.
 
 ```bash
 make build      # bin/dropin-miner
-make verify     # test, race, vet (incl. Windows), cross-compile
+make verify     # build, test, race, vet (incl. Windows), lint, vuln, tidy, cross-compile
 ```
 
 Go 1.25 or newer. The participant packages under `pkg/` are copied from

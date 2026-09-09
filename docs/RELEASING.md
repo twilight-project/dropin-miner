@@ -7,7 +7,7 @@ reading anything.
 
 ## What CI does and does not do
 
-`ci.yml` runs on every push to `main` and every PR: build, test, vet, cross-compile,
+`ci.yml` runs on every push to `main` and every PR: build, test, vet, race, cross-compile,
 lint, vuln. It is verification. **It does not release anything, and merging to `main`
 does not trigger a release.**
 

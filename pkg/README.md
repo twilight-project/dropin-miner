@@ -6,9 +6,12 @@ capability, the durable spool and submitter, the observation wire format,
 the wallet, and the draw derivation with its golden vectors.
 
 They were copied from `twilight-project/tokendrop-proxy` at the commit named
-in `PROVENANCE`, with only the import paths changed, and are public here so
-the proxy can import them back. Golden-vector tests travel with them:
-`testdata/vectors` and `testdata/fixtures` are byte-identical to the source.
+in `PROVENANCE`, import paths changed and a handful of stale doc-comment
+references to the proxy's own shape (`internal/auth`, `internal/forward`,
+and similar) rewritten to describe this repo's actual tree, and are public
+here so the proxy can import them back. Golden-vector tests travel with
+them: `testdata/vectors` and `testdata/fixtures` are byte-identical to the
+source.
 
 Change protocol code in ONE place. Until the proxy imports from here, a
 change here is a change that must be mirrored there, and the vectors are
