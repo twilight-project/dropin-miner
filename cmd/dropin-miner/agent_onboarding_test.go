@@ -453,6 +453,96 @@ func TestConnectCaseMiningGrantedLater(t *testing.T) {
 	}
 }
 
+// WP2-review defect 2: "enrolled" and "declared" are separate facts. This
+// installation enrolls with NO address on file (a scripted install: mining
+// enabled, no payout_address configured yet), so the enrolling poll has
+// nothing to declare. Only afterward does a payout address arrive (`mining
+// enable`, run later). The old code's `reg.LastEnrollmentSlot != ""` check
+// short-circuited pollOnce entirely on every poll from then on, so the
+// address was never declared. This proves the next run picks it up.
+func TestAddressSetAfterEnrollmentIsDeclaredOnTheNextRun(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	as := newStubAS(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+
+	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+		t.Fatal("first connect failed")
+	}
+	platform.claim("credits", "mining")
+
+	// Enroll with no address on file yet.
+	code, out, _ := runConnect(t, cfgPath, nil)
+	if code != exitOK || !strings.Contains(out, "enrolled for mining") {
+		t.Fatalf("did not enroll: code=%d out=%q", code, out)
+	}
+	if got := as.declarationAttempts(); got != 0 {
+		t.Fatalf("declaration attempts = %d, want 0 (no address was on file to declare)", got)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.LastEnrollmentSlot == "" {
+		t.Fatalf("expected enrollment to be recorded: %+v ok=%v", reg, ok)
+	}
+
+	// The address arrives afterward, as `mining enable` would leave it.
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePayoutAddress("twilight1arrived-later"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A subsequent, ordinary poll — already enrolled, nothing about
+	// enrollment changed — must still declare the now-present address.
+	code, out, _ = runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("third connect exited %d: %s", code, out)
+	}
+	if got := as.declaredAddress(); got != "twilight1arrived-later" {
+		t.Fatalf("declared address = %q, want twilight1arrived-later (the old code swallowed this: "+
+			"already-enrolled short-circuited before the declare check)", got)
+	}
+}
+
+// Once an address is confirmed active, a later poll must not keep hitting
+// the AS to re-declare it — WP2-review defect 2's "avoid redundant declare
+// calls" concern. addressSettled (SavePayoutDeclared) is what stops it.
+func TestDeclareIsNotRepeatedOnceSettled(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	as := newStubAS(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+		t.Fatal("first connect failed")
+	}
+	if err := store.SavePayoutAddress("twilight1settled"); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("credits", "mining")
+
+	// Enrolls and declares in this run.
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatal("second connect failed")
+	}
+	if got := as.declarationAttempts(); got != 1 {
+		t.Fatalf("declaration attempts after first success = %d, want 1", got)
+	}
+
+	// A resume-style poll with nothing new must not call the AS again.
+	if code, _, _ := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatal("resume poll failed")
+	}
+	if got := as.declarationAttempts(); got != 1 {
+		t.Fatalf("declaration attempts after a settled resume = %d, want still 1 (no redundant AS round trip)", got)
+	}
+}
+
 // ── idempotency, search-before-claim, status ────────────────────────
 
 func TestConnectIsIdempotentOnSecondRun(t *testing.T) {

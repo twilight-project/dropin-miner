@@ -582,3 +582,50 @@ func (s *Store) ClearPayoutBindingHeld() error {
 	}
 	return err
 }
+
+// SavePayoutDeclared records that address was confirmed ACTIVE for this
+// participant — either just declared successfully, or found already
+// matching a read-before-declare — so a later poll with nothing new to say
+// can skip the AS round trip entirely (WP2-review defect 2's "avoid
+// redundant declare calls" question) and so shouldResume (connect.go) can
+// tell, from disk alone, whether an on-file address still needs acting on.
+// A DIFFERENT address later saved via SavePayoutAddress makes this stale by
+// construction — callers compare the two rather than clearing this file.
+func (s *Store) SavePayoutDeclared(address string) error {
+	if address == "" {
+		return errors.New("auth: refusing to record an empty address as declared")
+	}
+	tmp := filepath.Join(s.dir, "payout_declared.json.tmp")
+	raw, err := json.Marshal(struct {
+		Address string `json:"address"`
+	}{Address: address})
+	if err != nil {
+		return fmt.Errorf("auth: encode payout declared: %w", err)
+	}
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("auth: write payout declared: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(s.dir, "payout_declared.json")); err != nil {
+		return fmt.Errorf("auth: persist payout declared: %w", err)
+	}
+	return nil
+}
+
+// LoadPayoutDeclared returns the address last confirmed active, ok=false
+// when nothing has ever been declared or confirmed from this installation.
+func (s *Store) LoadPayoutDeclared() (address string, ok bool, err error) {
+	raw, err := s.readSecret("payout_declared.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var rec struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return "", false, fmt.Errorf("auth: decode payout declared: %w", err)
+	}
+	return rec.Address, true, nil
+}

@@ -194,12 +194,22 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 }
 
 // pollOnce checks status once and acts on it: advances the stored
-// registration, and — the moment status shows claimed with the mining
-// scope and no enrollment recorded yet — enrolls and, if a payout
-// address is already on file (askMiningQuestion, or a scripted
-// mining.payout_address), declares it unattended. Shared by the
-// foreground loop and the detached resume, which calls this exactly
-// once (TestDetachedResumePollsOnceAndExits).
+// registration; the moment status shows claimed with the mining scope and
+// no enrollment recorded yet, enrolls; and — whether just enrolled this
+// call or already enrolled from a past one — declares a payout address on
+// file if it is not yet settled. Shared by the foreground loop and the
+// detached resume, which calls this exactly once
+// (TestDetachedResumePollsOnceAndExits).
+//
+// "Enrolled" and "declared" are deliberately separate facts
+// (WP2-review defect 2): reg.LastEnrollmentSlot != "" used to short-circuit
+// this whole function, which meant an address that arrived AFTER
+// enrollment (mining enable, run later; or a scripted install that only
+// gained mining.payout_address after its first successful poll) was never
+// declared, and a declaration that failed transiently right after
+// enrollment was never retried. Enrollment and declaration are now two
+// independent steps below; either can be a no-op on a given call without
+// short-circuiting the other.
 //
 // done=true means there is nothing further for THIS process to do:
 // claimed-and-settled, expired, mining not granted, or a local opt-out.
@@ -236,44 +246,53 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 	if !st.HasScope("mining") {
 		return true, exitOK // search-only claim: nothing further for connect to do
 	}
-	if reg.LastEnrollmentSlot != "" {
-		return true, exitOK // already enrolled
-	}
-	if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
-		return true, exitOK // local opt-out (design decision 3)
-	}
-	if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
-		fmt.Fprintln(stdout, "the mining scope was granted, but this installation's [mining] block "+
-			"names no authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true, "+
-			"then run `dropin-miner connect` or `dropin-miner mining enable` again")
-		return true, exitOK
+
+	if reg.LastEnrollmentSlot == "" {
+		if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
+			return true, exitOK // local opt-out (design decision 3)
+		}
+		if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
+			fmt.Fprintln(stdout, "the mining scope was granted, but this installation's [mining] block "+
+				"names no authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true, "+
+				"then run `dropin-miner connect` or `dropin-miner mining enable` again")
+			return true, exitOK
+		}
+
+		slot := chooseSlot(st.MiningSlots)
+		if slot == "" {
+			fmt.Fprintln(stderr, "dropin-miner: mining scope granted, but the platform offered no slot")
+			return true, exitTransport
+		}
+		token, err := client.Enroll(ctx, reg.AgentID, key, slot)
+		if err != nil {
+			fmt.Fprintln(stderr, "dropin-miner: enroll:", err)
+			return true, exitTransport
+		}
+		oauthClient, _, err := buildMiningClient(ctx, cfg.Mining)
+		if err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return true, exitTransport
+		}
+		if _, err := oauthClient.RedeemEnrollmentAssertion(ctx, token); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner: redeem enrollment:", err)
+			return true, exitTransport
+		}
+		reg.LastEnrollmentSlot = slot
+		reg.LastEnrollmentAt = time.Now().UTC().Format(time.RFC3339)
+		_ = store.SaveAgentRegistration(*reg)
+		fmt.Fprintln(stdout, "enrolled for mining on", slot)
 	}
 
-	slot := chooseSlot(st.MiningSlots)
-	if slot == "" {
-		fmt.Fprintln(stderr, "dropin-miner: mining scope granted, but the platform offered no slot")
-		return true, exitTransport
-	}
-	token, err := client.Enroll(ctx, reg.AgentID, key, slot)
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner: enroll:", err)
-		return true, exitTransport
-	}
-	oauthClient, miningClient, err := buildMiningClient(ctx, cfg.Mining)
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return true, exitTransport
-	}
-	if _, err := oauthClient.RedeemEnrollmentAssertion(ctx, token); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner: redeem enrollment:", err)
-		return true, exitTransport
-	}
-	reg.LastEnrollmentSlot = slot
-	reg.LastEnrollmentAt = time.Now().UTC().Format(time.RFC3339)
-	_ = store.SaveAgentRegistration(*reg)
-	fmt.Fprintln(stdout, "enrolled for mining on", slot)
-
-	if address, ok, aerr := store.LoadPayoutAddress(); aerr == nil && ok {
+	// Enrolled now — just above, or on a past call. Declare whatever
+	// local address exists and is not yet settled (already active, or
+	// held pending an operator); addressSettled avoids the AS round trip
+	// once there is nothing left to say.
+	if address, ok, aerr := store.LoadPayoutAddress(); aerr == nil && ok && !addressSettled(store, address) {
+		_, miningClient, err := buildMiningClient(ctx, cfg.Mining)
+		if err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return true, exitOK // enrollment (if any, this call) already succeeded; a declare failure is not fatal to this poll
+		}
 		declarePayoutIfSafe(ctx, miningClient, store, address, stdout, stderr)
 	}
 	return true, exitOK
@@ -302,7 +321,16 @@ func declarePayoutIfSafe(ctx context.Context, miningClient *auth.MiningClient, s
 		fmt.Fprintln(stderr, "dropin-miner: payout standing:", err)
 		return
 	}
-	if standing != nil && standing.Active != nil && standing.Active.Address != localAddress {
+	if standing != nil && standing.Active != nil && standing.Active.Address == localAddress {
+		// Already in force — a redundant DeclarePayoutAddress call would
+		// be harmless (WP4b: "a declaration of the same address is not a
+		// change") but is still an AS round trip that changes nothing.
+		// Recording it lets a later poll skip even the standing read.
+		_ = store.ClearPayoutBindingHeld()
+		_ = store.SavePayoutDeclared(localAddress)
+		return
+	}
+	if standing != nil && standing.Active != nil {
 		if serr := store.SavePayoutBindingHeld(localAddress, standing.Active.Address); serr != nil {
 			fmt.Fprintln(stderr, "dropin-miner:", serr)
 		}
@@ -317,7 +345,28 @@ func declarePayoutIfSafe(ctx context.Context, miningClient *auth.MiningClient, s
 		return
 	}
 	_ = store.ClearPayoutBindingHeld()
+	_ = store.SavePayoutDeclared(localAddress)
 	fmt.Fprintln(stdout, "payout address declared:", localAddress)
+}
+
+// addressSettled reports whether address needs no further declare attempt
+// this poll: previously confirmed active (SavePayoutDeclared), or
+// currently held pending an operator (LoadPayoutBindingHeld). Both are
+// terminal from this client's point of view — further automatic polling
+// cannot change either outcome, only a human (an operator activating a
+// held change, or the participant declaring a NEW address, which
+// SavePayoutAddress would overwrite localAddress with) can. This is what
+// lets shouldResume (WP2-review defect 3) tell, from disk alone and with
+// no network call, whether an enrolled installation still has something
+// to do.
+func addressSettled(store *auth.Store, address string) bool {
+	if declared, ok, err := store.LoadPayoutDeclared(); err == nil && ok && declared == address {
+		return true
+	}
+	if held, ok, err := store.LoadPayoutBindingHeld(); err == nil && ok && held.Local == address {
+		return true
+	}
+	return false
 }
 
 // chooseSlot picks which platform-advertised slot to enroll into.
