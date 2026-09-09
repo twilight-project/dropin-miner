@@ -52,7 +52,7 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	}
 
 	br := bufio.NewReader(stdin)
-	outcome, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store)
+	outcome, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout))
 	if code != exitOK {
 		return code
 	}
@@ -109,9 +109,14 @@ type miningEnableOutcome struct {
 // is on and, if so, persists the resulting address via
 // store.SavePayoutAddress so a later detached resume has one thing to
 // read before declaring it unattended.
-func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store) (miningEnableOutcome, int) {
-	interactive := isInteractive(stdin, stdout)
-
+//
+// interactive is the caller's own isInteractive(stdin, stdout) — passed
+// in rather than computed here so a test can force the interactive
+// branch without a real terminal, the same way isTerminal's non-terminal
+// branch is already what every automated test of it exercises (a real
+// *os.File character device is not something a unit test can fake
+// portably; forcing the boolean is the injection point instead).
+func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
 	if cfg.MiningEnabledExplicit || !interactive {
 		if !cfg.Mining.Enabled {
 			return miningEnableOutcome{}, exitOK
