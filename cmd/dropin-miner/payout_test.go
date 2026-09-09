@@ -53,6 +53,13 @@ func TestPayoutSetRequiresAnAddressAndNotAFlag(t *testing.T) {
 // from the dispatch table entirely. What distinguishes them is what reaches
 // stderr, so that is what this reads.
 func TestEveryAdvertisedCommandIsRouted(t *testing.T) {
+	// dispatch reads TOKENDROP_CONFIG through the real os.Getenv, not an
+	// injected one (only search/agents/hook/flush/login take that as a
+	// parameter) — so a developer's own real config, pointing at a real,
+	// mining-enabled AS, would otherwise leak in here and make "no
+	// -config" false. This test's whole premise below is that it's false;
+	// t.Setenv makes that true regardless of the ambient shell.
+	t.Setenv("TOKENDROP_CONFIG", "")
 	for _, name := range []string{"enroll", "join", "provider", "payout", "status", "doctor", "earnings"} {
 		t.Run(name, func(t *testing.T) {
 			// No -config, so each command refuses early and none of them
