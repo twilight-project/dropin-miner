@@ -50,6 +50,51 @@ subjects wouldn't make obvious on its own.
   before being claimed, gets its own correct message instead of being
   routed through this same fallback.
 
+- **`dropin-miner mining disable`.** Stops mining for this installation's
+  agent: a best-effort self-service revocation of its own AS family (RFC
+  7009), separate from the platform's own granted scope, which only a
+  human at the console can revoke — `status` says so plainly (`mining
+  here: stopped` / `platform authorization: still granted — to revoke
+  the authorization itself, use the console`) for as long as that holds.
+  The stop itself never depends on the network: the decision and the
+  enrollment record are cleared locally first, and the AS-side
+  revocation is attempted after, best-effort; if the AS can't be
+  reached, a marker survives for the next flush or resume to retry, and
+  `mining enable` — the existing command, no new path — mints a fresh
+  family the normal way. The spool is never purged on disable: an
+  installation re-enabled inside the capability window can still
+  deliver what it already captured.
+
+- **One decision, not three.** `[miner] enabled`, `[mining] enabled`, and
+  the stored mining decision used to each gate a different slice of
+  whether mining was actually active — search intake and the flush read
+  the first, enrollment and declaration fell back to the second (config)
+  when the third (a stored decision) had never been written. Collapsed
+  into one: `mining_decision.json`, read by search intake, the flush,
+  connect, its resume, and `status` alike, and nothing else. `[miner]
+  enabled` now means only "router intake is configured" and never
+  overrides it; a legacy install that only ever set `[mining] enabled =
+  true` in its config (`setup.sh`'s own shape, which asks no terminal
+  question of its own to persist a decision from) defaults to active,
+  matching what that config has always meant in practice.
+
+- **`doctor`'s "joined this epoch" local fallback never actually fired.**
+  It read `enrollment.json` via `SaveEnrollment`/`LoadEnrollment`, and
+  nothing has ever called `SaveEnrollment` — the driver's own epoch-join
+  bookkeeping (`JoinState`) is in-memory only, so this was always empty
+  on every installation, ever. Replaced with what the disk actually
+  records: a stored AS authorization, and — when the agent-onboarding
+  registration recorded one — when and for which platform slot it was
+  obtained. It can no longer name a specific epoch, because nothing
+  durable does. `SaveEnrollment`/`LoadEnrollment` are deleted.
+
+- **Logged, not fixed:** `RemoveProviderCredential` (unbinding an
+  OpenRouter provider credential at the AS) has no caller — `provider`
+  can register a key and has no way to unregister one, mining disable or
+  not. Out of scope here (mining disable's own scope is the
+  `SEARCH_ROUTER_V1` family, which holds no provider credential at all
+  — §35.1); tracked for the `OPENROUTER_V1` path next release.
+
 ## v0.1.7
 
 - **Fresh installs now default to the public testnet.** `setup.sh`, `install.ps1`,
