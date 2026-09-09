@@ -130,13 +130,13 @@ func TestNothingIsClaimedAboutTheASWhenTheASDidNotAnswer(t *testing.T) {
 }
 
 // The local half still answers. A stored authorization and a recorded
-// enrollment are facts about this disk, and an unreachable AS does not
-// unmake them.
+// agent-onboarding registration are facts about this disk, and an
+// unreachable AS does not unmake them.
 func TestTheLocalHalfIsReportedWhenTheASIsDown(t *testing.T) {
 	f := healthyFacts()
 	f.DocErr = errASDown
 	f.EpochErr, f.StatusErr, f.StandingErr, f.ActivityErr = errASDown, errASDown, errASDown, errASDown
-	f.HasEnrollment, f.LocalSlot, f.LocalEpoch = true, 7, 1041
+	f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, "SLOT-A", "2026-09-01T00:00:00Z"
 
 	checks := assembleDoctor(f)
 	enrolled := verdictOf(checks, "enrolled")
@@ -147,20 +147,35 @@ func TestTheLocalHalfIsReportedWhenTheASIsDown(t *testing.T) {
 		t.Errorf("the enrolled line does not say where the answer came from: %q", enrolled.Detail)
 	}
 	joined := verdictOf(checks, "joined this epoch")
-	if !strings.Contains(joined.Detail, "last joined epoch 1041") {
-		t.Errorf("the local enrollment record was not offered: %q", joined.Detail)
+	if !strings.Contains(joined.Detail, "SLOT-A") || !strings.Contains(joined.Detail, "stored authorization") {
+		t.Errorf("the local registration record was not offered: %q", joined.Detail)
 	}
 }
 
-// A local enrollment record for a DIFFERENT slot is not this slot's, and
-// must not be shown as though it were.
-func TestAnEnrollmentRecordForAnotherSlotIsNotOffered(t *testing.T) {
+// There is no durable local record of which EPOCH was last joined (the
+// driver's own bookkeeping is in-memory only) — so the note can offer a
+// stored authorization, but must never claim to know an epoch number,
+// even when one is set on the facts elsewhere.
+func TestTheLocalNoteNeverNamesAnEpoch(t *testing.T) {
 	f := healthyFacts()
 	f.DocErr = errASDown
 	f.EpochErr = errASDown
-	f.HasEnrollment, f.LocalSlot, f.LocalEpoch = true, 9, 1041
-	if d := verdictOf(assembleDoctor(f), "joined this epoch").Detail; strings.Contains(d, "1041") {
-		t.Errorf("another slot's enrollment was reported as this one's: %q", d)
+	f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, "SLOT-A", "2026-09-01T00:00:00Z"
+	if d := verdictOf(assembleDoctor(f), "joined this epoch").Detail; strings.Contains(d, "1042") {
+		t.Errorf("the local note claimed to know a specific epoch, which nothing on disk records: %q", d)
+	}
+}
+
+// No stored authorization at all: nothing local to offer, regardless of
+// whether a registration happens to be on file.
+func TestNoLocalNoteWithoutAStoredAuthorization(t *testing.T) {
+	f := healthyFacts()
+	f.DocErr = errASDown
+	f.EpochErr = errASDown
+	f.HasRefresh = false
+	f.HasRegistration, f.RegistrationSlot = true, "SLOT-A"
+	if d := verdictOf(assembleDoctor(f), "joined this epoch").Detail; strings.Contains(d, "SLOT-A") {
+		t.Errorf("a registration was offered with no stored authorization to back it: %q", d)
 	}
 }
 
@@ -377,7 +392,10 @@ func TestTheLocalCustodyStateIsReadFromDisk(t *testing.T) {
 	if err := store.SaveRefreshToken("rt-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveEnrollment(7, 1041); err != nil {
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "a1", Status: "claimed", Scopes: []string{"mining"},
+		LastEnrollmentSlot: "SLOT-A", LastEnrollmentAt: "2026-09-01T00:00:00Z",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f := gatherDoctorFacts(context.Background(), &stubAS{docErr: errASDown}, config.Mining{
@@ -386,8 +404,8 @@ func TestTheLocalCustodyStateIsReadFromDisk(t *testing.T) {
 	if !f.HasRefresh {
 		t.Error("a stored refresh authorization was not seen")
 	}
-	if !f.HasEnrollment || f.LocalSlot != 7 || f.LocalEpoch != 1041 {
-		t.Errorf("enrollment record misread: %+v", f)
+	if !f.HasRegistration || f.RegistrationSlot != "SLOT-A" || f.RegistrationAt != "2026-09-01T00:00:00Z" {
+		t.Errorf("registration record misread: %+v", f)
 	}
 }
 

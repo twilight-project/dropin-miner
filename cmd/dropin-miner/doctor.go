@@ -111,11 +111,15 @@ type doctorFacts struct {
 	ActivityErr error
 
 	// The local half, which answers whether or not the AS does.
-	HasRefresh    bool
-	LocalErr      error
-	HasEnrollment bool
-	LocalSlot     uint64
-	LocalEpoch    uint64
+	HasRefresh bool
+	LocalErr   error
+	// HasRegistration/RegistrationSlot/RegistrationAt come from the
+	// agent-onboarding registration (agent.json), the one durable local
+	// record of a past mining enrollment succeeding — see
+	// gatherDoctorFacts's comment on why this replaced enrollment.json.
+	HasRegistration  bool
+	RegistrationSlot string
+	RegistrationAt   string
 }
 
 // assembleDoctor turns the gathered facts into the five verdicts.
@@ -210,14 +214,26 @@ func doctorJoinedCheck(f doctorFacts) doctorCheck {
 	return c
 }
 
-// doctorLocalEnrollmentNote adds what the disk knows when the AS cannot be
-// asked. It is the difference between "we have no idea" and "you joined
-// epoch 1042 at some point and we could not confirm it today".
+// doctorLocalEnrollmentNote adds what the disk knows when the AS cannot
+// be asked. It used to name a specific epoch ("you joined epoch 1042 at
+// some point"), read from enrollment.json via SaveEnrollment/
+// LoadEnrollment — but nothing has ever called SaveEnrollment (the
+// driver's own epoch-join bookkeeping, JoinState, is in-memory only), so
+// that record was always empty and this note never fired, on any
+// installation, ever. It says the weaker thing this installation's own
+// files can actually prove instead: that an AS authorization is stored,
+// and — when the agent-onboarding registration recorded one — when and
+// for which platform slot it was obtained. Never a specific epoch: there
+// is no durable local record of that to read.
 func doctorLocalEnrollmentNote(f doctorFacts) string {
-	if !f.HasEnrollment || f.LocalSlot != f.SlotID {
+	if !f.HasRefresh {
 		return ""
 	}
-	return fmt.Sprintf(" (this installation last joined epoch %d, recorded locally)", f.LocalEpoch)
+	if f.HasRegistration {
+		return fmt.Sprintf(" (this installation holds a stored authorization, enrolled for slot %q at %s)",
+			f.RegistrationSlot, f.RegistrationAt)
+	}
+	return " (this installation holds a stored authorization, recorded locally)"
 }
 
 func doctorEpochOrigin(f doctorFacts) string {
@@ -392,8 +408,8 @@ func gatherDoctorFacts(ctx context.Context, as asClient, m config.Mining) doctor
 			f.LocalErr = err
 		}
 		f.HasRefresh = ok
-		if slotID, epoch, ok, err := store.LoadEnrollment(); err == nil {
-			f.HasEnrollment, f.LocalSlot, f.LocalEpoch = ok, slotID, epoch
+		if reg, ok, err := store.LoadAgentRegistration(); err == nil && ok && reg.LastEnrollmentSlot != "" {
+			f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, reg.LastEnrollmentSlot, reg.LastEnrollmentAt
 		}
 	}
 
