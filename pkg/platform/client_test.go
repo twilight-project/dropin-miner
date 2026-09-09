@@ -166,10 +166,10 @@ func TestEnrollRequiresClaimedMiningScope(t *testing.T) {
 	}
 
 	stub.enroll = func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"token": "enroll-jwt-1"})
+		writeJSON(w, http.StatusOK, map[string]any{"token": "enroll-jwt-1"}) // #nosec G101 -- a canned stub response, not a credential
 	}
 	token, err := c.Enroll(context.Background(), "agent-1", "sr-hasscope", "twilight-slot-3")
-	if err != nil || token != "enroll-jwt-1" {
+	if err != nil || token != "enroll-jwt-1" { // #nosec G101 -- comparing against the stub's own canned value above
 		t.Fatalf("got %q err=%v", token, err)
 	}
 }
