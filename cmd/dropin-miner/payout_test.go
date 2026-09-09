@@ -9,6 +9,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,19 +53,34 @@ func TestPayoutSetRequiresAnAddressAndNotAFlag(t *testing.T) {
 // results, so the assertion could not fail — it passed with the case removed
 // from the dispatch table entirely. What distinguishes them is what reaches
 // stderr, so that is what this reads.
+//
+// t.Setenv clears TOKENDROP_CONFIG for the test's duration (coverage gap B,
+// WP2 review): dispatch reads it through the real os.Getenv, not an injected
+// one (only search/agents/hook/flush/login take that as a parameter), so a
+// developer's own TOKENDROP_CONFIG pointing at a real, mining-enabled config
+// used to leak straight through config.Load's env fallback and let
+// dispatch("enroll", nil) reach a real OAuth device-flow poll — the same
+// class of bug independently found and fixed on an unmerged branch off
+// main (PR #4); fixed here directly rather than waiting on that to merge.
 func TestEveryAdvertisedCommandIsRouted(t *testing.T) {
-	// dispatch reads TOKENDROP_CONFIG through the real os.Getenv, not an
-	// injected one (only search/agents/hook/flush/login take that as a
-	// parameter) — so a developer's own real config, pointing at a real,
-	// mining-enabled AS, would otherwise leak in here and make "no
-	// -config" false. This test's whole premise below is that it's false;
-	// t.Setenv makes that true regardless of the ambient shell.
 	t.Setenv("TOKENDROP_CONFIG", "")
-	for _, name := range []string{"enroll", "join", "provider", "payout", "status", "doctor", "earnings"} {
+	for _, name := range []string{"enroll", "join", "provider", "payout", "status", "doctor", "earnings", "connect", "mining"} {
 		t.Run(name, func(t *testing.T) {
 			// No -config, so each command refuses early and none of them
-			// reaches the network.
-			errText := captureStderr(t, func() { _ = dispatch(name, nil) })
+			// reaches the network — except connect, which (unlike every
+			// other command here) has no [mining].enabled-style gate to
+			// default off: with zero config it would happily default to
+			// the real platform base URL and attempt a real registration.
+			// An explicit, nonexistent -config makes config.Load refuse
+			// unconditionally (the explicit-path branch, not the
+			// silent-fallback one absent-path takes), which is the same
+			// clean "refused before touching state or network" property
+			// every other command gets for free from its own gate.
+			args := []string(nil)
+			if name == "connect" {
+				args = []string{"-config", filepath.Join(t.TempDir(), "does-not-exist.toml")}
+			}
+			errText := captureStderr(t, func() { _ = dispatch(name, args) })
 			if strings.Contains(errText, "unknown command") {
 				t.Fatalf("%q is advertised in the usage text and is not on the dispatch table: %s", name, errText)
 			}

@@ -24,6 +24,13 @@ and consumed elsewhere by import; `cmd/dropin-miner/` is this client's wrapper. 
 decisions (retry shapes, the trace envelope, install/agent behaviour) have no upstream home —
 record them in `docs/` here.
 
+The search platform's control plane (`platform.nyks.dev` — `connect`, `mining enable`; `pkg/platform`)
+is a **second, separate contract**, same convention as the AS: owned upstream, this time by
+`search-router`'s own design doc (`tokendrop-auth-server-design/docs/implementation/
+search-platform-agent-onboarding-design.md`, authored for the `search-router` repository and
+mirrored there — not owned here either). `pkg/platform` conforms to it the same way `pkg/auth`
+conforms to the AS contract: implementer here, authority elsewhere.
+
 ## The verify loop
 `make verify` = `build test race vet lint vuln tidy cross`. **Green before every commit.** `lint`
 is golangci-lint v2 (gosec, misspell locale US, unconvert, depguard, gofmt, goimports); `vuln` is
@@ -57,9 +64,10 @@ govulncheck.
 5. **Never assemble or call an unadvertised URL.** Endpoints come from the discovery document; the
    AS origin is **configured, not discovered**; service-document endpoints are same-origin checked; an
    off-origin provider-authorization template is refused unless on the compiled `providerhosts`
-   allowlist. `as_url` and `router_url` are both https-or-loopback, enforced at config load (T2b) —
-   every search sends the participant's sr- key in `Authorization` to `router_url`, the same
-   cleartext-credential exposure `as_url`'s rule closes.
+   allowlist. `as_url`, `router_url` and `platform.base_url` are all https-or-loopback, enforced at
+   config load (T2b) — every search sends the participant's sr- key in `Authorization` to
+   `router_url`, and `connect`/`mining enable` send the platform-issued key to `platform.base_url`,
+   the same cleartext-credential exposure `as_url`'s rule closes.
 6. **Strict for the AS wire, permissive for the provider response.** AS-facing types conform to the
    frozen, checksum-verified fixtures. The provider **response** shape is not frozen and is decoded
    permissively (no `DisallowUnknownFields`) on purpose — we own the AS contract, not the provider's

@@ -138,3 +138,235 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 		t.Fatalf("idempotent delete failed: %v", err)
 	}
 }
+
+// Agent onboarding design §3: the client's cache of its own platform
+// identity round-trips, including the fields a resumed poll updates.
+func TestSaveLoadAgentRegistrationRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadAgentRegistration(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	want := AgentRegistration{
+		AgentID:        "agent-1",
+		ClaimURL:       "https://platform.nyks.dev/claim/AB12-CD34",
+		ClaimCode:      "AB12-CD34",
+		Status:         "unclaimed",
+		ClaimExpiresAt: "2026-09-16T00:00:00Z",
+	}
+	if err := s.SaveAgentRegistration(want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadAgentRegistration()
+	if err != nil || !ok || got.AgentID != want.AgentID || got.ClaimURL != want.ClaimURL ||
+		got.ClaimCode != want.ClaimCode || got.Status != want.Status || got.ClaimExpiresAt != want.ClaimExpiresAt ||
+		len(got.Scopes) != 0 {
+		t.Fatalf("got %+v ok=%v err=%v, want %+v", got, ok, err, want)
+	}
+
+	// Later overwrites earlier: a resumed poll advances the same record,
+	// it does not create a second one.
+	claimed := want
+	claimed.Status = "claimed"
+	claimed.Scopes = []string{"credits", "mining"}
+	claimed.LastEnrollmentSlot = "twilight-slot-3"
+	claimed.LastEnrollmentAt = "2026-09-09T00:00:00Z"
+	if err := s.SaveAgentRegistration(claimed); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.LoadAgentRegistration()
+	if err != nil || !ok {
+		t.Fatalf("reload after advance: ok=%v err=%v", ok, err)
+	}
+	if got.Status != "claimed" || len(got.Scopes) != 2 || got.LastEnrollmentSlot != "twilight-slot-3" {
+		t.Fatalf("advance did not persist: %+v", got)
+	}
+}
+
+// The registration is what a resumed process (a detached connect after a
+// later search) reads before making any network call, so it must survive
+// closing and reopening the store exactly as the refresh token does.
+func TestAgentRegistrationSurvivesAcrossStoreReopens(t *testing.T) {
+	_, dir := newStore(t)
+	s1, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := AgentRegistration{AgentID: "agent-1", Status: "claimed", Scopes: []string{"mining"}}
+	if err := s1.SaveAgentRegistration(rec); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s2.LoadAgentRegistration()
+	if err != nil || !ok || got.AgentID != "agent-1" || got.Status != "claimed" {
+		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "agent.json"))
+	if err != nil || (posixModes && info.Mode().Perm() != 0o600) {
+		t.Fatalf("agent.json perms = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// SavePayoutAddress/LoadPayoutAddress round-trip independently of the
+// agent registration — the address is a local mining preference the
+// client owns, not platform state a poll can overwrite.
+func TestSaveLoadPayoutAddressRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadPayoutAddress(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if err := s.SavePayoutAddress("twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadPayoutAddress()
+	if err != nil || !ok || got != "twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n" {
+		t.Fatalf("got %q ok=%v err=%v", got, ok, err)
+	}
+	if err := s.SavePayoutAddress(""); err == nil {
+		t.Fatal("empty payout address accepted")
+	}
+}
+
+// EpochConflicts is a bounded SET, not a single record — WP2-review
+// defect 1: a single record meant a second conflicted epoch clobbered the
+// first, and its observations were then never dropped.
+func TestEpochConflictsIsASetNotASingleRecord(t *testing.T) {
+	s, _ := newStore(t)
+	if got, err := s.EpochConflicts(); err != nil || len(got) != 0 {
+		t.Fatalf("fresh store: got %+v err=%v, want empty", got, err)
+	}
+	if err := s.SaveEpochConflict(7, 1042); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEpochConflict(7, 1043); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v err=%v, want both 1042 and 1043 on file", got, err)
+	}
+}
+
+// Recording the same (slot, epoch) conflict twice must not duplicate it —
+// a driver that sees ErrEnrollmentConflict on every tick until the target
+// rolls over would otherwise grow the set without bound.
+func TestSaveEpochConflictDedupesTheSamePair(t *testing.T) {
+	s, _ := newStore(t)
+	for i := 0; i < 3; i++ {
+		if err := s.SaveEpochConflict(7, 1042); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %+v err=%v, want exactly one entry", got, err)
+	}
+}
+
+func TestRemoveEpochConflicts(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.RemoveEpochConflicts(nil); err != nil {
+		t.Fatalf("removing nothing from an absent set: %v", err)
+	}
+	if err := s.SaveEpochConflict(7, 1042); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEpochConflict(7, 1043); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveEpochConflicts([]ConflictedEpoch{{SlotID: 7, TargetEpoch: 1042}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 1 || got[0].TargetEpoch != 1043 {
+		t.Fatalf("got %+v err=%v, want only 1043 left", got, err)
+	}
+}
+
+func TestSaveLoadPayoutBindingHeldRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadPayoutBindingHeld(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if err := s.SavePayoutBindingHeld("twilight1local", "twilight1active", HeldReplacesActive); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadPayoutBindingHeld()
+	if err != nil || !ok || got.Local != "twilight1local" || got.Active != "twilight1active" {
+		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	}
+	if err := s.ClearPayoutBindingHeld(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.LoadPayoutBindingHeld(); err != nil || ok {
+		t.Fatalf("after clear: ok=%v err=%v, want ok=false", ok, err)
+	}
+}
+
+// WP2-adversarial-review finding 9: SavePayoutAddress is the one place
+// every payout address in the agent-onboarding flow is validated.
+func TestSavePayoutAddressRejectsNonBech32(t *testing.T) {
+	s, _ := newStore(t)
+	for _, bad := range []string{"twilight1abc", "not-an-address", "twilight1", ""} {
+		if err := s.SavePayoutAddress(bad); err == nil {
+			t.Errorf("SavePayoutAddress(%q) accepted, want a bech32-decode refusal", bad)
+		}
+	}
+}
+
+func TestSavePayoutAddressRejectsWrongHRP(t *testing.T) {
+	s, _ := newStore(t)
+	// A syntactically valid bech32 string, but for a different chain's
+	// prefix — the HRP check is a separate rejection from the decode
+	// check above, and needs its own input to exercise it.
+	if err := s.SavePayoutAddress("cosmos1qqnfjqxr5w5c60x5xw24k5zqe0shsrtj04kagr"); err == nil {
+		t.Fatal("an address with the wrong HRP was accepted")
+	}
+}
+
+// WP2-adversarial-review finding 18: the conflict set is capped, oldest
+// first, and a slot_id reconfiguration is prunable.
+func TestEpochConflictsAreBoundedWithOldestFirstEviction(t *testing.T) {
+	s, _ := newStore(t)
+	for i := uint64(0); i < maxEpochConflicts+10; i++ {
+		if err := s.SaveEpochConflict(1, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set, err := s.EpochConflicts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != maxEpochConflicts {
+		t.Fatalf("len(set) = %d, want the cap %d", len(set), maxEpochConflicts)
+	}
+	// Oldest-first eviction: the earliest epochs (0..9) should be gone,
+	// the most recent maxEpochConflicts should remain.
+	for _, c := range set {
+		if c.TargetEpoch < 10 {
+			t.Fatalf("epoch %d should have been evicted as the oldest, found in the set", c.TargetEpoch)
+		}
+	}
+}
+
+func TestPruneEpochConflictsForOtherSlots(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.SaveEpochConflict(1, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEpochConflict(2, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneEpochConflictsForOtherSlots(1); err != nil {
+		t.Fatal(err)
+	}
+	set, err := s.EpochConflicts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != 1 || set[0].SlotID != 1 {
+		t.Fatalf("got %+v, want only the slot-1 entry to survive", set)
+	}
+}

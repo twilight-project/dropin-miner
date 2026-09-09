@@ -9,7 +9,21 @@ subjects wouldn't make obvious on its own.
 
 ## Unreleased
 
-Everything below is on `main`, not tagged in a release yet.
+- **Agent onboarding: `dropin-miner connect` and `dropin-miner mining enable`.**
+  A headless coding agent can now register itself with the search platform and
+  search immediately at a reduced, unclaimed tier; the participant then claims
+  it with one visit to a printed URL, at which point mining enrollment, wallet
+  creation (or an address typed at a terminal) and payout declaration all
+  proceed unattended. Enabling mining is one question, asked once, at whichever
+  terminal is present — `connect`'s first run or, later, `mining enable` — and
+  the answer is a decision the client honors from then on, not a default it
+  recomputes. **This does not change what a fresh install does yet**:
+  `setup.sh`/`install.ps1` still drive the existing manual enrollment-token
+  flow; wiring the installer to this instead is a separate, later change.
+  Full design: `tokendrop-auth-server-design`'s
+  `docs/implementation/search-platform-agent-onboarding-design.md`.
+
+## v0.1.7
 
 - **Fresh installs now default to the public testnet.** `setup.sh`, `install.ps1`,
   `README.md`, and `npm/README.md` point new installs at `twilight-testnet-1` /

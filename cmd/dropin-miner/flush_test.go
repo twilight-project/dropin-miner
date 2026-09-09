@@ -23,12 +23,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
+	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
 )
 
 // routerRecorder stands in for the search router. Any TCP connection to
@@ -139,6 +141,175 @@ func TestFlushNeverDialsTheRouterEvenOnFailure(t *testing.T) {
 			}
 			if n := f.router.conns.Load(); n != 0 {
 				t.Fatalf("flush opened %d connection(s) to the router; a flush must talk to the AS only", n)
+			}
+		})
+	}
+}
+
+// seedSpoolRecord writes one durable spool record under (slotID, epoch),
+// the way promoteIntake would have on some earlier flush.
+func seedSpoolRecord(t *testing.T, spoolDir string, slotID, epoch uint64) {
+	t.Helper()
+	sp, err := spool.Open(spoolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := spool.NewClientRecordID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &spool.Record{ClientRecordID: id, SlotID: slotID, TargetEpoch: epoch, Observation: []byte(`{"client_record_id":"` + id + `"}`)}
+	if err := sp.Write(rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func spoolCount(t *testing.T, spoolDir string) int {
+	t.Helper()
+	sp, err := spool.Open(spoolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := sp.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// WP2-review defect 1 / WP4b (design aba1245 §2.3/§5.5): observations
+// spooled for an epoch this installation lost to another installation of
+// the same participant are dropped quietly, state-based — once the AS's
+// current target has moved past the conflicted epoch, not before, and NOT
+// gated on any capability deadline (the common case — a pure join-time
+// ENROLLMENT_CONFLICT — never has one, since this installation never held
+// the epoch at all). This is the case an earlier, deadline-gated version
+// of this mechanism never dropped.
+func TestConflictedObservationsDropOnceTargetAdvancesPastThem(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch = -1 }) // nothing open yet; only the housekeeping step matters
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStore(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSpoolRecord(t, f.cfg.Mining.SpoolDir, testSlotID, 1042)
+	// A pure join-time conflict: this installation never held 1042, so
+	// there is no capability deadline for it anywhere.
+	if err := store.SaveEpochConflict(testSlotID, 1042); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("target still at or before the conflicted epoch: still queued", func(t *testing.T) {
+		as.set(func(s *asState) { s.epoch, s.joinable = 1042, false }) // AS still offers 1042, not joinable by us
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var stdout, stderr bytes.Buffer
+		if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+			t.Fatalf("runFlush exit code %d\nstderr: %s", code, stderr.String())
+		}
+		if n := spoolCount(t, f.cfg.Mining.SpoolDir); n != 1 {
+			t.Fatalf("spool count = %d, want 1 (target has not moved past 1042 yet)", n)
+		}
+		if strings.Contains(stdout.String(), "dropped") {
+			t.Fatalf("dropped an observation before the target advanced:\n%s", stdout.String())
+		}
+		conflicts, cerr := store.EpochConflicts()
+		if cerr != nil || len(conflicts) != 1 {
+			t.Fatalf("EpochConflicts() = %+v err=%v, want the conflict still on file", conflicts, cerr)
+		}
+	})
+
+	t.Run("target moved past the conflicted epoch: dropped quietly", func(t *testing.T) {
+		as.set(func(s *asState) { s.epoch, s.joinable = 1043, true }) // the AS has moved on
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var stdout, stderr bytes.Buffer
+		if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+			t.Fatalf("runFlush exit code %d\nstderr: %s", code, stderr.String())
+		}
+		if n := spoolCount(t, f.cfg.Mining.SpoolDir); n != 0 {
+			t.Fatalf("spool count = %d, want 0 (target moved to 1043, past the conflicted 1042)", n)
+		}
+		if !strings.Contains(stdout.String(), "dropped 1 observation") {
+			t.Fatalf("expected an informational stdout line naming the drop, got:\n%s", stdout.String())
+		}
+		if strings.Contains(stderr.String(), "dropped") {
+			t.Fatalf("dropping a conflicted epoch's observations must be quiet, not error-level: %q", stderr.String())
+		}
+		conflicts, cerr := store.EpochConflicts()
+		if cerr != nil || len(conflicts) != 0 {
+			t.Fatalf("EpochConflicts() = %+v err=%v, want it cleared once acted on", conflicts, cerr)
+		}
+	})
+}
+
+// A second conflicted epoch must not clobber the first — the defect a
+// single-record EpochParticipation had: recording epoch 1042 as a
+// conflict, then later 1043, used to silently forget 1042 forever.
+func TestConflictedObservationsSecondConflictDoesNotClobberTheFirst(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch = -1 })
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStore(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSpoolRecord(t, f.cfg.Mining.SpoolDir, testSlotID, 1042)
+	seedSpoolRecord(t, f.cfg.Mining.SpoolDir, testSlotID, 1043)
+	if err := store.SaveEpochConflict(testSlotID, 1042); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveEpochConflict(testSlotID, 1043); err != nil {
+		t.Fatal(err)
+	}
+	conflicts, err := store.EpochConflicts()
+	if err != nil || len(conflicts) != 2 {
+		t.Fatalf("EpochConflicts() = %+v err=%v, want both 1042 and 1043 on file", conflicts, err)
+	}
+
+	as.set(func(s *asState) { s.epoch, s.joinable = 1044, true }) // moved past both
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("runFlush exit code %d\nstderr: %s", code, stderr.String())
+	}
+	if n := spoolCount(t, f.cfg.Mining.SpoolDir); n != 0 {
+		t.Fatalf("spool count = %d, want 0 (both 1042 and 1043 are now behind the target)", n)
+	}
+	if !strings.Contains(stdout.String(), "dropped 2 observation") {
+		t.Fatalf("expected an informational stdout line naming both drops, got:\n%s", stdout.String())
+	}
+}
+
+// invariant 1, both conflict checkpoints: a flush that meets either
+// refusal never fails, and never touches the router.
+func TestFlushNeverFailsASearchOnEitherConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*asState)
+	}{
+		{"ENROLLMENT_CONFLICT on join", func(s *asState) { s.epoch, s.joinable, s.joinRefusalCode = 1042, true, "ENROLLMENT_CONFLICT" }},
+		{"PROXY_BINDING_MISMATCH on exchange", func(s *asState) {
+			s.epoch, s.joinable, s.capabilityTwilightError = 1042, true, "PROXY_BINDING_MISMATCH"
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			as := newFakeAS(t)
+			as.set(c.set)
+			f := newFlushFixture(t, as)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			_, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+			if code != exitOK {
+				t.Fatalf("runFlush exit %d — a conflict must never fail a flush\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+			}
+			if n := f.router.conns.Load(); n != 0 {
+				t.Fatalf("flush opened %d connection(s) to the router on a conflict", n)
 			}
 		})
 	}

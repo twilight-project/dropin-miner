@@ -10,6 +10,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,18 @@ import (
 
 	"github.com/twilight-project/dropin-miner/pkg/mining/scope"
 )
+
+// ErrProxyBindingMismatch is the capability exchange's refusal when this
+// installation is not the one bound to the accepted enrollment for the
+// requested epoch (contract §30 check 4: "requesting proxy installation
+// matches the accepted enrollment"; §34 names PROXY_BINDING_MISMATCH as
+// the twilight_error for it). The backstop to ErrEnrollmentConflict
+// (joinclient.go): a join can race and appear to succeed locally before
+// another installation's join is the one the AS actually accepted, and
+// this is where that surfaces instead. Not a failure this installation
+// should treat as one (agent onboarding design §2.3/§5.5) — same
+// "another installation holds this epoch" fact as the join-time refusal.
+var ErrProxyBindingMismatch = errors.New("auth: capability exchange refused — installation binding mismatch")
 
 const (
 	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101 -- RFC 8693 grant-type URN
@@ -160,6 +173,9 @@ func (c *CapabilityClient) exchange(ctx context.Context, targetEpoch uint64) (*s
 		// stop rotating in, which is why TwilightError is checked
 		// first and never reaches here.
 		if out.TwilightError != "" {
+			if out.TwilightError == "PROXY_BINDING_MISMATCH" {
+				return nil, fmt.Errorf("auth: capability refused (%s): %s: %w", out.TwilightError, out.Description, ErrProxyBindingMismatch)
+			}
 			return nil, fmt.Errorf("auth: capability refused (%s): %s", out.TwilightError, out.Description)
 		}
 		if resp.StatusCode == http.StatusUnauthorized || out.Error == "invalid_grant" || out.Error == "invalid_token" {

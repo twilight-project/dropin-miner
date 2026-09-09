@@ -72,7 +72,13 @@ dropin-miner flush [-force]
 dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
 dropin-miner wallet init|address|register|balance|send
+dropin-miner connect [-name ...] [-mining]
+dropin-miner mining enable
 ```
+
+`connect` and `mining enable` are the search platform's agent-onboarding path —
+register, get claimed at a printed URL, then mine unattended. `setup.sh` and
+`install.ps1` don't use them yet; they're available to run directly.
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
 falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
@@ -97,12 +103,19 @@ name     = "search-router"
 upstream = "https://router-api.nyks.dev"
 
 [mining]
-enabled   = true
-as_url    = "https://rewards.nyks.dev"
-chain_id  = "twilight-testnet-1"
-slot_id   = 3
-state_dir = "/home/you/.tokendrop/state"
-spool_dir = "/home/you/.tokendrop/spool"
+enabled        = true
+as_url         = "https://rewards.nyks.dev"
+chain_id       = "twilight-testnet-1"
+slot_id        = 3
+state_dir      = "/home/you/.tokendrop/state"
+spool_dir      = "/home/you/.tokendrop/spool"
+# payout_address = "twilight1..."  scripted `connect`/`mining enable` answer;
+#                                  leave unset to be asked at a terminal instead
+# platform_slot  = "twilight-slot-3"  required only if the platform ever offers
+#                                     more than one mining slot to enroll into
+
+[platform]
+base_url = "https://platform.nyks.dev"   # the search platform connect/mining enable talk to
 
 [miner]
 enabled        = true
@@ -114,7 +127,9 @@ flush_interval = "3m"                             # how often a flush re-asks th
 
 The `[mining]` block is the proxy's, unchanged: a machine that already runs
 `tokendrop-proxy` can point this at the same state directory and be the same
-participant.
+participant. `[platform]` and the two extra `[mining]` keys above are
+`connect`/`mining enable`'s own (agent onboarding design, §5.5) — see
+`dropin-miner connect -h` / `dropin-miner mining -h`.
 
 ## Building
 

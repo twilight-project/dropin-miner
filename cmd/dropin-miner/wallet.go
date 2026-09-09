@@ -101,46 +101,66 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return code
 	}
 
-	entropy := make([]byte, 32)
-	if _, err := rand.Read(entropy); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner: entropy:", err)
-		return exitTransport
-	}
-	mnemonic, err := auth.NewWalletMnemonic(entropy)
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
-	}
-	key, err := auth.DeriveWalletKey(mnemonic)
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
-	}
-	address, err := key.Address(auth.TwilightHRP)
+	address, mnemonic, err := createWallet(resolved, passphrase)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
 
+	printMnemonic(stdout, resolved, address, mnemonic)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Next: register it as your payout destination:")
+	fmt.Fprintln(stdout, "    dropin-miner wallet register -config <file>")
+	return 0
+}
+
+// createWallet is the core walletInit shares with the mining-enable flow
+// (mining.go): entropy -> mnemonic -> derive -> seal -> write the
+// keyfile and sidecar into dir. Callers own everything human-facing this
+// does NOT do — printing the mnemonic, asking for the passphrase,
+// refusing a non-terminal stdout, refusing to overwrite an existing
+// wallet — because those differ between wallet init's CLI surface and
+// mining enable's terminal question, while the cryptographic and
+// on-disk steps must not: one wallet model, however it gets triggered.
+func createWallet(dir, passphrase string) (address, mnemonic string, err error) {
+	entropy := make([]byte, 32)
+	if _, err := rand.Read(entropy); err != nil {
+		return "", "", fmt.Errorf("entropy: %w", err)
+	}
+	mnemonic, err = auth.NewWalletMnemonic(entropy)
+	if err != nil {
+		return "", "", err
+	}
+	key, err := auth.DeriveWalletKey(mnemonic)
+	if err != nil {
+		return "", "", err
+	}
+	address, err = key.Address(auth.TwilightHRP)
+	if err != nil {
+		return "", "", err
+	}
 	kf, err := auth.SealWalletKey(key, passphrase)
 	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
+		return "", "", err
 	}
-	if err := writeWalletFile(resolved, walletKeyFile, kf); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
+	if err := writeWalletFile(dir, walletKeyFile, kf); err != nil {
+		return "", "", err
 	}
-	if err := writeWalletFile(resolved, walletSidecarFile, &sidecar{
+	if err := writeWalletFile(dir, walletSidecarFile, &sidecar{
 		Address: address,
 		PubKey:  key.PubKeyHex(),
 		Path:    auth.WalletHDPath,
 	}); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
+		return "", "", err
 	}
+	return address, mnemonic, nil
+}
 
-	// The one and only appearance of the mnemonic, anywhere.
+// printMnemonic is the one and only appearance of a mnemonic, anywhere,
+// shared by walletInit and the mining-enable flow (mining.go's
+// askMiningQuestion) so the two paths that can create a wallet show
+// identical words around it.
+func printMnemonic(stdout io.Writer, dir, address, mnemonic string) {
 	fmt.Fprintln(stdout, "recovery phrase (shown ONCE, stored NOWHERE — written down or lost):")
 	fmt.Fprintln(stdout)
 	words := strings.Fields(mnemonic)
@@ -153,13 +173,9 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Anyone with these words controls every token this wallet ever receives.")
-	fmt.Fprintln(stdout, "The encrypted key lives in "+resolved+"; the passphrase opens it for spending.")
+	fmt.Fprintln(stdout, "The encrypted key lives in "+dir+"; the passphrase opens it for spending.")
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "address: "+address)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Next: register it as your payout destination:")
-	fmt.Fprintln(stdout, "    dropin-miner wallet register -config <file>")
-	return 0
 }
 
 func walletAddress(args []string, stdout, stderr io.Writer, getenv func(string) string) int {

@@ -149,7 +149,7 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	holder := &scope.Holder{}
 	caps := auth.NewCapabilityClient(mining, holder)
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	driver := newEpochDriver(mining, caps, m.TargetEpoch, logger, enrolled)
+	driver := newEpochDriver(mining, caps, m.TargetEpoch, logger, enrolled).withStore(store)
 
 	// 1. target, join, capability — or the stamp's answer when fresh.
 	stampPath := flushStampPath(mn)
@@ -182,6 +182,12 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		fmt.Fprintln(stderr, "dropin-miner flush: stamp:", err)
 	}
 
+	// WP4b (design aba1245 §2.3/§5.5): now that this run's target is
+	// resolved, drop any previously-recorded conflicted epoch the AS has
+	// moved past. State-based, not clock-based — see
+	// dropConflictedObservationsPastTarget's own comment for why.
+	dropConflictedObservationsPastTarget(store, m.SpoolDir, m.SlotID, epoch, stdout)
+
 	// 2. promote intake into the spool.
 	sp, err := spool.Open(m.SpoolDir)
 	if err != nil {
@@ -212,6 +218,78 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		fmt.Fprintln(stderr, "flush: delivery:", h.LastFailureNote)
 	}
 	return rep, exitOK
+}
+
+// dropConflictedObservationsPastTarget is WP4b's other half (design
+// aba1245 §2.3/§5.5). The rule is state-based, not clock-based: this
+// installation never obtains a capability for an epoch another
+// installation of the same participant holds (ErrEnrollmentConflict on
+// join, or ErrProxyBindingMismatch on exchange — driver.go's
+// joinIfNeeded/ensure), so it has no deadline to wait out. What proves the
+// observations it queued for that epoch are worthless is simpler: the AS's
+// current target has moved past it. So every conflicted epoch below
+// currentTarget is dropped, quietly — no error-level output, because this
+// is a bounded, expected property of several installations sharing one
+// participant, not a bad record (Quarantine's "kept for inspection because
+// something is wrong" semantics do not apply).
+//
+// An earlier version of this gated the drop on a capability deadline
+// instead, but the non-holder case (ErrEnrollmentConflict — never held the
+// epoch at all) never has one, so the drop never fired for the common
+// case; only the rarer "held it, then lost it to ErrProxyBindingMismatch"
+// case had a deadline to compare against. The current-target comparison
+// covers both.
+func dropConflictedObservationsPastTarget(store *auth.Store, spoolDir string, slotID, currentTarget uint64, stdout io.Writer) {
+	// WP2-adversarial-review finding 18: an entry for a DIFFERENT slot
+	// than the one currently configured can never reach the
+	// currentTarget comparison below (it is filtered out of `due` by the
+	// SlotID match) — a slot_id reconfiguration would otherwise strand it
+	// in the set forever. Pruned here, once per flush, before that filter
+	// ever runs.
+	_ = store.PruneEpochConflictsForOtherSlots(slotID)
+
+	conflicts, err := store.EpochConflicts()
+	if err != nil || len(conflicts) == 0 {
+		return
+	}
+	var due []auth.ConflictedEpoch
+	for _, c := range conflicts {
+		if c.SlotID == slotID && c.TargetEpoch < currentTarget {
+			due = append(due, c)
+		}
+	}
+	if len(due) == 0 {
+		return
+	}
+	sp, err := spool.Open(spoolDir)
+	if err != nil {
+		return // transient; the next flush tries again, `due` stays on file
+	}
+	pending, err := sp.Pending()
+	if err != nil {
+		return
+	}
+	dropped := 0
+	for _, prec := range pending {
+		for _, c := range due {
+			if prec.SlotID == c.SlotID && prec.TargetEpoch == c.TargetEpoch {
+				if err := sp.Remove(prec); err == nil {
+					dropped++
+				}
+				break
+			}
+		}
+	}
+	if dropped > 0 {
+		fmt.Fprintf(stdout, "flush: dropped %d observation(s) across %d conflicted epoch(s) for slot %d — another installation of this participant held them\n",
+			dropped, len(due), slotID)
+	}
+	// Removed once processed, whether or not anything was actually left to
+	// drop (already delivered, or never spooled at all) — the pair has
+	// been acted on either way, and the AS will never re-open it.
+	if err := store.RemoveEpochConflicts(due); err != nil {
+		fmt.Fprintln(stdout, "flush:", err)
+	}
 }
 
 // deliverOnly drains the spool when no target could be resolved this run:

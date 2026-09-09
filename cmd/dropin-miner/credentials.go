@@ -89,6 +89,40 @@ func credentialsPath(m config.Miner) string {
 	return filepath.Join(minerRoot(m), credentialsFile)
 }
 
+// platformKey resolves the bearer credential connect, mining enable and
+// the resume present to the search PLATFORM (register/status/enroll) —
+// deliberately NOT resolveAPIKey (WP2-adversarial-review finding 3).
+// resolveAPIKey's TOKENDROP_API_KEY/OPENAI_API_KEY fallbacks exist for
+// `search`'s router credential, which is a different bearer entirely; a
+// developer's own OPENAI_API_KEY leaking into a platform call mints
+// enrollment for whatever participant that key happens to belong to
+// (never this installation's own), and the mismatch does not surface
+// until the platform later reports "agent no longer known" — silent at
+// the moment it happens, confusing long after. The credentials file is
+// the ONLY source: it is what connect itself wrote after a successful
+// Register, so if it is missing there is nothing to authenticate a
+// platform call with, full stop — no fallback to guess with instead.
+func platformKey(m config.Miner) (string, error) {
+	creds, err := readCredentials(credentialsPath(m))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", errors.New("no platform key on file (credentials.json); run `dropin-miner connect` first")
+		}
+		return "", err
+	}
+	return creds.APIKey, nil
+}
+
+// looksLikePlatformKey is a shape check, not a verification — the
+// platform is the only party that can actually confirm a key, and this
+// exists solely so `connect` can refuse to silently overwrite a
+// credentials.json that plainly holds something else (WP2-adversarial-
+// review finding 14), not to validate a key this client did not itself
+// mint.
+func looksLikePlatformKey(key string) bool {
+	return strings.HasPrefix(key, "sr-") && len(key) > 3
+}
+
 // resolveAPIKey applies the order documented above. A credentials file
 // that exists but cannot be trusted (symlink, readable by others,
 // unparseable) is an error, not a fall-through: silently continuing to
