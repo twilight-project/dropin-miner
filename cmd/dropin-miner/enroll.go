@@ -343,7 +343,19 @@ func cmdStatus(args []string) int {
 	ctx, cancel := operatorContext(time.Minute)
 	defer cancel()
 
-	printAgentIdentityStatus(args, os.Stdout, os.Stderr, os.Getenv)
+	// WP2-adversarial-review finding 16: an unclaimed or search-only
+	// agent (no [mining] block, by design) is an ordinary state, not a
+	// failure — miningClients below requires [mining] to be configured
+	// and would otherwise make `status` exit 1 for the two most common
+	// states an agent-onboarding participant is actually in. needsMining
+	// is false for exactly those two; the AS-facing report below is
+	// skipped entirely rather than attempted and its failure suppressed,
+	// since there is nothing for it to say when there is no [mining]
+	// block to ask about.
+	needsMining := printAgentIdentityStatus(args, os.Stdout, os.Stderr, os.Getenv)
+	if !needsMining {
+		return 0
+	}
 
 	_, mining, m, code := miningClients(ctx, args, "status")
 	if code != 0 {
@@ -391,26 +403,46 @@ func cmdStatus(args []string) int {
 // search-only unclaimed participant has no reason to have. This prints
 // first and unconditionally, then whatever follows is the existing
 // AS-facing report, unchanged.
-func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv func(string) string) {
+//
+// The returned bool tells cmdStatus whether the AS-facing report below
+// is worth attempting at all (WP2-adversarial-review finding 16):
+// false for an unclaimed/expired registration, or a claimed one with no
+// mining scope — miningClients requires [mining] to be configured, which
+// none of those three ordinary states has any reason to have, and
+// `status` used to exit 1 for all three purely because of that. true
+// when there is a real mining story (scope granted, whether or not
+// enrolled yet) or when there is no agent-onboarding registration at
+// all — a legacy, pre-connect installation, where the AS-facing report
+// is the WHOLE of what `status` has ever done and must run unchanged.
+func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv func(string) string) bool {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	if err := fs.Parse(args); err != nil {
-		return // the real parse, in miningClients below, reports the usage error
+		return true // the real parse, in miningClients below, reports the usage error
 	}
 	cfg, _, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
-		return // ditto: miningClients below reports this config error
+		return true // ditto: miningClients below reports this config error
 	}
 	store, err := auth.OpenStore(cfg.Mining.StateDir)
 	if err != nil {
-		return
+		return true
 	}
 	reg, ok, err := store.LoadAgentRegistration()
-	if err != nil || !ok {
-		return // never ran connect: nothing to report here
+	if err != nil {
+		// WP2-adversarial-review finding 17: an undecodable agent.json
+		// used to make this function print nothing at all, identical to
+		// "never ran connect" — status is exactly where a participant
+		// would go looking to understand why connect started refusing.
+		fmt.Fprintf(stderr, "agent:  registration on file could not be read: %v\n", err)
+		return true
+	}
+	if !ok {
+		return true // never ran connect: nothing to report here, legacy report proceeds
 	}
 
+	needsMining := false
 	switch reg.Status {
 	case "unclaimed":
 		fmt.Fprintf(stdout, "agent:  unclaimed — claim at %s\n", reg.ClaimURL)
@@ -418,6 +450,9 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 		fmt.Fprintln(stdout, "agent:  expired — run `dropin-miner connect` again for a new registration")
 	case "claimed":
 		fmt.Fprintf(stdout, "agent:  claimed (scopes: %s)\n", strings.Join(reg.Scopes, ", "))
+		if hasScope(reg.Scopes, "mining") {
+			needsMining = true
+		}
 		if reg.LastEnrollmentSlot != "" {
 			address, hasAddr, aerr := store.LoadPayoutAddress()
 			switch {
@@ -429,6 +464,11 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 		} else if hasScope(reg.Scopes, "mining") {
 			if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
 				fmt.Fprintln(stdout, "        mining scope granted, but mining.enabled = false locally; not enrolling")
+			} else if reg.SlotRefusal != "" {
+				// finding 15: name the refusal explicitly rather than let
+				// a participant discover it only from a resume's silent
+				// no-op.
+				fmt.Fprintln(stdout, "        mining scope granted, but not enrolled: "+reg.SlotRefusal)
 			} else if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
 				fmt.Fprintln(stdout, "        mining scope granted, but this installation's [mining] block names no "+
 					"authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true")
@@ -448,9 +488,13 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	// needed here — printAgentIdentityStatus stays disk-only by design
 	// (see printQueue's comment on the same point).
 	if held, ok, herr := store.LoadPayoutBindingHeld(); herr == nil && ok {
-		fmt.Fprintf(stdout, "payout: HELD — the AS has %s active for this participant; this installation "+
+		reason := held.HeldFor
+		if reason == "" {
+			reason = "REPLACES_ACTIVE" // this client's own read-before-declare pre-check, not an AS-returned reason
+		}
+		fmt.Fprintf(stdout, "payout: HELD (%s) — the AS has %s active for this participant; this installation "+
 			"would declare %s. Changing the active binding is an operator-activated change.\n",
-			held.Active, held.Local)
+			reason, held.Active, held.Local)
 	}
 	if conflicts, cerr := store.EpochConflicts(); cerr == nil {
 		for _, c := range conflicts {
@@ -459,6 +503,7 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 				c.SlotID, c.TargetEpoch)
 		}
 	}
+	return needsMining
 }
 
 // printQueue reports the local backlog.

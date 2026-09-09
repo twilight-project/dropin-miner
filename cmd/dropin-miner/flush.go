@@ -240,6 +240,14 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 // case had a deadline to compare against. The current-target comparison
 // covers both.
 func dropConflictedObservationsPastTarget(store *auth.Store, spoolDir string, slotID, currentTarget uint64, stdout io.Writer) {
+	// WP2-adversarial-review finding 18: an entry for a DIFFERENT slot
+	// than the one currently configured can never reach the
+	// currentTarget comparison below (it is filtered out of `due` by the
+	// SlotID match) — a slot_id reconfiguration would otherwise strand it
+	// in the set forever. Pruned here, once per flush, before that filter
+	// ever runs.
+	_ = store.PruneEpochConflictsForOtherSlots(slotID)
+
 	conflicts, err := store.EpochConflicts()
 	if err != nil || len(conflicts) == 0 {
 		return
