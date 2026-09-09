@@ -169,7 +169,7 @@ func (c *Client) Register(ctx context.Context, name string, requestedScopes []st
 	if wire.AgentID == "" || wire.Key == "" || wire.ClaimURL == "" {
 		return nil, errors.New("platform: register response missing agent_id, key or claim_url")
 	}
-	if err := validateClaimURL(wire.ClaimURL, c.portalBaseURL); err != nil {
+	if err := validatePlatformURL(wire.ClaimURL, c.portalBaseURL); err != nil {
 		return nil, err
 	}
 	if hasControlChar(wire.ClaimCode) {
@@ -223,14 +223,15 @@ func isLoopbackHostname(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// validateClaimURL enforces invariant 12: the claim URL a register
-// response hands back is printed to a terminal and persisted to disk
-// verbatim — a control character in it could forge the client's own
-// output, and an off-origin URL could point a participant at a page
-// that is not actually this platform's. Absolute HTTPS (or loopback,
-// matching this codebase's http(s)-or-loopback convention elsewhere),
-// origin exactly equal to baseURL's own.
-func validateClaimURL(raw, baseURL string) error {
+// validatePlatformURL enforces invariant 12 on any platform-supplied,
+// origin-locked URL that gets printed to a terminal or persisted to disk
+// verbatim — register's claim_url, and poll's console_url below. A
+// control character in either could forge the client's own output, and
+// an off-origin URL could point a participant at a page that is not
+// actually this platform's. Absolute HTTPS (or loopback, matching this
+// codebase's http(s)-or-loopback convention elsewhere), origin exactly
+// equal to baseURL's own.
+func validatePlatformURL(raw, baseURL string) error {
 	if hasControlChar(raw) {
 		return errors.New("platform: claim_url contains a control character; refusing")
 	}
@@ -277,6 +278,15 @@ type AgentStatus struct {
 	// assumption pending WP1 confirmation, flagged where it is consumed
 	// (cmd/dropin-miner/mining.go's askMiningQuestion).
 	ParticipantHasOtherMiningAgent bool
+	// ConsoleURL is the agent's project page on the platform, once
+	// claimed — search-router added this specifically so a re-approval
+	// message can send a human straight to the real console instead of
+	// making them submit an already-consumed claim code first, just to
+	// reach a "go to console" link from the resulting error page (found
+	// live testing §2.2's "mining added later" case). Empty when absent
+	// (an older platform, or an unclaimed agent, for which there is no
+	// project yet) — callers fall back to the generic claim address.
+	ConsoleURL string
 }
 
 // HasScope reports whether scope was granted at the claim.
@@ -321,6 +331,7 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 		Scopes         []string `json:"scopes"`
 		ClaimExpiresAt string   `json:"claim_expires_at"`
 		ClaimedAt      string   `json:"claimed_at"`
+		ConsoleURL     string   `json:"console_url"`
 		Mining         struct {
 			Available      bool     `json:"available"`
 			Slots          []string `json:"slots"`
@@ -357,6 +368,18 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 			return nil, errors.New("platform: a slot name in the status response contains a control character; refusing")
 		}
 	}
+	// console_url gets the same origin-lock and control-character check
+	// as register's claim_url (invariant 12) — but dropped, not failed,
+	// when invalid. Unlike claim_url, which IS the point of a register
+	// call (a registration with no trustworthy claim link is useless),
+	// console_url is supplementary to an otherwise-good status poll: the
+	// scopes and enrollment progress this response also carries are
+	// still worth having even if a hostile or buggy console_url arrived
+	// alongside them.
+	consoleURL := wire.ConsoleURL
+	if consoleURL != "" && validatePlatformURL(consoleURL, c.portalBaseURL) != nil {
+		consoleURL = ""
+	}
 	out := &AgentStatus{
 		Status:                         wire.Status,
 		Scopes:                         wire.Scopes,
@@ -365,6 +388,7 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 		MiningAvailable:                wire.Mining.Available,
 		MiningSlots:                    wire.Mining.Slots,
 		ParticipantHasOtherMiningAgent: wire.Mining.ParticipantHasOtherAgent,
+		ConsoleURL:                     consoleURL,
 	}
 	if wire.Mining.LastEnrollment != nil {
 		out.LastEnrollmentSlot = wire.Mining.LastEnrollment.Slot

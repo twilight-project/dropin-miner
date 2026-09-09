@@ -40,10 +40,11 @@ import (
 type stubPlatform struct {
 	srv *httptest.Server
 
-	mu     sync.Mutex
-	status string // "unclaimed" | "claimed" | "expired"
-	scopes []string
-	slots  []string
+	mu         sync.Mutex
+	status     string // "unclaimed" | "claimed" | "expired"
+	scopes     []string
+	slots      []string
+	consoleURL string // "" means the stub omits console_url, matching an older platform
 
 	registerCalls int
 	statusCalls   int
@@ -69,12 +70,16 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 	mux.HandleFunc("GET /v1/agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		f.statusCalls++
-		st, scopes, slots := f.status, f.scopes, f.slots
+		st, scopes, slots, consoleURL := f.status, f.scopes, f.slots, f.consoleURL
 		f.mu.Unlock()
-		writeStubJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"status": st, "scopes": scopes,
 			"mining": map[string]any{"available": len(slots) > 0, "slots": slots},
-		})
+		}
+		if consoleURL != "" {
+			body["console_url"] = consoleURL
+		}
+		writeStubJSON(w, http.StatusOK, body)
 	})
 	mux.HandleFunc("POST /v1/agents/enroll", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
@@ -109,6 +114,14 @@ func (f *stubPlatform) setSlots(slots ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.slots = slots
+}
+
+// setConsoleURL makes the stub's poll response include console_url, as
+// the real platform now does (found live testing §2.2's re-approval UX).
+func (f *stubPlatform) setConsoleURL(url string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.consoleURL = url
 }
 
 func (f *stubPlatform) counts() (register, status, enroll int) {
@@ -1317,6 +1330,53 @@ func TestMiningEnableReApprovalPointsAtTheGenericClaimAddressNotTheDeadOneTimeUR
 	}
 	if strings.Contains(out, deadClaimURL) {
 		t.Errorf("stdout still names the dead, already-consumed one-time claim URL:\n%s", out)
+	}
+}
+
+// When the platform's poll response carries console_url (confirmed live:
+// search-router added this after the generic-claim-address fix above,
+// specifically to remove the "submit a doomed code first" step), mining
+// enable's re-approval message must prefer it over the generic address —
+// the whole point of shipping it.
+func TestMiningEnableReApprovalPrefersTheRealConsoleURLWhenThePlatformSendsOne(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"credits"},
+		ClaimURL: platform.srv.URL + "/claim/AB12-CD34",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("credits") // claimed, credits only — mining not granted
+	realConsoleURL := platform.srv.URL + "/projects/8fe850f9-eb9a-4a80-b9c8-7341bd346a48"
+	platform.setConsoleURL(realConsoleURL)
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, realConsoleURL) {
+		t.Errorf("stdout does not name the real console_url %q:\n%s", realConsoleURL, out)
+	}
+	genericAddr := cfg.Platform.BaseURL + "/claim"
+	if strings.Contains(out, genericAddr) {
+		t.Errorf("stdout fell back to the generic claim address %q even though a real console_url was available:\n%s", genericAddr, out)
 	}
 }
 

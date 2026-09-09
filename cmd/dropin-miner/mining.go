@@ -73,10 +73,12 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	}
 	client := platform.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
 	participantHasOtherAgent := false
+	consoleURL := ""
 	if st, serr := client.Status(ctx, reg.AgentID, key); serr == nil {
 		reg.Status, reg.Scopes, reg.ClaimExpiresAt = st.Status, st.Scopes, st.ClaimExpiresAt
 		_ = store.SaveAgentRegistration(reg)
 		participantHasOtherAgent = st.ParticipantHasOtherMiningAgent
+		consoleURL = st.ConsoleURL
 	} else {
 		fmt.Fprintln(stderr, "dropin-miner: could not reach the platform to check status; proceeding on what was last known:", serr)
 	}
@@ -97,14 +99,23 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	// (handleAgentClaim refuses any claimed registration outright). The
 	// real mechanism is a portal-console grant (POST
 	// /internal/v1/agents/{id}/scopes, owner-only, never the sr- key —
-	// search-router commit d20a6ac), reached by the owner signing in at
-	// the platform's generic claim address rather than the dead
-	// per-code one. connect's own resume still picks up the enrollment
-	// automatically once granted — no second flag, no new registration
-	// needed, the granted scope is the instruction (decision 3).
+	// search-router commit d20a6ac). Prefer the direct console_url this
+	// same poll just returned (search-router added it specifically to
+	// close this gap — live testing found the generic claim address
+	// routes a human through submitting a doomed code first, only
+	// discovering the real console from the resulting error page); fall
+	// back to the generic address when it's absent (an older platform,
+	// or this poll call itself failed above). connect's own resume still
+	// picks up the enrollment automatically once granted — no second
+	// flag, no new registration needed, the granted scope is the
+	// instruction (decision 3).
 	if !hasScope(reg.Scopes, "mining") {
+		dest := consoleURL
+		if dest == "" {
+			dest = strings.TrimRight(cfg.Platform.BaseURL, "/") + "/claim"
+		}
 		fmt.Fprintln(stdout, "\nmining is not yet granted for this agent. Sign in and grant it at:")
-		fmt.Fprintln(stdout, "  "+strings.TrimRight(cfg.Platform.BaseURL, "/")+"/claim")
+		fmt.Fprintln(stdout, "  "+dest)
 		fmt.Fprintln(stdout, "\nOnce granted, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
 		return exitOK
 	}
