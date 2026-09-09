@@ -244,3 +244,53 @@ func TestPollIntervalIsCeilingClamped(t *testing.T) {
 		t.Fatalf("poll interval = %v, want <= ceiling %v", reg.PollInterval, maxPollInterval)
 	}
 }
+
+// WP2-adversarial-review finding 19: the structural check
+// (TestNoBareHTTPClientInThisPackage) confirms every http.Client literal
+// SETS CheckRedirect, but nothing previously exercised the POLICY itself
+// — a mutation that quietly disabled auth.SameOriginRedirects (e.g.
+// passing nil instead) left the whole suite green. This drives a real
+// redirect through a real client and checks the credential's fate, not
+// just the presence of a field.
+func TestClientRefusesACrossOriginRedirect(t *testing.T) {
+	evilHits := 0
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer evil.Close()
+
+	var good *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+r.URL.Path, http.StatusFound)
+	})
+	good = httptest.NewServer(mux)
+	defer good.Close()
+
+	c := New(good.URL)
+	if _, err := c.Register(context.Background(), "", nil); err == nil {
+		t.Fatal("Register followed a cross-origin redirect instead of refusing it")
+	}
+	if evilHits != 0 {
+		t.Fatalf("the off-origin server was contacted %d time(s); it must never be reached", evilHits)
+	}
+}
+
+// The same-origin half: a redirect that stays on the platform's own
+// origin is ordinary and must still work.
+func TestClientFollowsASameOriginRedirect(t *testing.T) {
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srv.URL+"/elsewhere", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/elsewhere", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{"agent_id": "a", "key": "sr-1", "claim_url": srv.URL + "/claim/X"})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+	if _, err := New(srv.URL).Register(context.Background(), "", nil); err != nil {
+		t.Fatalf("same-origin redirect refused: %v", err)
+	}
+}
