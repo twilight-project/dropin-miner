@@ -38,6 +38,13 @@ type epochDriver struct {
 	pinned *uint64
 	logger *slog.Logger
 
+	// store persists what WP4b needs to survive across flush invocations
+	// (capability deadlines, epoch conflicts) — see
+	// auth.Store.SaveEpochCapabilitySuccess/SaveEpochConflict. nil in
+	// every existing driver-level test that predates this and does not
+	// exercise it; every call site below guards on it being set.
+	store *auth.Store
+
 	// joined is the bounded ring of epochs already enrolled in this
 	// process; next is the slot the ring overwrites once it is full.
 	joined []uint64
@@ -168,6 +175,16 @@ func newEpochDriver(mining *auth.MiningClient, caps *auth.CapabilityClient, pinn
 	}
 }
 
+// withStore attaches the store WP4b's persistence needs, after
+// construction rather than as a newEpochDriver parameter — every existing
+// call site (five in mining_test.go alone) constructs a driver with no
+// store at all, and nil is the correct, already-guarded-for value for a
+// test exercising the log-dedup logic rather than epoch participation.
+func (d *epochDriver) withStore(store *auth.Store) *epochDriver {
+	d.store = store
+	return d
+}
+
 // tick is one pass: find the target, join it if it must, hold a
 // capability for it. Each step is independent — a step that fails costs
 // this tick, never the next one.
@@ -266,6 +283,25 @@ func (d *epochDriver) joinIfNeeded(ctx context.Context, epoch uint64) {
 	}
 	res, err := d.mining.JoinEpoch(ctx, epoch)
 	if err != nil {
+		if errors.Is(err, auth.ErrEnrollmentConflict) {
+			// WP4b (design f0ddb69 §2.3/§5.5): another installation of
+			// this participant already holds this epoch. Not a failure —
+			// recordJoinFailure/Warn-escalation is for the AS being
+			// unreachable or this installation being unauthorized, neither
+			// of which is true here — so this is deliberately NOT that
+			// path. Remembered so the next tick does not re-attempt the
+			// same epoch every minute, and persisted so `status` and a
+			// later flush's drop-after-deadline check can see it.
+			d.remember(epoch)
+			if d.store != nil {
+				if serr := d.store.SaveEpochConflict(d.mining.SlotID(), epoch); serr != nil {
+					d.once(ctx, slog.LevelWarn, noteJoin, "mining: could not persist enrollment conflict", serr,
+						slog.Uint64("target_epoch", epoch))
+				}
+			}
+			d.clear(noteJoin)
+			return
+		}
 		d.recordJoinFailure(err)
 		d.once(ctx, d.credentialLevel(), noteJoin, "mining: join refused", err,
 			slog.Uint64("target_epoch", epoch))
@@ -283,7 +319,24 @@ func (d *epochDriver) joinIfNeeded(ctx context.Context, epoch uint64) {
 
 // ensure publishes a capability for epoch into the scope holder.
 func (d *epochDriver) ensure(ctx context.Context, epoch uint64) {
-	if _, err := d.caps.Ensure(ctx, epoch); err != nil {
+	sc, err := d.caps.Ensure(ctx, epoch)
+	if err != nil {
+		if errors.Is(err, auth.ErrProxyBindingMismatch) {
+			// WP4b, same fact as joinIfNeeded's ENROLLMENT_CONFLICT branch,
+			// caught here instead when this installation's join appeared to
+			// succeed locally before another installation's is the one the
+			// AS actually bound (contract §30 check 4). SaveEpochConflict
+			// preserves whatever deadline this installation already knows
+			// for this same epoch from an earlier successful exchange.
+			if d.store != nil {
+				if serr := d.store.SaveEpochConflict(d.mining.SlotID(), epoch); serr != nil {
+					d.once(ctx, slog.LevelWarn, noteCapability, "mining: could not persist binding conflict", serr,
+						slog.Uint64("target_epoch", epoch))
+				}
+			}
+			d.clear(noteCapability)
+			return
+		}
 		// Debug before enrollment — it fails on every tick by design and
 		// an operator should not be told the proxy is broken when it is
 		// merely not enrolled — and Warn after, where the same failure
@@ -293,6 +346,14 @@ func (d *epochDriver) ensure(ctx context.Context, epoch uint64) {
 		return
 	}
 	d.clear(noteCapability)
+	if d.store != nil && !sc.Deadline.IsZero() {
+		// The durable fact SaveEpochConflict's later read depends on: a
+		// capability held successfully for this epoch, and until when.
+		if serr := d.store.SaveEpochCapabilitySuccess(d.mining.SlotID(), epoch, sc.Deadline); serr != nil {
+			d.once(ctx, slog.LevelWarn, noteCapability, "mining: could not persist capability deadline", serr,
+				slog.Uint64("target_epoch", epoch))
+		}
+	}
 }
 
 // hasJoined / remember maintain the bounded joined ring. Linear scan

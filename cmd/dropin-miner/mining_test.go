@@ -54,6 +54,18 @@ type asState struct {
 	epoch      int64
 	joinable   bool
 	joinStatus string
+	// joinRefusalCode, when set, makes the join endpoint answer 409 with
+	// this §26 error code instead of accepting — WP4b's
+	// ENROLLMENT_CONFLICT.
+	joinRefusalCode string
+	// capabilityTwilightError, when set, makes the capability exchange
+	// (the token endpoint's RFC 8693 branch) refuse with this
+	// twilight_error instead of minting — WP4b's PROXY_BINDING_MISMATCH.
+	capabilityTwilightError string
+	// capabilityDeadline, when set (RFC3339), is returned as the minted
+	// capability's observation_submission_deadline — omitted by default,
+	// matching every pre-WP4b test's expectation of a zero scope.Context.Deadline.
+	capabilityDeadline string
 }
 
 type fakeAS struct {
@@ -170,6 +182,13 @@ func newFakeAS(t *testing.T) *fakeAS {
 		if err != nil {
 			t.Errorf("join path epoch %q: %v", r.PathValue("epoch"), err)
 		}
+		if code := f.get().joinRefusalCode; code != "" {
+			w.WriteHeader(http.StatusConflict)
+			f.writeJSON(t, w, map[string]any{"error": map[string]string{
+				"code": code, "message": "an accepted enrollment for this target belongs to a different installation",
+			}})
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		f.writeJSON(t, w, map[string]string{
 			"status":  auth.JoinAccepted,
@@ -247,14 +266,28 @@ func (f *fakeAS) token(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	epoch := r.PostFormValue("twilight_target_epoch")
-	f.writeJSON(t, w, map[string]any{
+	st := f.get()
+	if st.capabilityTwilightError != "" {
+		w.WriteHeader(http.StatusBadRequest)
+		f.writeJSON(t, w, map[string]any{
+			"error":             "invalid_target",
+			"error_description": "another installation of this participant holds this epoch",
+			"twilight_error":    st.capabilityTwilightError,
+		})
+		return
+	}
+	resp := map[string]any{
 		"access_token":          "capability-" + epoch,
 		"token_type":            "DPoP",
 		"expires_in":            900,
 		"scope":                 auth.CapabilityScope,
 		"twilight_slot_id":      r.PostFormValue("twilight_slot_id"),
 		"twilight_target_epoch": epoch,
-	})
+	}
+	if st.capabilityDeadline != "" {
+		resp["observation_submission_deadline"] = st.capabilityDeadline
+	}
+	f.writeJSON(t, w, resp)
 }
 
 // receipt is a §24-shaped enrollment receipt: EdDSA, the exact typ, a
@@ -290,6 +323,7 @@ type driverFixture struct {
 	holder *scope.Holder
 	log    *bytes.Buffer
 	as     *fakeAS
+	store  *auth.Store
 }
 
 func newDriverFixture(t *testing.T, as *fakeAS, pinned *uint64) *driverFixture {
@@ -321,10 +355,11 @@ func newDriverFixture(t *testing.T, as *fakeAS, pinned *uint64) *driverFixture {
 	buf := &bytes.Buffer{}
 	return &driverFixture{
 		driver: newEpochDriver(mining, auth.NewCapabilityClient(mining, holder), pinned,
-			redact.NewLogger(buf, slog.LevelDebug), func() bool { return true }),
+			redact.NewLogger(buf, slog.LevelDebug), func() bool { return true }).withStore(store),
 		holder: holder,
 		log:    buf,
 		as:     as,
+		store:  store,
 	}
 }
 
@@ -535,6 +570,72 @@ func TestJoinedRingIsBounded(t *testing.T) {
 	d.remember(newest)
 	if len(d.joined) != before || !d.hasJoined(newest) {
 		t.Fatalf("re-remembering churned the ring: %d → %d", before, len(d.joined))
+	}
+}
+
+// WP4b (design f0ddb69 §2.3/§5.5): ENROLLMENT_CONFLICT on join is not a
+// failure — no join failure is recorded, the epoch is remembered so the
+// next tick does not retry it, and the conflict is persisted for status
+// and a later flush to read.
+func TestFlushOnEnrollmentConflictRecordsStatusNotFailure(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable, s.joinRefusalCode = 1042, true, "ENROLLMENT_CONFLICT" })
+	f := newDriverFixture(t, as, nil)
+	f.tick()
+
+	if got := f.driver.JoinState(); got.Failures != 0 {
+		t.Fatalf("JoinState.Failures = %d, want 0 — an enrollment conflict is not a join failure", got.Failures)
+	}
+	if !f.driver.hasJoined(1042) {
+		t.Fatal("epoch 1042 was not remembered; the next tick would retry the same conflict every minute")
+	}
+	rec, ok, err := f.store.LoadEpochParticipation()
+	if err != nil || !ok || !rec.Conflict || rec.SlotID != testSlotID || rec.TargetEpoch != 1042 {
+		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want a conflict recorded for slot %d epoch 1042",
+			rec, ok, err, testSlotID)
+	}
+	if strings.Contains(f.log.String(), "level=WARN") || strings.Contains(f.log.String(), "level=ERROR") {
+		t.Fatalf("an enrollment conflict logged at warn/error level, read as a failure by an operator watching logs:\n%s", f.log.String())
+	}
+}
+
+// The capability exchange's PROXY_BINDING_MISMATCH is the same fact
+// caught at the other checkpoint (contract §30 check 4) — same
+// non-failure treatment, same persisted record.
+func TestFlushOnProxyBindingMismatchRecordsStatusNotFailure(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable, s.capabilityTwilightError = 1042, true, "PROXY_BINDING_MISMATCH" })
+	f := newDriverFixture(t, as, nil)
+	f.tick() // join succeeds (no joinRefusalCode set); the exchange is what refuses here
+
+	rec, ok, err := f.store.LoadEpochParticipation()
+	if err != nil || !ok || !rec.Conflict || rec.TargetEpoch != 1042 {
+		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want a conflict recorded for epoch 1042", rec, ok, err)
+	}
+	if strings.Contains(f.log.String(), "level=WARN") || strings.Contains(f.log.String(), "level=ERROR") {
+		t.Fatalf("a binding mismatch logged at warn/error level, read as a failure by an operator watching logs:\n%s", f.log.String())
+	}
+}
+
+// A successful capability exchange that DOES carry a deadline persists
+// it; a conflict on that SAME epoch afterward must not lose it (the
+// store-level round-trip is in pkg/auth/store_test.go — this proves the
+// driver is the thing that actually calls it, end to end against a real
+// exchange response).
+func TestFlushCapabilitySuccessPersistsDeadlineDriverEndToEnd(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	as := newFakeAS(t)
+	as.set(func(s *asState) {
+		s.epoch, s.joinable = 1042, true
+		s.capabilityDeadline = deadline.Format(time.RFC3339)
+	})
+	f := newDriverFixture(t, as, nil)
+	f.tick()
+
+	rec, ok, err := f.store.LoadEpochParticipation()
+	if err != nil || !ok || rec.Conflict || rec.CapabilityDeadline != deadline.Format(time.RFC3339) {
+		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want deadline %s persisted, no conflict",
+			rec, ok, err, deadline.Format(time.RFC3339))
 	}
 }
 

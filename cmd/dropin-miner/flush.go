@@ -149,7 +149,13 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	holder := &scope.Holder{}
 	caps := auth.NewCapabilityClient(mining, holder)
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	driver := newEpochDriver(mining, caps, m.TargetEpoch, logger, enrolled)
+	driver := newEpochDriver(mining, caps, m.TargetEpoch, logger, enrolled).withStore(store)
+
+	// WP4b (design f0ddb69 §2.3/§5.5): before anything else, act on a
+	// conflict a PAST flush recorded whose deadline has now passed —
+	// independent of whatever epoch is targeted THIS run, since the AS's
+	// current target has likely moved on from the conflicted one by now.
+	dropConflictedObservationsPastDeadline(store, m.SpoolDir, stdout)
 
 	// 1. target, join, capability — or the stamp's answer when fresh.
 	stampPath := flushStampPath(mn)
@@ -212,6 +218,55 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		fmt.Fprintln(stderr, "flush: delivery:", h.LastFailureNote)
 	}
 	return rep, exitOK
+}
+
+// dropConflictedObservationsPastDeadline is WP4b's other half (design
+// f0ddb69 §2.3/§5.5): once another installation of this participant is
+// confirmed to hold an epoch (ErrEnrollmentConflict/ErrProxyBindingMismatch,
+// recorded by the driver into store.EpochParticipation) AND that epoch's
+// own capability deadline has passed, the observations this installation
+// queued for it can never be submitted — this installation was never the
+// one bound to it — so they are removed quietly. "Quietly" means no
+// error-level output: this is a bounded, expected property of several
+// installations sharing one participant, not a bad record — Quarantine's
+// "kept for inspection because something is wrong" semantics do not apply.
+//
+// Deliberately unconditional on this run's own target epoch: the AS has
+// likely moved the current target on from the conflicted one by the time
+// this runs, so waiting for a flush that happens to still be targeting the
+// same epoch would mean the observations might never get cleaned up at
+// all.
+func dropConflictedObservationsPastDeadline(store *auth.Store, spoolDir string, stdout io.Writer) {
+	rec, ok, err := store.LoadEpochParticipation()
+	if err != nil || !ok || !rec.Conflict || rec.CapabilityDeadline == "" {
+		return // no conflict, or one with nothing yet to compare against
+	}
+	deadline, err := time.Parse(time.RFC3339, rec.CapabilityDeadline)
+	if err != nil || !time.Now().After(deadline) {
+		return // still within the window this installation once held it
+	}
+	sp, err := spool.Open(spoolDir)
+	if err != nil {
+		return // transient; the next flush tries again
+	}
+	pending, err := sp.Pending()
+	if err != nil {
+		return
+	}
+	dropped := 0
+	for _, prec := range pending {
+		if prec.SlotID != rec.SlotID || prec.TargetEpoch != rec.TargetEpoch {
+			continue
+		}
+		if err := sp.Remove(prec); err == nil {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		fmt.Fprintf(stdout, "flush: dropped %d observation(s) for slot %d epoch %d — another installation of this participant held it\n",
+			dropped, rec.SlotID, rec.TargetEpoch)
+	}
+	_ = store.ClearEpochParticipation()
 }
 
 // deliverOnly drains the spool when no target could be resolved this run:
