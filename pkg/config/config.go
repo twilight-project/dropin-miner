@@ -29,14 +29,23 @@ const (
 	DefaultListen      = "127.0.0.1:8787"
 	DefaultAdminListen = "127.0.0.1:8788"
 	defaultUpstream    = "https://openrouter.ai/api"
-	// defaultPlatformBaseURL is the search platform's control plane
-	// (agent onboarding design, search-platform-agent-onboarding-
-	// design.md §5): what `connect` and `mining enable` talk to. Unlike
-	// the AS (mining.as_url), there is no participant-facing reason to
-	// point this anywhere else in normal operation — it exists as a
-	// config key at all for the same reason as_url does: a devnet or a
-	// local stub during development.
-	defaultPlatformBaseURL     = "https://platform.nyks.dev"
+	// defaultPlatformBaseURL is the search platform's human-facing portal
+	// and claim pages (agent onboarding design, search-platform-agent-
+	// onboarding-design.md §5): what a printed claim_url is checked
+	// against, invariant 12. It is NOT where connect/mining enable's own
+	// requests go — see defaultAgentsAPIURL for that, and the doc comment
+	// on Platform for why these are two separate values rather than one.
+	defaultPlatformBaseURL = "https://platform.nyks.dev"
+	// defaultAgentsAPIURL is where connect/mining enable actually send
+	// register/status/enroll (search-router's own naming: the "Agents"
+	// host, distinct from the "Platform" host above). Confirmed live: a
+	// register call against platform.nyks.dev 404s — that route only
+	// exists on this separate host — while the claim_url it returns
+	// correctly points back at platform.nyks.dev. One shared origin was
+	// this package's original assumption, matching the design doc's own
+	// wording; the real deployment splits it in two, and search-router's
+	// skill file is what corrected this.
+	defaultAgentsAPIURL        = "https://agents-v1.nyks.dev"
 	defaultProviderName        = "openrouter"
 	defaultShutdownGrace       = 5 * time.Second
 	defaultMaxRequestBodyBytes = 32 << 20
@@ -142,13 +151,23 @@ type Mining struct {
 	PlatformSlot string
 }
 
-// Platform is the search-platform control plane connect and mining
-// enable talk to (agent onboarding design, search-platform-agent-
-// onboarding-design.md). Unlike Mining, this has no Enabled gate: the
-// base URL is always resolved and validated, and nothing dials it
-// unless connect or mining enable is actually invoked.
+// Platform is the search platform connect and mining enable talk to
+// (agent onboarding design, search-platform-agent-onboarding-design.md).
+// Unlike Mining, this has no Enabled gate: both URLs are always
+// resolved and validated, and nothing dials either unless connect or
+// mining enable is actually invoked.
+//
+// Two URLs, not one: search-router runs the human-facing portal and
+// claim pages on one host and the machine-facing /v1/agents/* API on
+// another. BaseURL is the portal — the origin a printed claim_url is
+// checked against (invariant 12). AgentsAPIURL is where the actual
+// register/status/enroll requests go. A single shared origin was this
+// package's original assumption; live testing found the real deployment
+// splits it in two, and pkg/platform.Client now takes both rather than
+// deriving one from the other.
 type Platform struct {
-	BaseURL string
+	BaseURL      string
+	AgentsAPIURL string
 }
 
 // Config is the resolved, immutable configuration.
@@ -278,7 +297,8 @@ type fileConfig struct {
 		FlushInterval duration `toml:"flush_interval"`
 	} `toml:"miner"`
 	Platform struct {
-		BaseURL string `toml:"base_url"`
+		BaseURL      string `toml:"base_url"`
+		AgentsAPIURL string `toml:"agents_api_url"`
 	} `toml:"platform"`
 }
 
@@ -329,6 +349,7 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		upstream:              defaultUpstream,
 		logLevel:              "info",
 		platformBaseURL:       defaultPlatformBaseURL,
+		agentsAPIURL:          defaultAgentsAPIURL,
 		observe: Observe{
 			MemoryBudgetBytes:    defaultObservationBudget,
 			RingBytes:            defaultRingBytes,
@@ -433,6 +454,7 @@ type rawConfig struct {
 	minerFlushInterval time.Duration
 
 	platformBaseURL string
+	agentsAPIURL    string
 }
 
 func (r *rawConfig) applyFile(path string) error {
@@ -582,6 +604,9 @@ func (r *rawConfig) applyFile(path string) error {
 	if f.Platform.BaseURL != "" {
 		r.platformBaseURL = f.Platform.BaseURL
 	}
+	if f.Platform.AgentsAPIURL != "" {
+		r.agentsAPIURL = f.Platform.AgentsAPIURL
+	}
 	return nil
 }
 
@@ -643,7 +668,11 @@ func (r *rawConfig) finish() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	platformBaseURL, err := parsePlatformBaseURL(r.platformBaseURL)
+	platformBaseURL, err := parsePlatformURL(r.platformBaseURL, "platform.base_url")
+	if err != nil {
+		return nil, err
+	}
+	agentsAPIURL, err := parsePlatformURL(r.agentsAPIURL, "platform.agents_api_url")
 	if err != nil {
 		return nil, err
 	}
@@ -664,30 +693,31 @@ func (r *rawConfig) finish() (*Config, error) {
 		Observe:               r.observe,
 		Mining:                mining,
 		Miner:                 miner,
-		Platform:              Platform{BaseURL: platformBaseURL},
+		Platform:              Platform{BaseURL: platformBaseURL, AgentsAPIURL: agentsAPIURL},
 		MiningEnabledExplicit: r.miningEnabledExplicit,
 	}, nil
 }
 
-// parsePlatformBaseURL validates platform.base_url the same way
-// mining.as_url and miner.router_url are (invariant 5): https, or http
-// only for loopback — connect and mining enable send the platform-
-// issued sr- key in Authorization to it, the same cleartext-credential
-// exposure the AS and router rules exist for. Unlike as_url, there is no
-// Enabled gate: this always resolves, since nothing dials it unless
-// connect or mining enable actually runs, and the default is always a
-// valid https URL.
-func parsePlatformBaseURL(raw string) (string, error) {
+// parsePlatformURL validates a [platform] URL (base_url or
+// agents_api_url) the same way mining.as_url and miner.router_url are
+// (invariant 5): https, or http only for loopback — connect and mining
+// enable send the platform-issued sr- key in Authorization to
+// agents_api_url (base_url never carries a credential, only a printed
+// claim_url is checked against it, but the same posture costs nothing
+// to hold for both). Unlike as_url, there is no Enabled gate: both
+// always resolve, since nothing dials either unless connect or mining
+// enable actually runs, and the defaults are always valid https URLs.
+func parsePlatformURL(raw, field string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return "", errors.New("platform.base_url: must be an absolute http(s) URL")
+		return "", fmt.Errorf("%s: must be an absolute http(s) URL", field)
 	}
 	if u.User != nil {
-		return "", errors.New("platform.base_url: must not carry userinfo")
+		return "", fmt.Errorf("%s: must not carry userinfo", field)
 	}
 	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
-		return "", fmt.Errorf("platform.base_url: plain http is permitted only for loopback hosts, got %q — "+
-			"use https, or a loopback address for local development", u.Host)
+		return "", fmt.Errorf("%s: plain http is permitted only for loopback hosts, got %q — "+
+			"use https, or a loopback address for local development", field, u.Host)
 	}
 	return raw, nil
 }

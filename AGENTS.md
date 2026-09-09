@@ -64,10 +64,14 @@ govulncheck.
 5. **Never assemble or call an unadvertised URL.** Endpoints come from the discovery document; the
    AS origin is **configured, not discovered**; service-document endpoints are same-origin checked; an
    off-origin provider-authorization template is refused unless on the compiled `providerhosts`
-   allowlist. `as_url`, `router_url` and `platform.base_url` are all https-or-loopback, enforced at
-   config load (T2b) — every search sends the participant's sr- key in `Authorization` to
-   `router_url`, and `connect`/`mining enable` send the platform-issued key to `platform.base_url`,
-   the same cleartext-credential exposure `as_url`'s rule closes.
+   allowlist. `as_url`, `router_url`, `platform.base_url` and `platform.agents_api_url` are all
+   https-or-loopback, enforced at config load (T2b) — every search sends the participant's sr- key
+   in `Authorization` to `router_url`, and `connect`/`mining enable` send the platform-issued key
+   to `agents_api_url`, the same cleartext-credential exposure `as_url`'s rule closes.
+   `platform.base_url` carries no credential — nothing is ever dialed there — it is the portal
+   origin a printed `claim_url` is checked against (invariant 12); live testing found the real
+   deployment splits the human portal and the machine API across two separate hosts, which the
+   original single-URL design missed.
 6. **Strict for the AS wire, permissive for the provider response.** AS-facing types conform to the
    frozen, checksum-verified fixtures. The provider **response** shape is not frozen and is decoded
    permissively (no `DisallowUnknownFields`) on purpose — we own the AS contract, not the provider's

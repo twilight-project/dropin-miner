@@ -71,7 +71,7 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
-	client := platform.New(cfg.Platform.BaseURL)
+	client := platform.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
 	participantHasOtherAgent := false
 	if st, serr := client.Status(ctx, reg.AgentID, key); serr == nil {
 		reg.Status, reg.Scopes, reg.ClaimExpiresAt = st.Status, st.Scopes, st.ClaimExpiresAt

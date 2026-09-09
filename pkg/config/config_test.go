@@ -471,6 +471,52 @@ func TestPlatformBaseURLAllowsPlainHTTPOnLoopback(t *testing.T) {
 	}
 }
 
+// platform.agents_api_url defaults to the real agents API, separate from
+// platform.base_url (the human portal) — live testing found the two are
+// different hosts in the real deployment, not one shared origin.
+func TestAgentsAPIURLDefaults(t *testing.T) {
+	cfg := load(t, nil, noEnv)
+	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
+		t.Fatalf("got %q, want the default", cfg.Platform.AgentsAPIURL)
+	}
+	if cfg.Platform.AgentsAPIURL == cfg.Platform.BaseURL {
+		t.Fatalf("agents_api_url and base_url defaulted to the same value; they are different hosts")
+	}
+}
+
+// Same https-or-loopback rule as base_url (invariant 5): connect/mining
+// enable send the platform-issued sr- key in Authorization to this one.
+func TestAgentsAPIURLRejectsRoutablePlainHTTP(t *testing.T) {
+	body := "[platform]\nagents_api_url = \"http://agents.example.com\"\n"
+	err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if err == nil {
+		t.Fatal("plain http platform.agents_api_url was accepted at load")
+	}
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Errorf("the refusal does not name the rule: %v", err)
+	}
+}
+
+func TestAgentsAPIURLAllowsPlainHTTPOnLoopback(t *testing.T) {
+	body := "[platform]\nagents_api_url = \"http://127.0.0.1:9091\"\n"
+	if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+		t.Errorf("loopback platform.agents_api_url was refused: %v", err)
+	}
+}
+
+// The two [platform] URLs are independently configurable — setting one
+// must not disturb the other's default.
+func TestPlatformURLsAreIndependentlyConfigurable(t *testing.T) {
+	body := "[platform]\nbase_url = \"https://portal.example.com\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.BaseURL != "https://portal.example.com" {
+		t.Fatalf("base_url: got %q", cfg.Platform.BaseURL)
+	}
+	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
+		t.Fatalf("agents_api_url should still default, got %q", cfg.Platform.AgentsAPIURL)
+	}
+}
+
 // MiningEnabledExplicit is the signal connect/mining enable use to decide
 // whether to ask their terminal question at all. It must tell "the file
 // wrote enabled = false" apart from "the file said nothing about

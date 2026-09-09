@@ -76,17 +76,29 @@ func newPlatformClient() *http.Client {
 	}
 }
 
-// Client talks to one platform base URL (config.Platform.BaseURL).
+// Client talks to two search-platform origins (config.Platform):
+// apiBaseURL for the actual register/status/enroll requests
+// (AgentsAPIURL — search-router's "Agents" host), and portalBaseURL
+// solely to validate a returned claim_url's origin (BaseURL —
+// search-router's "Platform" host, the human portal and claim pages).
+// These were originally assumed to be one shared origin; live testing
+// found the real deployment splits them, confirmed against
+// search-router's own skill file.
 type Client struct {
-	baseURL string
-	http    *http.Client
+	apiBaseURL    string
+	portalBaseURL string
+	http          *http.Client
 }
 
-// New builds a Client. baseURL is trusted as already validated
+// New builds a Client. Both URLs are trusted as already validated
 // (https-or-loopback, invariant 5) by pkg/config; this package does not
-// re-validate it.
-func New(baseURL string) *Client {
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: newPlatformClient()}
+// re-validate them.
+func New(apiBaseURL, portalBaseURL string) *Client {
+	return &Client{
+		apiBaseURL:    strings.TrimRight(apiBaseURL, "/"),
+		portalBaseURL: strings.TrimRight(portalBaseURL, "/"),
+		http:          newPlatformClient(),
+	}
 }
 
 // Registration is what Register returns (§5.1), flattened and with the
@@ -132,7 +144,7 @@ func (c *Client) Register(ctx context.Context, name string, requestedScopes []st
 	if err != nil {
 		return nil, fmt.Errorf("platform: encode register request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/agents/register", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBaseURL+"/v1/agents/register", bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("platform: build register request: %w", err)
 	}
@@ -157,7 +169,7 @@ func (c *Client) Register(ctx context.Context, name string, requestedScopes []st
 	if wire.AgentID == "" || wire.Key == "" || wire.ClaimURL == "" {
 		return nil, errors.New("platform: register response missing agent_id, key or claim_url")
 	}
-	if err := validateClaimURL(wire.ClaimURL, c.baseURL); err != nil {
+	if err := validateClaimURL(wire.ClaimURL, c.portalBaseURL); err != nil {
 		return nil, err
 	}
 	if hasControlChar(wire.ClaimCode) {
@@ -283,7 +295,7 @@ func (s *AgentStatus) HasScope(scope string) bool {
 // "expired" and stop polling — only a revoked key, or an unknown
 // agent/key pairing, answers 404.
 func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/agents/"+url.PathEscape(agentID), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBaseURL+"/v1/agents/"+url.PathEscape(agentID), nil)
 	if err != nil {
 		return nil, fmt.Errorf("platform: build status request: %w", err)
 	}
@@ -376,7 +388,7 @@ func (c *Client) Enroll(ctx context.Context, agentID, key, slot string) (string,
 	if err != nil {
 		return "", fmt.Errorf("platform: encode enroll request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/agents/enroll", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBaseURL+"/v1/agents/enroll", bytes.NewReader(raw))
 	if err != nil {
 		return "", fmt.Errorf("platform: build enroll request: %w", err)
 	}
