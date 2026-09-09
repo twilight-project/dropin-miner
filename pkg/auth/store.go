@@ -217,6 +217,43 @@ func (s *Store) createExclusive(name string, data []byte) error {
 	return nil
 }
 
+// saveStateFile durably REPLACES name's content — SaveRefreshToken's exact
+// idiom (WP2-adversarial-review finding 5), and now the only way any
+// mutable state file in this store is written: a random-suffixed temp file
+// via CreateTemp (never a fixed name — a fixed name is itself a race
+// between two writers, and a leftover from a killed process would
+// otherwise get silently published by the next successful write), 0600
+// before any content lands in it, fsync'd, then renamed over the final
+// name. Any failure removes the temp file rather than leaving it for a
+// later rename to publish by accident.
+func (s *Store) saveStateFile(name string, data []byte) error {
+	tmp, err := os.CreateTemp(s.dir, name+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("auth: stage %s: %w", name, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auth: chmod %s: %w", name, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auth: write %s: %w", name, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auth: sync %s: %w", name, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("auth: close %s: %w", name, err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(s.dir, name)); err != nil {
+		return fmt.Errorf("auth: install %s: %w", name, err)
+	}
+	return nil
+}
+
 // ParticipationSecret loads the installation's 32-byte participation
 // secret, generating it on first use (ADR-0008: participation.secret,
 // 0600, exclusive-create; the derivation lives in internal/mining/draw
@@ -291,16 +328,9 @@ func (s *Store) SaveEnrollment(slotID, targetEpoch uint64) error {
 	if err != nil {
 		return fmt.Errorf("auth: encode enrollment: %w", err)
 	}
-	// Write-and-rename rather than createExclusive: unlike a receipt,
-	// this file legitimately changes every epoch.
-	tmp := filepath.Join(s.dir, "enrollment.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write enrollment: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "enrollment.json")); err != nil {
-		return fmt.Errorf("auth: persist enrollment: %w", err)
-	}
-	return nil
+	// Unlike a receipt, this file legitimately changes every epoch, so
+	// saveStateFile (replace) rather than createExclusive (first-write-only).
+	return s.saveStateFile("enrollment.json", raw)
 }
 
 // LoadEnrollment returns the enrolled target, ok=false when this
@@ -335,6 +365,15 @@ type AgentRegistration struct {
 	ClaimExpiresAt     string   `json:"claim_expires_at,omitempty"`
 	LastEnrollmentSlot string   `json:"last_enrollment_slot,omitempty"`
 	LastEnrollmentAt   string   `json:"last_enrollment_at,omitempty"`
+	// SlotRefusal is set when the platform offered more than one mining
+	// slot and mining.platform_slot did not resolve one (WP2-adversarial-
+	// review finding 15): persisted so shouldResume stops spawning a
+	// resume that can only ever hit the same refusal again, and so status
+	// can name it explicitly instead of the participant discovering it
+	// only from a resume's silent no-op. Cleared the moment a slot
+	// actually resolves (config changes, or the platform stops offering
+	// more than one).
+	SlotRefusal string `json:"slot_refusal,omitempty"`
 }
 
 // SaveAgentRegistration persists the platform identity, overwriting
@@ -346,14 +385,7 @@ func (s *Store) SaveAgentRegistration(rec AgentRegistration) error {
 	if err != nil {
 		return fmt.Errorf("auth: encode agent registration: %w", err)
 	}
-	tmp := filepath.Join(s.dir, "agent.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write agent registration: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "agent.json")); err != nil {
-		return fmt.Errorf("auth: persist agent registration: %w", err)
-	}
-	return nil
+	return s.saveStateFile("agent.json", raw)
 }
 
 // LoadAgentRegistration returns the stored platform identity, ok=false
@@ -381,24 +413,38 @@ func (s *Store) LoadAgentRegistration() (rec AgentRegistration, ok bool, err err
 // state that a poll can overwrite. A detached resume reads this file as
 // the one thing it needs to declare a payout unattended once enrollment
 // succeeds; it never needs to know how the address was decided.
+// validatePayoutAddress is the one place every payout address in this
+// flow is checked (WP2-adversarial-review finding 9): a terminal-typed
+// answer, mining.payout_address from config, and — redundantly but
+// harmlessly, since it is already valid by construction — a freshly
+// created wallet's own address all funnel through SavePayoutAddress, so
+// validating here structurally covers all three without relying on each
+// call site to remember to.
+func validatePayoutAddress(address string) error {
+	hrp, _, err := DecodeBech32Address(address)
+	if err != nil {
+		return fmt.Errorf("auth: payout address %q does not decode as bech32: %w", address, err)
+	}
+	if hrp != TwilightHRP {
+		return fmt.Errorf("auth: payout address %q has prefix %q, want %q", address, hrp, TwilightHRP)
+	}
+	return nil
+}
+
 func (s *Store) SavePayoutAddress(address string) error {
 	if address == "" {
 		return errors.New("auth: refusing to store an empty payout address")
 	}
-	tmp := filepath.Join(s.dir, "payout.json.tmp")
+	if err := validatePayoutAddress(address); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(struct {
 		Address string `json:"address"`
 	}{Address: address})
 	if err != nil {
 		return fmt.Errorf("auth: encode payout address: %w", err)
 	}
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write payout address: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "payout.json")); err != nil {
-		return fmt.Errorf("auth: persist payout address: %w", err)
-	}
-	return nil
+	return s.saveStateFile("payout.json", raw)
 }
 
 // LoadPayoutAddress returns the stored address, ok=false when none has
@@ -438,10 +484,23 @@ type ConflictedEpoch struct {
 	TargetEpoch uint64 `json:"target_epoch"`
 }
 
+// maxEpochConflicts bounds the conflict set (WP2-adversarial-review
+// finding 18): normally each entry is short-lived — RemoveEpochConflicts
+// drops it as soon as a flush sees the AS's target move past it — but a
+// slot_id the current configuration no longer names can never reach that
+// removal path, so without a cap a long-lived installation whose slot_id
+// changed repeatedly could accumulate entries forever.
+const maxEpochConflicts = 64
+
 // SaveEpochConflict records that ErrEnrollmentConflict or
 // ErrProxyBindingMismatch was seen for (slotID, targetEpoch): another
-// installation of this participant holds it. Adds to the bounded set;
-// a pair already on file is left alone rather than duplicated.
+// installation of this participant holds it. Adds to the bounded set; a
+// pair already on file is left alone rather than duplicated. Past
+// maxEpochConflicts the oldest entry (index 0 — the set is always
+// appended to, never reordered) is evicted to make room, on the
+// reasoning that a conflict this installation cannot even remember
+// having queued observations against is one it has already lost track
+// of usefully anyway.
 func (s *Store) SaveEpochConflict(slotID, targetEpoch uint64) error {
 	set, err := s.loadEpochConflicts()
 	if err != nil {
@@ -452,17 +511,45 @@ func (s *Store) SaveEpochConflict(slotID, targetEpoch uint64) error {
 			return nil
 		}
 	}
-	return s.saveEpochConflicts(append(set, ConflictedEpoch{SlotID: slotID, TargetEpoch: targetEpoch}))
+	set = append(set, ConflictedEpoch{SlotID: slotID, TargetEpoch: targetEpoch})
+	if len(set) > maxEpochConflicts {
+		set = set[len(set)-maxEpochConflicts:]
+	}
+	return s.saveEpochConflicts(set)
 }
 
 // EpochConflicts returns every (slot, epoch) pair this installation knows
-// another installation of this participant holds. Bounded in practice: an
-// entry leaves the set as soon as a flush observes the AS's current target
+// another installation of this participant holds. Bounded (maxEpochConflicts):
+// an entry leaves the set as soon as a flush observes the AS's current target
 // has moved past it (RemoveEpochConflicts), which happens on ordinary epoch
 // rollover regardless of whether this installation had anything queued for
 // it.
 func (s *Store) EpochConflicts() ([]ConflictedEpoch, error) {
 	return s.loadEpochConflicts()
+}
+
+// PruneEpochConflictsForOtherSlots drops every entry whose SlotID is not
+// currentSlotID (WP2-adversarial-review finding 18): a slot_id
+// reconfiguration strands whatever conflicts were recorded under the old
+// one — the state-based drop in flush.go only ever compares against the
+// CURRENT slot's target epoch, so an entry for a different slot can never
+// be resolved by ordinary epoch advancement and would sit in the set
+// forever without this.
+func (s *Store) PruneEpochConflictsForOtherSlots(currentSlotID uint64) error {
+	set, err := s.loadEpochConflicts()
+	if err != nil {
+		return err
+	}
+	kept := set[:0]
+	for _, c := range set {
+		if c.SlotID == currentSlotID {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(set) {
+		return nil // nothing pruned; skip the write
+	}
+	return s.saveEpochConflicts(kept)
 }
 
 // RemoveEpochConflicts drops the named pairs from the set — called once
@@ -502,14 +589,7 @@ func (s *Store) saveEpochConflicts(set []ConflictedEpoch) error {
 	if err != nil {
 		return fmt.Errorf("auth: encode epoch conflicts: %w", err)
 	}
-	tmp := filepath.Join(s.dir, "epoch_conflicts.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write epoch conflicts: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "epoch_conflicts.json")); err != nil {
-		return fmt.Errorf("auth: persist epoch conflicts: %w", err)
-	}
-	return nil
+	return s.saveStateFile("epoch_conflicts.json", raw)
 }
 
 func (s *Store) loadEpochConflicts() ([]ConflictedEpoch, error) {
@@ -537,24 +617,22 @@ func (s *Store) loadEpochConflicts() ([]ConflictedEpoch, error) {
 type PayoutBindingHeld struct {
 	Local  string `json:"local"`
 	Active string `json:"active"`
+	// HeldFor is the AS's reason (HeldReplacesActive, HeldAddressInUse —
+	// payout.go), or empty when this hold came from connect's own
+	// read-before-declare pre-check (PayoutStanding showing a different
+	// active address) rather than the declare call's own response.
+	HeldFor string `json:"held_for,omitempty"`
 }
 
 // SavePayoutBindingHeld records that declaration was skipped because the
 // AS's active address differs from the one this installation would
 // declare.
-func (s *Store) SavePayoutBindingHeld(local, active string) error {
-	raw, err := json.Marshal(PayoutBindingHeld{Local: local, Active: active})
+func (s *Store) SavePayoutBindingHeld(local, active string, heldFor string) error {
+	raw, err := json.Marshal(PayoutBindingHeld{Local: local, Active: active, HeldFor: heldFor})
 	if err != nil {
 		return fmt.Errorf("auth: encode payout binding held: %w", err)
 	}
-	tmp := filepath.Join(s.dir, "payout_binding_held.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write payout binding held: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "payout_binding_held.json")); err != nil {
-		return fmt.Errorf("auth: persist payout binding held: %w", err)
-	}
-	return nil
+	return s.saveStateFile("payout_binding_held.json", raw)
 }
 
 // LoadPayoutBindingHeld returns the stored held-binding note, ok=false
@@ -595,20 +673,13 @@ func (s *Store) SavePayoutDeclared(address string) error {
 	if address == "" {
 		return errors.New("auth: refusing to record an empty address as declared")
 	}
-	tmp := filepath.Join(s.dir, "payout_declared.json.tmp")
 	raw, err := json.Marshal(struct {
 		Address string `json:"address"`
 	}{Address: address})
 	if err != nil {
 		return fmt.Errorf("auth: encode payout declared: %w", err)
 	}
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write payout declared: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "payout_declared.json")); err != nil {
-		return fmt.Errorf("auth: persist payout declared: %w", err)
-	}
-	return nil
+	return s.saveStateFile("payout_declared.json", raw)
 }
 
 // LoadPayoutDeclared returns the address last confirmed active, ok=false
@@ -628,4 +699,44 @@ func (s *Store) LoadPayoutDeclared() (address string, ok bool, err error) {
 		return "", false, fmt.Errorf("auth: decode payout declared: %w", err)
 	}
 	return rec.Address, true, nil
+}
+
+// SaveMiningEnabled persists the mining on/off decision askMiningQuestion
+// reached (WP2-adversarial-review finding 4/10) regardless of whether it
+// came from the config file being explicit or from a terminal answer —
+// so a later pollOnce or shouldResume has ONE durable source of truth for
+// "did this installation decide to mine" that does not depend on
+// re-deriving it from config.MiningEnabledExplicit each time (which
+// cannot represent a decision that only ever existed at a terminal, never
+// written to any file).
+func (s *Store) SaveMiningEnabled(enabled bool) error {
+	raw, err := json.Marshal(struct {
+		Enabled bool `json:"enabled"`
+	}{Enabled: enabled})
+	if err != nil {
+		return fmt.Errorf("auth: encode mining decision: %w", err)
+	}
+	return s.saveStateFile("mining_decision.json", raw)
+}
+
+// LoadMiningEnabled returns the persisted decision, ok=false when
+// askMiningQuestion has never run for this installation (a state
+// directory that predates this fix, or one where connect's first run has
+// not happened yet). Callers fall back to config.MiningEnabledExplicit /
+// config.Mining.Enabled in that case — the same check this replaces.
+func (s *Store) LoadMiningEnabled() (enabled bool, ok bool, err error) {
+	raw, err := s.readSecret("mining_decision.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	var rec struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return false, false, fmt.Errorf("auth: decode mining decision: %w", err)
+	}
+	return rec.Enabled, true, nil
 }

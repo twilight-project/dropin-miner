@@ -217,11 +217,11 @@ func TestSaveLoadPayoutAddressRoundTrips(t *testing.T) {
 	if _, ok, err := s.LoadPayoutAddress(); err != nil || ok {
 		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
 	}
-	if err := s.SavePayoutAddress("twilight1abc"); err != nil {
+	if err := s.SavePayoutAddress("twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n"); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := s.LoadPayoutAddress()
-	if err != nil || !ok || got != "twilight1abc" {
+	if err != nil || !ok || got != "twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n" {
 		t.Fatalf("got %q ok=%v err=%v", got, ok, err)
 	}
 	if err := s.SavePayoutAddress(""); err == nil {
@@ -290,7 +290,7 @@ func TestSaveLoadPayoutBindingHeldRoundTrips(t *testing.T) {
 	if _, ok, err := s.LoadPayoutBindingHeld(); err != nil || ok {
 		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
 	}
-	if err := s.SavePayoutBindingHeld("twilight1local", "twilight1active"); err != nil {
+	if err := s.SavePayoutBindingHeld("twilight1local", "twilight1active", HeldReplacesActive); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := s.LoadPayoutBindingHeld()
