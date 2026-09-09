@@ -1271,6 +1271,55 @@ func TestStatusReportsBothAddressesOnBindingConflict(t *testing.T) {
 // declaration — connect.lock serializes them, and finding 6's re-read
 // means every invocation after the first sees the winner's result already
 // on disk and does nothing further. Goroutines contend on connect.lock
+// mining enable's re-approval message had never been driven at the
+// cmdMining level at all (only askMiningQuestion, a level below it) —
+// which is how a dead one-time claim_url shipped as that message
+// unnoticed until a live run against the real platform 404'd on it
+// (search-router's handleAgentClaim refuses any resubmission outright,
+// even by the original owner). The fix points at the platform's generic
+// claim address instead (reachable console grant, search-router commit
+// d20a6ac) — this pins BOTH that the dead per-code URL is gone AND that
+// the generic address present.
+func TestMiningEnableReApprovalPointsAtTheGenericClaimAddressNotTheDeadOneTimeURL(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadClaimURL := platform.srv.URL + "/claim/AB12-CD34"
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"credits"}, ClaimURL: deadClaimURL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("credits") // claimed, credits only — mining not granted
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	wantAddr := cfg.Platform.BaseURL + "/claim"
+	if !strings.Contains(out, wantAddr) {
+		t.Errorf("stdout does not name the generic claim address %q:\n%s", wantAddr, out)
+	}
+	if strings.Contains(out, deadClaimURL) {
+		t.Errorf("stdout still names the dead, already-consumed one-time claim URL:\n%s", out)
+	}
+}
+
 // exactly as separate processes would (minerlock_unix.go: a flock belongs
 // to the open file description, not the process), so this is a faithful
 // in-process model of what search's detached spawns actually do.

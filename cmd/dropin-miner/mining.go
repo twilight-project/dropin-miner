@@ -91,14 +91,21 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	}
 
 	// If the key doesn't yet have the mining scope, this is §2.2's
-	// re-approval case: print the claim URL again rather than trying to
-	// enroll against a scope that isn't there. connect's own resume
-	// picks up the enrollment automatically once the human re-approves —
-	// no second flag, the granted scope is the instruction (decision 3).
+	// re-approval case. reg.ClaimURL is the original one-time claim
+	// code's URL — already consumed by the first claim, and confirmed
+	// live that resubmitting it 404s even for the original owner
+	// (handleAgentClaim refuses any claimed registration outright). The
+	// real mechanism is a portal-console grant (POST
+	// /internal/v1/agents/{id}/scopes, owner-only, never the sr- key —
+	// search-router commit d20a6ac), reached by the owner signing in at
+	// the platform's generic claim address rather than the dead
+	// per-code one. connect's own resume still picks up the enrollment
+	// automatically once granted — no second flag, no new registration
+	// needed, the granted scope is the instruction (decision 3).
 	if !hasScope(reg.Scopes, "mining") {
-		fmt.Fprintln(stdout, "\nmining is not yet granted for this agent. Re-approve it at:")
-		fmt.Fprintln(stdout, "  "+reg.ClaimURL)
-		fmt.Fprintln(stdout, "\nOnce approved, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
+		fmt.Fprintln(stdout, "\nmining is not yet granted for this agent. Sign in and grant it at:")
+		fmt.Fprintln(stdout, "  "+strings.TrimRight(cfg.Platform.BaseURL, "/")+"/claim")
+		fmt.Fprintln(stdout, "\nOnce granted, this resolves automatically the next time `search` runs, or run `dropin-miner connect` to check now.")
 		return exitOK
 	}
 
