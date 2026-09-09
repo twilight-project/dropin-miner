@@ -33,7 +33,22 @@ subjects wouldn't make obvious on its own.
   `platform.base_url` (unchanged, `https://platform.nyks.dev`) is now purely
   the origin a returned `claim_url` is checked against, never dialed itself.
   An existing config naming only `base_url` keeps working unchanged — the new
-  key has its own default.
+  key has its own default. Config safety, found in review before this shipped:
+  a config naming only a loopback `base_url` (every local dev/test setup)
+  defaults `agents_api_url` to that same loopback address rather than
+  silently registering against real production; a custom non-loopback,
+  non-default `base_url` (a devnet, a staging portal) is refused outright
+  unless `agents_api_url` is also given explicitly, rather than guessed.
+
+- **`mining enable`'s re-approval step now sends you to the right place.**
+  Previously it reprinted the agent's original claim link — already
+  consumed by the first claim, so re-submitting it always failed with
+  "this claim link is not valid any more." search-router's poll response
+  now carries a direct `console_url` once an agent is claimed, and
+  `mining enable` uses it: one link, no failed code submission first. An
+  agent that was never claimed at all, or whose registration expired
+  before being claimed, gets its own correct message instead of being
+  routed through this same fallback.
 
 ## v0.1.7
 

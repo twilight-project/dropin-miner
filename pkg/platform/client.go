@@ -3,10 +3,13 @@
 // onboarding-design.md §5.1-§5.3): register, poll, enroll. It is a
 // separate package from pkg/auth on purpose — two contracts, two owners.
 // pkg/auth implements the AS contract (owned by
-// tokendrop-auth-server-design); this implements platform.nyks.dev's
-// contract (owned by search-router, this design doc). Nothing here
-// touches the AS; RedeemEnrollmentAssertion (pkg/auth) still does that,
-// unchanged, once this package hands back a token.
+// tokendrop-auth-server-design); this implements search-router's own
+// contract, this design doc. Two hosts, not one — live testing found
+// agents-v1.nyks.dev serves register/status/enroll while
+// platform.nyks.dev is the human portal a claim_url/console_url points
+// at; see Client's own doc comment. Nothing here touches the AS;
+// RedeemEnrollmentAssertion (pkg/auth) still does that, unchanged, once
+// this package hands back a token.
 package platform
 
 import (
