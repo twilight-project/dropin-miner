@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newStore(t *testing.T) (*Store, string) {
@@ -226,5 +227,83 @@ func TestSaveLoadPayoutAddressRoundTrips(t *testing.T) {
 	}
 	if err := s.SavePayoutAddress(""); err == nil {
 		t.Fatal("empty payout address accepted")
+	}
+}
+
+// SaveEpochCapabilitySuccess records a deadline; a later SaveEpochConflict
+// for the SAME (slot, epoch) must preserve it rather than clearing it —
+// that preserved deadline is what a flush compares "now" against before
+// dropping a conflicted epoch's spooled observations.
+func TestSaveEpochConflictPreservesAKnownDeadlineForTheSameEpoch(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadEpochParticipation(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	deadline := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	if err := s.SaveEpochCapabilitySuccess(7, 1042, deadline); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadEpochParticipation()
+	if err != nil || !ok || got.Conflict || got.CapabilityDeadline != deadline.Format(time.RFC3339) {
+		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	}
+	if err := s.SaveEpochConflict(7, 1042); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.LoadEpochParticipation()
+	if err != nil || !ok || !got.Conflict || got.CapabilityDeadline != deadline.Format(time.RFC3339) {
+		t.Fatalf("conflict on the same epoch lost its known deadline: got %+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+// A conflict on a DIFFERENT epoch than whatever deadline is on file must
+// not inherit it — that deadline was never earned for this epoch.
+func TestSaveEpochConflictOnADifferentEpochCarriesNoStaleDeadline(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.SaveEpochCapabilitySuccess(7, 1042, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEpochConflict(7, 1043); err != nil { // pure join-time conflict, never held 1043
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadEpochParticipation()
+	if err != nil || !ok || !got.Conflict || got.TargetEpoch != 1043 || got.CapabilityDeadline != "" {
+		t.Fatalf("got %+v ok=%v err=%v, want epoch 1043, conflict, no deadline", got, ok, err)
+	}
+}
+
+func TestClearEpochParticipation(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.ClearEpochParticipation(); err != nil {
+		t.Fatalf("clearing an absent record: %v", err)
+	}
+	if err := s.SaveEpochConflict(7, 1042); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearEpochParticipation(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.LoadEpochParticipation(); err != nil || ok {
+		t.Fatalf("after clear: ok=%v err=%v, want ok=false", ok, err)
+	}
+}
+
+func TestSaveLoadPayoutBindingHeldRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.LoadPayoutBindingHeld(); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if err := s.SavePayoutBindingHeld("twilight1local", "twilight1active"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadPayoutBindingHeld()
+	if err != nil || !ok || got.Local != "twilight1local" || got.Active != "twilight1active" {
+		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	}
+	if err := s.ClearPayoutBindingHeld(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.LoadPayoutBindingHeld(); err != nil || ok {
+		t.Fatalf("after clear: ok=%v err=%v, want ok=false", ok, err)
 	}
 }

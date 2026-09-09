@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -418,4 +419,162 @@ func (s *Store) LoadPayoutAddress() (address string, ok bool, err error) {
 		return "", false, fmt.Errorf("auth: decode payout address: %w", err)
 	}
 	return rec.Address, true, nil
+}
+
+// EpochParticipation is this installation's durable memory of the one
+// (slot, epoch) it most recently tried to participate in — WP4b (design
+// f0ddb69 §2.3/§5.5): several installations of one participant may exist,
+// but only one holds a given epoch, and flush is a fresh process every
+// run with nothing else remembering either fact across invocations.
+//
+// CapabilityDeadline is set once, the first time a capability exchange
+// SUCCEEDS for (SlotID, TargetEpoch) — it is not otherwise persisted
+// anywhere (scope.Context is in-memory only). Conflict is set when
+// ErrEnrollmentConflict or ErrProxyBindingMismatch is seen for that same
+// pair. A later flush that hits either error reads CapabilityDeadline (if
+// this installation ever held the epoch before losing it) to decide
+// whether the observations it queued for that epoch are now provably
+// worthless (deadline passed) or still worth holding onto in case the
+// conflict was transient.
+//
+// Like enrollmentRecord, this tracks a single current (slot, epoch) pair,
+// not a history: moving to a new target epoch overwrites it. That is a
+// deliberate simplification, not an oversight — the same one
+// enrollmentRecord already makes — and it is sound as long as a
+// conflict's deadline is acted on before the driver moves to a new
+// target, which flush.go does inline, every run, before promoting or
+// delivering anything.
+type EpochParticipation struct {
+	SlotID             uint64 `json:"slot_id"`
+	TargetEpoch        uint64 `json:"target_epoch"`
+	CapabilityDeadline string `json:"capability_deadline,omitempty"` // RFC3339
+	Conflict           bool   `json:"conflict,omitempty"`
+}
+
+// SaveEpochCapabilitySuccess records that a capability exchange succeeded
+// for (slotID, targetEpoch) with the given deadline (§31's
+// observation_submission_deadline) — the durable fact a later conflict on
+// the SAME epoch can compare "now" against. Moving to a new epoch starts
+// a fresh record; Conflict is not carried over from whatever was there
+// before, since a fresh success means this installation currently holds
+// the binding.
+func (s *Store) SaveEpochCapabilitySuccess(slotID, targetEpoch uint64, deadline time.Time) error {
+	rec := EpochParticipation{SlotID: slotID, TargetEpoch: targetEpoch}
+	if !deadline.IsZero() {
+		rec.CapabilityDeadline = deadline.UTC().Format(time.RFC3339)
+	}
+	return s.saveEpochParticipation(rec)
+}
+
+// SaveEpochConflict records that ErrEnrollmentConflict or
+// ErrProxyBindingMismatch was seen for (slotID, targetEpoch): another
+// installation of this participant holds it. If a CapabilityDeadline is
+// already on file for this exact (slot, epoch) — this installation held
+// it before losing it — that deadline is preserved rather than cleared,
+// so the caller can still act on it.
+func (s *Store) SaveEpochConflict(slotID, targetEpoch uint64) error {
+	rec := EpochParticipation{SlotID: slotID, TargetEpoch: targetEpoch, Conflict: true}
+	if existing, ok, err := s.LoadEpochParticipation(); err == nil && ok &&
+		existing.SlotID == slotID && existing.TargetEpoch == targetEpoch {
+		rec.CapabilityDeadline = existing.CapabilityDeadline
+	}
+	return s.saveEpochParticipation(rec)
+}
+
+// ClearEpochParticipation removes the record once a conflict has been
+// acted on (its observations dropped, or the epoch no longer matters) so
+// a later flush does not repeat the drop.
+func (s *Store) ClearEpochParticipation() error {
+	err := os.Remove(filepath.Join(s.dir, "epoch_participation.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (s *Store) saveEpochParticipation(rec EpochParticipation) error {
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("auth: encode epoch participation: %w", err)
+	}
+	tmp := filepath.Join(s.dir, "epoch_participation.json.tmp")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("auth: write epoch participation: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(s.dir, "epoch_participation.json")); err != nil {
+		return fmt.Errorf("auth: persist epoch participation: %w", err)
+	}
+	return nil
+}
+
+// LoadEpochParticipation returns the stored record, ok=false when this
+// installation has never succeeded or conflicted on an epoch.
+func (s *Store) LoadEpochParticipation() (rec EpochParticipation, ok bool, err error) {
+	raw, err := s.readSecret("epoch_participation.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return EpochParticipation{}, false, nil
+	}
+	if err != nil {
+		return EpochParticipation{}, false, err
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return EpochParticipation{}, false, fmt.Errorf("auth: decode epoch participation: %w", err)
+	}
+	return rec, true, nil
+}
+
+// PayoutBindingHeld is what status shows when connect declined to declare
+// a payout address unattended because the AS already has a DIFFERENT
+// address active for this participant (agent onboarding design §5.5:
+// "declares nothing ... status reports both addresses and that changing
+// the binding is an operator-activated change"). Cleared once the two
+// addresses agree (a later read-before-declare finds Active == Local, or
+// an operator activates the change and a later read reflects it).
+type PayoutBindingHeld struct {
+	Local  string `json:"local"`
+	Active string `json:"active"`
+}
+
+// SavePayoutBindingHeld records that declaration was skipped because the
+// AS's active address differs from the one this installation would
+// declare.
+func (s *Store) SavePayoutBindingHeld(local, active string) error {
+	raw, err := json.Marshal(PayoutBindingHeld{Local: local, Active: active})
+	if err != nil {
+		return fmt.Errorf("auth: encode payout binding held: %w", err)
+	}
+	tmp := filepath.Join(s.dir, "payout_binding_held.json.tmp")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("auth: write payout binding held: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(s.dir, "payout_binding_held.json")); err != nil {
+		return fmt.Errorf("auth: persist payout binding held: %w", err)
+	}
+	return nil
+}
+
+// LoadPayoutBindingHeld returns the stored held-binding note, ok=false
+// when declaration has never been held (or the hold has been cleared).
+func (s *Store) LoadPayoutBindingHeld() (rec PayoutBindingHeld, ok bool, err error) {
+	raw, err := s.readSecret("payout_binding_held.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return PayoutBindingHeld{}, false, nil
+	}
+	if err != nil {
+		return PayoutBindingHeld{}, false, err
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return PayoutBindingHeld{}, false, fmt.Errorf("auth: decode payout binding held: %w", err)
+	}
+	return rec, true, nil
+}
+
+// ClearPayoutBindingHeld removes the held-binding note once the addresses
+// agree again.
+func (s *Store) ClearPayoutBindingHeld() error {
+	err := os.Remove(filepath.Join(s.dir, "payout_binding_held.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
