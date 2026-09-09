@@ -195,7 +195,23 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 		if requestID == "" {
 			requestID = parsed.RequestID
 		}
+		// [miner] enabled says only that router intake is configured; it
+		// never overrides the mining decision (miningActive) — checked
+		// only once intake is otherwise going to happen, so a search-only
+		// participant with no [miner] block never pays for a state-dir
+		// open it has no other reason to trigger (shouldResume's own
+		// comment makes the same trade-off, same reason). A store that
+		// fails to open is treated as active, same as miningActive treats
+		// an absent decision file, so a mining-side hiccup here can never
+		// turn into a client-visible search failure (invariant 1) or
+		// silently stop capturing evidence it should not.
+		active := true
 		if cfg.Miner.Enabled && requestID != "" {
+			if mstore, serr := auth.OpenStore(cfg.Mining.StateDir); serr == nil {
+				active = miningActive(mstore)
+			}
+		}
+		if cfg.Miner.Enabled && active && requestID != "" {
 			rec := intakeRecord{
 				RequestID:  requestID,
 				Host:       cfg.Miner.RouterURL.Host,

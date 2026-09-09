@@ -175,6 +175,21 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	ctx, cancel := operatorContext(outerBound)
 	defer cancel()
 
+	// Design item 2.3: "the resume and the flush retry" a pending
+	// AS-side revocation `mining disable` could not confirm. Neither
+	// the foreground loop nor -resume waits for this — best-effort, and
+	// unrelated to the claim/poll work below, which proceeds either way
+	// (a search-only registration can never have a pending revoke, but
+	// nothing here assumes that). buildMiningClient is only worth the
+	// AS round trip when there is actually a marker and an AS to ask —
+	// a search-only agent with no [mining] block would otherwise fail
+	// this and print nothing useful about it.
+	if pending, perr := store.LoadRevokePending(); perr == nil && pending && cfg.Mining.ASBaseURL != "" {
+		if oauthClient, _, berr := buildMiningClient(ctx, cfg.Mining); berr == nil {
+			retryPendingRevoke(ctx, store, oauthClient)
+		}
+	}
+
 	client := platform.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
 	br := bufio.NewReader(stdin)
 
@@ -315,23 +330,34 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 }
 
-// miningOptedOut reports whether this installation has decided not to
-// mine — checked once, in one place, before both enrollment and
-// declaration (WP2-adversarial-review finding 10: mining.enabled = false
-// used to gate enrollment but not declaration, so an opted-out
-// installation could still declare a payout address). Mirrored by
-// shouldResume so all three call sites agree.
+// miningActive is the one function search intake, the flush, connect,
+// the resume and status all call to decide whether mining is active
+// here — mining_decision.json (auth.Store.SaveMiningEnabled) is now the
+// ONLY thing any of them reads for that question. It replaces three
+// flags that used to each gate a different slice of this on their own:
+// [miner] enabled (search intake and the flush), [mining] enabled (the
+// AS path), and mining_decision.json itself (connect and the resume,
+// but only as a fallback in front of the config check). [miner] enabled
+// still matters — it says whether router intake is configured at all —
+// but it is a plumbing flag now, never a mining on/off decision, and
+// never overrides this one.
 //
-// The persisted decision (auth.Store.SaveMiningEnabled, written by
-// askMiningQuestion regardless of whether it came from the config file
-// or a terminal answer — finding 4) is authoritative once it exists; a
-// state directory that predates this fix falls back to the config-only
-// check askMiningQuestion itself used to make alone.
-func miningOptedOut(cfg *config.Config, store *auth.Store) bool {
-	if decided, ok, err := store.LoadMiningEnabled(); err == nil && ok {
-		return !decided
+// mining_decision.json is written by askMiningQuestion on every path
+// (connect's first run, `mining enable`, interactive or scripted)
+// before this is ever consulted, so a fresh agent-onboarding install is
+// never in a "no decision" state. ok=false — no decision file at all —
+// is the scripted-legacy-install state instead: setup.sh/install.ps1
+// write `[mining] enabled = true` straight into the config and have no
+// terminal question of their own to persist a decision from, so this
+// defaults to active exactly as that flow's own unconditional `enabled
+// = true` already implies. There is no config fallback beyond that
+// default — config.Mining.Enabled is never consulted here.
+func miningActive(store *auth.Store) bool {
+	enabled, ok, err := store.LoadMiningEnabled()
+	if err != nil || !ok {
+		return true
 	}
-	return cfg.MiningEnabledExplicit && !cfg.Mining.Enabled
+	return enabled
 }
 
 // pollOnce checks status once and acts on it: advances the stored
@@ -412,12 +438,12 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 	}
 
 	if reg.LastEnrollmentSlot == "" {
-		if miningOptedOut(cfg, store) {
-			return true, exitOK // local opt-out (design decision 3)
+		if !miningActive(store) {
+			return true, exitOK // local opt-out or disable (design decision 3)
 		}
 		if cfg.Mining.ASBaseURL == "" {
 			fmt.Fprintln(stdout, "the mining scope was granted, but this installation's [mining] block "+
-				"names no authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true, "+
+				"names no authorization server yet — set mining.as_url/chain_id/slot_id, "+
 				"then run `dropin-miner connect` or `dropin-miner mining enable` again")
 			return true, exitOK
 		}
@@ -472,7 +498,7 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 	// once there is nothing left to say. finding 10: the opt-out gates
 	// this exactly as it gates enrollment above — an installation that
 	// opted out after enrolling once must not keep declaring.
-	if !miningOptedOut(cfg, store) {
+	if miningActive(store) {
 		if address, ok, aerr := store.LoadPayoutAddress(); aerr == nil && ok && !addressSettled(store, address) {
 			_, miningClient, err := buildMiningClient(ctx, cfg.Mining)
 			if err != nil {
@@ -651,12 +677,19 @@ func buildMiningClient(ctx context.Context, m config.Mining) (*auth.OAuthClient,
 //
 // WP2-adversarial-review finding 1: paced by resumeCooldown so a burst of
 // searches cannot approve more spawns than connect.lock could ever let
-// run concurrently anyway. Finding 10: mirrors miningOptedOut exactly,
+// run concurrently anyway. Finding 10: mirrors miningActive exactly,
 // the same check pollOnce uses before both enrollment and declaration.
 // Finding 15: a persisted multi-slot refusal is treated the same as
 // "unconfigured" — permanent until the config actually changes. Finding
 // 17: a registration record that fails to load (corrupt, empty) resumes
 // nothing; recovery is a manual connect, not a silent background retry.
+//
+// A revoke_pending marker (mining disable, when the AS-side revocation
+// could not complete) is worth a resume on its own, independent of
+// reg.Status entirely — retrying it is the resume's job, alongside
+// pollOnce's, per design item 2.3 ("the resume and the flush retry
+// while the marker exists"); there would otherwise be no other reason
+// left to spawn one once mining is stopped locally.
 //
 // Deliberately NOT auth.OpenStore(stateDir) first: that creates the
 // state directory (MkdirAll) if it does not exist, which would give
@@ -679,6 +712,9 @@ func shouldResume(cfg *config.Config) bool {
 	if err != nil {
 		return false
 	}
+	if pending, perr := store.LoadRevokePending(); perr == nil && pending {
+		return true
+	}
 	reg, ok, err := store.LoadAgentRegistration()
 	if err != nil || !ok {
 		return false // finding 17: corrupt or absent — nothing to resume
@@ -691,15 +727,15 @@ func shouldResume(cfg *config.Config) bool {
 			return false // search-only claim: settled, nothing left to resume
 		}
 		if reg.LastEnrollmentSlot == "" {
-			if miningOptedOut(cfg, store) || reg.SlotRefusal != "" {
-				return false // opted out, a multi-slot refusal on file, or nothing configured — either way, permanent until reconfigured
+			if !miningActive(store) || reg.SlotRefusal != "" {
+				return false // opted out/disabled, a multi-slot refusal on file, or nothing configured — either way, permanent until reconfigured
 			}
 			if cfg.Mining.ASBaseURL == "" {
 				return false
 			}
 			return true
 		}
-		if miningOptedOut(cfg, store) {
+		if !miningActive(store) {
 			return false
 		}
 		address, hasAddr, aerr := store.LoadPayoutAddress()

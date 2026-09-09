@@ -160,6 +160,8 @@ type stubOnboardingAS struct {
 	// every hold shape, not only plain ACTIVE) — nil means the default
 	// "always effective" behavior above.
 	declareOutcome func(address string) map[string]any
+	revokeCalls    int
+	revokeFails    bool // mining disable's "the AS could not be reached" coverage
 }
 
 func newStubAS(t *testing.T) *stubOnboardingAS {
@@ -208,6 +210,18 @@ func newStubAS(t *testing.T) *stubOnboardingAS {
 			"status": "ACTIVE", "address": body.Address, "canonical_address": body.Address,
 			"effective": true, "declared_at": "2026-09-09T00:00:00Z",
 		})
+	})
+	mux.HandleFunc("POST /oauth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		f.mu.Lock()
+		f.revokeCalls++
+		fails := f.revokeFails
+		f.mu.Unlock()
+		if fails {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /v1/payout/declaration", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
@@ -260,6 +274,21 @@ func (f *stubOnboardingAS) assertionRedemptionCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.assertionRedemptions
+}
+
+func (f *stubOnboardingAS) revokeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.revokeCalls
+}
+
+// setRevokeFails makes POST /oauth/revoke answer 500 — mining disable's
+// "the AS could not be reached" path, without simulating a real network
+// failure: any non-200 is what OAuthClient.Revoke treats as unconfirmed.
+func (f *stubOnboardingAS) setRevokeFails(fails bool) {
+	f.mu.Lock()
+	f.revokeFails = fails
+	f.mu.Unlock()
 }
 
 // setDeclareOutcome overrides what PUT /v1/payout/declaration answers, for
@@ -853,18 +882,25 @@ func TestNoResumeSpawnForEnrolledOptedOutOrUnconfigured(t *testing.T) {
 		}
 	})
 
-	t.Run("not enrolled, mining.enabled = false: settled", func(t *testing.T) {
+	t.Run("not enrolled, decision on file is off: settled", func(t *testing.T) {
 		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, false, "")
-		// ASBaseURL IS set here — isolates "not enabled" from "no AS
+		// ASBaseURL IS set here — isolates "opted out" from "no AS
 		// configured" below, so deleting either check independently is
-		// each caught by a different subtest. MiningEnabledExplicit true
-		// models what loadConfig would actually produce from a real
-		// `[mining] enabled = false` file — miningOptedOut (finding 10)
-		// requires the explicit flag, matching askMiningQuestion's own
-		// opt-out check, not just Enabled's raw zero value.
-		cfg := config.Mining{StateDir: stateDir, Enabled: false, ASBaseURL: "https://as.example"}
-		if shouldResume(&config.Config{Mining: cfg, MiningEnabledExplicit: true}) {
-			t.Fatal("shouldResume true despite mining.enabled = false")
+		// each caught by a different subtest. The decision file, not
+		// config, is what miningActive reads now — this models what
+		// askMiningQuestion actually persists for a real opt-out
+		// (mining_decision.json), not a config-only Enabled value that
+		// nothing but the (now-removed) config fallback ever consulted.
+		store, err := auth.OpenStore(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveMiningEnabled(false); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Mining{StateDir: stateDir, ASBaseURL: "https://as.example"}
+		if shouldResume(&config.Config{Mining: cfg}) {
+			t.Fatal("shouldResume true despite a stored decision of mining off")
 		}
 	})
 
@@ -1104,6 +1140,59 @@ func TestScriptedInstallMiningConfig(t *testing.T) {
 			t.Fatal("an address was persisted with none configured")
 		}
 	})
+}
+
+// Design item 1: mining_decision.json is the only thing miningActive
+// ever reads, so a fresh install must never be in a "no decision"
+// state. askMiningQuestion writes it on every path that reaches it,
+// whether a terminal answered or a scripted config did — the exact
+// requirement design item 1 states as "the installer writes it for
+// both answers of the terminal question; a scripted install writes it
+// from [mining] enabled at install time."
+func TestAFreshInstallAlwaysHasADecisionOnFile(t *testing.T) {
+	platform := newStubPlatform(t)
+
+	for _, tc := range []struct {
+		name        string
+		interactive bool
+		stdin       string
+		scripted    string
+		wantEnabled bool
+	}{
+		{"interactive yes", true, "y\ntwilight1k5stzqa2sgvfgx9u04cv93pek3gcmm9h5t9hkn\n", "", true},
+		{"interactive no", true, "n\n", "", false},
+		{"scripted enabled=true", false, "", "enabled = true\npayout_address = \"twilight1xnxmhqt2l55flef42ks4sn0er6tv6yhyqx7wy8\"\n", true},
+		{"scripted enabled=false", false, "", "enabled = false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfgPath, stateDir string
+			if tc.interactive {
+				cfgPath, stateDir = connectConfig(t, platform.srv.URL, "")
+			} else {
+				cfgPath, stateDir = scriptedMiningConfig(t, platform.srv.URL, tc.scripted)
+			}
+			cfg, _, err := loadConfig(cfgPath, noEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := auth.OpenStore(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdin := bytes.NewBufferString(tc.stdin)
+			br := bufio.NewReader(stdin)
+			if _, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, tc.interactive, false); code != exitOK {
+				t.Fatalf("code=%d", code)
+			}
+			enabled, ok, err := store.LoadMiningEnabled()
+			if err != nil || !ok {
+				t.Fatalf("no decision on file: enabled=%v ok=%v err=%v", enabled, ok, err)
+			}
+			if enabled != tc.wantEnabled {
+				t.Fatalf("decision on file = %v, want %v", enabled, tc.wantEnabled)
+			}
+		})
+	}
 }
 
 // TestNoWalletOnNonTerminalPath is the structural half of the scripted

@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,13 +25,25 @@ import (
 )
 
 func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
-	if len(args) == 0 || args[0] != "enable" {
-		fmt.Fprintln(stderr, "dropin-miner: mining needs a subcommand: enable")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "dropin-miner: mining needs a subcommand: enable, disable")
 		return exitUsage
 	}
+	switch args[0] {
+	case "enable":
+		return cmdMiningEnable(args[1:], stdin, stdout, stderr, getenv)
+	case "disable":
+		return cmdMiningDisable(args[1:], stdout, stderr, getenv)
+	default:
+		fmt.Fprintln(stderr, "dropin-miner: mining needs a subcommand: enable, disable")
+		return exitUsage
+	}
+}
+
+func cmdMiningEnable(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := newFlagSet("mining enable", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 
@@ -145,6 +158,131 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	return code
 }
 
+// cmdMiningDisable stops mining for THIS installation's agent — design
+// §5.5's "mining disable revokes the client's own token family through
+// /oauth/revoke" — and nothing else. The authority split it respects
+// throughout: the platform's granted scope is standing authorization
+// (untouched here; only a human at the console revokes that), the AS
+// family is live participation (best-effort revoked below), and the
+// client's own decision is local intent (stopped unconditionally, first,
+// regardless of the network).
+//
+// Local-first and in this exact order, deliberately the reverse of
+// revoke-then-stop: a participant who wants to stop while the AS is
+// down must still be able to. Idempotent throughout — a second run
+// after either a clean disable or a still-pending one reports the
+// current true state rather than repeating work or complaining.
+func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	fs := newFlagSet("mining disable", stderr)
+	cfgPath := fs.String("config", "", "path to TOML config file")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	cfg, cfgSource, err := loadConfig(*cfgPath, getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dropin-miner: config (%s): %v\n", orDefaults(cfgSource), err)
+		return exitTransport
+	}
+	store, err := auth.OpenStore(cfg.Mining.StateDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+
+	reg, ok, err := store.LoadAgentRegistration()
+	if err != nil {
+		// Matches connect's own WP2-adversarial-review finding 17
+		// handling: an undecodable registration is absent, not fatal —
+		// there is nothing here to disable either way.
+		fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be read (treating as absent):", err)
+		ok = false
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "nothing to disable: this installation has never registered with the search platform")
+		return exitOK
+	}
+	pending, _ := store.LoadRevokePending() // best-effort; a read error just means "assume no marker"
+	if reg.LastEnrollmentSlot == "" && !pending {
+		fmt.Fprintln(stdout, "mining is not enabled here; nothing to disable")
+		return exitOK
+	}
+
+	// The stop. Decision file first, then the enrollment record: a crash
+	// between the two must land on the safe side, and only writing the
+	// decision first guarantees that. Writing the record first and
+	// crashing before the decision lands would leave LastEnrollmentSlot
+	// cleared while mining_decision.json still said "on" — the exact
+	// shape pollOnce's "not yet enrolled, decision is on" branch reads as
+	// an invitation to enroll again, silently undoing this disable.
+	if err := store.SaveMiningEnabled(false); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	reg.LastEnrollmentSlot = ""
+	reg.LastEnrollmentAt = ""
+	if err := store.SaveAgentRegistration(reg); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+
+	// Best-effort AS-side revocation. Never blocks the stop above, which
+	// already happened and never depended on the network.
+	ctx, cancel := operatorContext(30 * time.Second)
+	defer cancel()
+	revoked := cfg.Mining.ASBaseURL == "" // nothing to revoke: never enrolled at the AS at all
+	if !revoked {
+		oauthClient, _, berr := buildMiningClient(ctx, cfg.Mining)
+		if berr == nil && oauthClient.Revoke(ctx) == nil {
+			revoked = true
+		}
+	}
+	if revoked {
+		if err := store.ClearRevokePending(); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return exitTransport
+		}
+	} else if err := store.SaveRevokePending(); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+
+	printMiningStoppedPair(stdout)
+	if !revoked {
+		fmt.Fprintln(stdout, "stopped here; the AS will be told on the next run")
+	}
+	return exitOK
+}
+
+// printMiningStoppedPair is the fixed, two-line report of "mining is
+// stopped locally but the platform's own grant survives it" — printed
+// once by `mining disable` and shown permanently by `status` for as
+// long as the state holds, in the same words, so either surface can be
+// asserted against.
+func printMiningStoppedPair(w io.Writer) {
+	fmt.Fprintln(w, "mining here: stopped")
+	fmt.Fprintln(w, "platform authorization: still granted — to revoke the authorization itself, use the console")
+}
+
+// retryPendingRevoke completes a `mining disable` that could not reach
+// the AS when it ran, using an oauthClient the caller already built.
+// Called by both the flush and connect's resume (design item 2.3) —
+// neither is the foreground `mining disable` that left the marker
+// behind, so both are best-effort and silent on failure: the marker
+// simply survives for the next one to try again. The local decision is
+// already off regardless of any of this — nothing here can make mining
+// resume.
+func retryPendingRevoke(ctx context.Context, store *auth.Store, oauthClient *auth.OAuthClient) {
+	pending, err := store.LoadRevokePending()
+	if err != nil || !pending {
+		return
+	}
+	if err := oauthClient.Revoke(ctx); err != nil {
+		return
+	}
+	_ = store.ClearRevokePending()
+}
+
 // miningEnableOutcome is what askMiningQuestion decided.
 type miningEnableOutcome struct {
 	enabled       bool   // the participant chose (or config said) to enable mining
@@ -198,6 +336,15 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 		if !cfg.Mining.Enabled {
 			return miningEnableOutcome{}, exitOK
 		}
+		// A fresh enrollment about to be minted (below, once an address
+		// exists) supersedes whatever an earlier `mining disable` left
+		// pending — see auth.Store.ClearRevokePending's own comment for
+		// why a stale marker surviving past this point is the dangerous
+		// direction to fail in, not the safe one.
+		if err := store.ClearRevokePending(); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return miningEnableOutcome{}, exitTransport
+		}
 		if cfg.Mining.PayoutAddress == "" {
 			fmt.Fprintln(stdout, "mining is enabled in the config, but no payout_address was given and no terminal is "+
 				"available to create a wallet; no wallet was created. Set mining.payout_address, or run "+
@@ -243,6 +390,10 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 	}
 	if !enabled {
 		return miningEnableOutcome{}, exitOK
+	}
+	if err := store.ClearRevokePending(); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return miningEnableOutcome{}, exitTransport
 	}
 
 	// The address question is asked at a terminal whenever nothing is on
