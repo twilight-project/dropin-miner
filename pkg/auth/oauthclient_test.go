@@ -215,6 +215,39 @@ func TestRevokeDeletesLocalToken(t *testing.T) {
 	}
 }
 
+// Revoke now takes lockRefreshToken for its whole cycle, same as
+// Refresh (mining disable's own first production caller runs
+// concurrently with an ordinary flush's token refresh, not only with
+// tests — see Revoke's doc comment). Proven the same way
+// TestEnrollmentPathsPersistUnderTheLock proves it for the enrollment
+// paths: hold the lock externally first, and show Revoke gives up
+// rather than reading and spending the token while someone else holds
+// it.
+func TestRevokeBlocksWhenTheLockIsHeld(t *testing.T) {
+	f := newFakeAS(t)
+	c := newClient(t, f)
+	if err := c.store.SaveRefreshToken("rt-x"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := c.store.lockRefreshTokenFor(context.Background(), time.Second)
+	if err != nil {
+		t.Fatalf("seed the lock: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := c.Revoke(ctx); err == nil {
+		t.Fatal("Revoke proceeded while the refresh lock was held elsewhere")
+	}
+	if f.revokes.Load() != 0 {
+		t.Fatalf("the revocation endpoint was called despite losing the lock race: calls=%d", f.revokes.Load())
+	}
+	if _, ok, _ := c.store.LoadRefreshToken(); !ok {
+		t.Fatal("the refresh token was deleted despite Revoke never running")
+	}
+}
+
 func decodeSegment(t *testing.T, seg string) string {
 	t.Helper()
 	pad := strings.Repeat("=", (4-len(seg)%4)%4)

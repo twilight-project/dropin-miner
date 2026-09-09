@@ -466,7 +466,13 @@ func (c *OAuthClient) Refresh(ctx context.Context) (*oauth2.Token, error) {
 }
 
 // Revoke revokes the stored refresh authorization at the AS (RFC 7009) and,
-// on success, deletes it locally.
+// on success, deletes it locally. Its first production caller is
+// `dropin-miner mining disable` (design §5.5): "stop mining here" for
+// THIS installation's own agent, never "decommission this machine" —
+// the two settled questions the comment below used to leave open. It
+// takes lockRefreshToken for its whole cycle, same as Refresh and for
+// the same reason: this now runs concurrently with an ordinary flush's
+// own token refresh, not only with tests.
 //
 // ON SUCCESS — not regardless of outcome, which is what this comment used to
 // claim and what the body has never done. Every failure path returns before
@@ -483,23 +489,20 @@ func (c *OAuthClient) Refresh(ctx context.Context) (*oauth2.Token, error) {
 // safe and a 200 means "not valid any more" rather than "something was just
 // killed".
 //
-// TWO THINGS TO SETTLE BEFORE THIS GETS ITS FIRST PRODUCTION CALLER.
-//
-// It has none. Revocation in this system is an AS-side operator act
-// (CONTRACT-AUTH-012, owner AS, proven by AUTH-013a at GATE-1) and no
-// requirement asks the proxy to revoke its own authorization; the only
-// callers are tests, and the GATE-1 live test uses this to manufacture a
-// revoked token whose refusal is the actual assertion. So decide what the
-// operator-facing act is before wiring one up — "decommission this machine"
-// and "stop mining here" are not the same request and do not want the same
-// behavior on failure.
-//
-// And unlike Refresh, this takes no cross-process lock. A daemon tick
-// refreshing concurrently can persist a successor after this deletes the
-// file, leaving a token on disk behind a family the AS has already revoked.
-// Harmless while nothing calls this during normal operation, and not
-// harmless once something does.
+// This system's own revocation, CONTRACT-AUTH-012, is still the AS-side
+// operator act it always was (proven by AUTH-013a at GATE-1, which uses
+// this same method to manufacture a revoked token for that test). Nothing
+// about `mining disable` changes that: it is a second, independent,
+// self-service act, scoped to this installation's own family and
+// nothing else, alongside it — not a replacement for it, and not
+// something an operator's own revocation needs to know happened.
 func (c *OAuthClient) Revoke(ctx context.Context) error {
+	release, err := c.store.lockRefreshToken(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	stored, ok, err := c.store.LoadRefreshToken()
 	if err != nil {
 		return err

@@ -121,6 +121,14 @@ func (m *MiningClient) ProviderStatus(ctx context.Context) (*ProviderBinding, er
 // §42: this does NOT revoke or delete the key at OpenRouter. Callers
 // surface RevokeAtProviderNotice to the participant so the key is dealt
 // with on the provider side too.
+//
+// It has no caller (cmd/dropin-miner's `provider` command only registers
+// a key, never unregisters one) — `provider` can bind an OpenRouter
+// credential and has no way to unbind it again, mining disable or not.
+// Logged rather than fixed here: mining disable's own scope is the
+// SEARCH_ROUTER_V1 family revocation, which holds no provider credential
+// at all (§35.1); wiring this in belongs with the OPENROUTER_V1 path
+// next release, not bolted onto this one.
 func (m *MiningClient) RemoveProviderCredential(ctx context.Context) error {
 	endpoint, err := m.providerEndpoint(ctx)
 	if err != nil {
