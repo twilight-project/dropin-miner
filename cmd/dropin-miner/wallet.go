@@ -107,22 +107,7 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitTransport
 	}
 
-	// The one and only appearance of the mnemonic, anywhere.
-	fmt.Fprintln(stdout, "recovery phrase (shown ONCE, stored NOWHERE — written down or lost):")
-	fmt.Fprintln(stdout)
-	words := strings.Fields(mnemonic)
-	for i := 0; i < len(words); i += 6 {
-		end := i + 6
-		if end > len(words) {
-			end = len(words)
-		}
-		fmt.Fprintf(stdout, "    %s\n", strings.Join(words[i:end], " "))
-	}
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Anyone with these words controls every token this wallet ever receives.")
-	fmt.Fprintln(stdout, "The encrypted key lives in "+resolved+"; the passphrase opens it for spending.")
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "address: "+address)
+	printMnemonic(stdout, resolved, address, mnemonic)
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Next: register it as your payout destination:")
 	fmt.Fprintln(stdout, "    dropin-miner wallet register -config <file>")
@@ -169,6 +154,28 @@ func createWallet(dir, passphrase string) (address, mnemonic string, err error) 
 		return "", "", err
 	}
 	return address, mnemonic, nil
+}
+
+// printMnemonic is the one and only appearance of a mnemonic, anywhere,
+// shared by walletInit and the mining-enable flow (mining.go's
+// askMiningQuestion) so the two paths that can create a wallet show
+// identical words around it.
+func printMnemonic(stdout io.Writer, dir, address, mnemonic string) {
+	fmt.Fprintln(stdout, "recovery phrase (shown ONCE, stored NOWHERE — written down or lost):")
+	fmt.Fprintln(stdout)
+	words := strings.Fields(mnemonic)
+	for i := 0; i < len(words); i += 6 {
+		end := i + 6
+		if end > len(words) {
+			end = len(words)
+		}
+		fmt.Fprintf(stdout, "    %s\n", strings.Join(words[i:end], " "))
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Anyone with these words controls every token this wallet ever receives.")
+	fmt.Fprintln(stdout, "The encrypted key lives in "+dir+"; the passphrase opens it for spending.")
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "address: "+address)
 }
 
 func walletAddress(args []string, stdout, stderr io.Writer, getenv func(string) string) int {

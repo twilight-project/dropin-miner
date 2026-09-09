@@ -43,7 +43,21 @@ the tool (what an agent runs):
              session hooks; run it by hand to see what is pending
              (-force asks the AS even if the last flush just did)
 
-enrollment (one-time, per participant): enroll -> payout -> join -> login
+onboarding (one-time, per agent): register with the search platform, claim
+it at one URL, done. search works the moment connect stores the key,
+before the claim; mining (if granted) enrolls and declares a payout
+unattended once claimed.
+  connect    register [-name …] [-mining hints the claim page]; prints the
+             claim URL and code and polls (bounded) until claimed. A second
+             run resumes; so does the next search, automatically
+  mining enable  turn mining on for an already-connected agent: asks for a
+             payout address (empty creates a wallet — passphrase, mnemonic
+             once, exactly like wallet init) or re-prints the claim URL if
+             the scope was not granted yet
+  status     report what this installation has and has not completed
+
+manual enrollment (the portal's older path; still works, coexists with
+connect): enroll -> payout -> join -> login
   login      store your sr- key for searches: reads it from stdin (or
              -key-env VAR), checks it against the router without spending,
              writes ~/.tokendrop/credentials.json owner-only. -show says
@@ -56,7 +70,6 @@ enrollment (one-time, per participant): enroll -> payout -> join -> login
              arrival; a change waits for a Slot operator to approve it
   join       join the configured slot and the open target epoch (flush does
              this too; run it once after enrolling so the first hour counts)
-  status     report what this installation has and has not completed
 
 is it working, was I paid:
   doctor     checks in a participant's terms — connected, enrolled, joined,
@@ -73,9 +86,10 @@ wallet (a reward address this installation controls):
 
 Every command takes -config <file>, falling back to TOKENDROP_CONFIG, then
 ./tokendrop.toml. The [mining] block names the AS, chain and slot; the
-[miner] block turns the drop-in miner on. Searches take your sr- key from
-TOKENDROP_API_KEY if it is set, else from the file login wrote, else from
-OPENAI_API_KEY.
+[miner] block turns the drop-in miner on; [platform] names the search
+platform connect talks to (defaults to platform.nyks.dev). Searches take
+your sr- key from TOKENDROP_API_KEY if it is set, else from the file
+login (or connect) wrote, else from OPENAI_API_KEY.
 `
 
 func main() {
@@ -98,6 +112,10 @@ func dispatch(name string, args []string) int {
 		return cmdFlush(args, os.Stdout, os.Stderr, os.Getenv)
 	case "login":
 		return cmdLogin(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
+	case "connect":
+		return cmdConnect(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
+	case "mining":
+		return cmdMining(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "enroll":
 		return cmdEnroll(args)
 	case "join":
