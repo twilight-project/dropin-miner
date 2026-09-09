@@ -64,10 +64,10 @@ func TestRegisterReturnsAgentIdentity(t *testing.T) {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"agent_id":         "agent-1",
 			"key":              "sr-abc123",
-			"claim_url":        "https://platform.nyks.dev/claim/AB12-CD34",
+			"claim_url":        stub.srv.URL + "/claim/AB12-CD34",
 			"claim_code":       "AB12-CD34",
 			"claim_expires_at": "2026-09-16T00:00:00Z",
-			"poll":             map[string]any{"url": "https://platform.nyks.dev/v1/agents/agent-1", "interval_s": 5},
+			"poll":             map[string]any{"url": stub.srv.URL + "/v1/agents/agent-1", "interval_s": 5},
 			"tier":             "unclaimed",
 		})
 	}
@@ -94,7 +94,7 @@ func TestRegisterReturnsAgentIdentity(t *testing.T) {
 	stub.register = func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&sawBody)
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"agent_id": "agent-2", "key": "sr-def456", "claim_url": "https://platform.nyks.dev/claim/X",
+			"agent_id": "agent-2", "key": "sr-def456", "claim_url": stub.srv.URL + "/claim/X",
 		})
 	}
 	if _, err := c.Register(context.Background(), "my-agent", []string{"mining"}); err != nil {
@@ -209,7 +209,7 @@ func TestPollIntervalIsFloorClamped(t *testing.T) {
 	stub := newStubPlatform(t)
 	stub.register = func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"agent_id": "agent-1", "key": "sr-abc123", "claim_url": "https://platform.nyks.dev/claim/X",
+			"agent_id": "agent-1", "key": "sr-abc123", "claim_url": stub.srv.URL + "/claim/X",
 			"poll": map[string]any{"interval_s": 0},
 		})
 	}
@@ -220,5 +220,27 @@ func TestPollIntervalIsFloorClamped(t *testing.T) {
 	}
 	if reg.PollInterval < minPollInterval {
 		t.Fatalf("poll interval = %v, want >= floor %v", reg.PollInterval, minPollInterval)
+	}
+}
+
+// WP2-adversarial-review finding 11: a control plane advertising an
+// enormous interval_s (100000 — over a day) must not park a caller's poll
+// for anywhere near that long either. The ceiling is the other half of
+// the same clamp the floor test above exercises.
+func TestPollIntervalIsCeilingClamped(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.register = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"agent_id": "agent-1", "key": "sr-abc123", "claim_url": stub.srv.URL + "/claim/X",
+			"poll": map[string]any{"interval_s": 100000},
+		})
+	}
+	c := New(stub.srv.URL)
+	reg, err := c.Register(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.PollInterval > maxPollInterval {
+		t.Fatalf("poll interval = %v, want <= ceiling %v", reg.PollInterval, maxPollInterval)
 	}
 }

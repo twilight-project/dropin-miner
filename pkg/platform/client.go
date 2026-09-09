@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,6 +34,14 @@ const (
 	// advertising 0 — or a stub that forgot to set it — must not turn
 	// connect's poll into a tight loop against a real service.
 	minPollInterval = 2 * time.Second
+	// maxPollInterval ceilings the same value (WP2-adversarial-review
+	// finding 11): connect's own foreground budget is a few minutes, and
+	// a detached resume runs after every search regardless — an
+	// advertised interval_s in the hours (or a bogus 100000) must not
+	// park a poll for a day. The caller's own remaining budget still
+	// bounds the actual sleep further; this is the platform-facing half
+	// of that bound.
+	maxPollInterval = 60 * time.Second
 )
 
 // Known refusal codes from §5.3's enroll route and §6's threat list. A
@@ -148,6 +157,12 @@ func (c *Client) Register(ctx context.Context, name string, requestedScopes []st
 	if wire.AgentID == "" || wire.Key == "" || wire.ClaimURL == "" {
 		return nil, errors.New("platform: register response missing agent_id, key or claim_url")
 	}
+	if err := validateClaimURL(wire.ClaimURL, c.baseURL); err != nil {
+		return nil, err
+	}
+	if hasControlChar(wire.ClaimCode) {
+		return nil, errors.New("platform: claim_code contains a control character; refusing")
+	}
 	return &Registration{
 		AgentID:        wire.AgentID,
 		Key:            wire.Key,
@@ -163,7 +178,69 @@ func clampPollInterval(d time.Duration) time.Duration {
 	if d < minPollInterval {
 		return minPollInterval
 	}
+	if d > maxPollInterval {
+		return maxPollInterval
+	}
 	return d
+}
+
+// controlCharPattern is any C0 control character (including \n, \r, \t)
+// or DEL — none legitimately appears in a claim URL, a claim code, or a
+// slot name. Not a full sanitizer: a REFUSAL, not a strip, because a
+// platform response containing one is not a shape this client trusts
+// enough to guess what was meant (WP2-adversarial-review finding 12).
+func hasControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// isLoopbackHostname mirrors pkg/config's and pkg/auth's own
+// isLoopbackHost — each package that validates a URL's host keeps this
+// tiny check locally rather than importing another package for four
+// lines (the existing house convention: see pkg/auth/discovery.go and
+// pkg/config/config.go's own copies).
+func isLoopbackHostname(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateClaimURL enforces invariant 12: the claim URL a register
+// response hands back is printed to a terminal and persisted to disk
+// verbatim — a control character in it could forge the client's own
+// output, and an off-origin URL could point a participant at a page
+// that is not actually this platform's. Absolute HTTPS (or loopback,
+// matching this codebase's http(s)-or-loopback convention elsewhere),
+// origin exactly equal to baseURL's own.
+func validateClaimURL(raw, baseURL string) error {
+	if hasControlChar(raw) {
+		return errors.New("platform: claim_url contains a control character; refusing")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("platform: claim_url does not parse: %w", err)
+	}
+	if !u.IsAbs() {
+		return errors.New("platform: claim_url is not an absolute URL")
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHostname(u.Hostname())) {
+		return fmt.Errorf("platform: claim_url scheme %q is not https (or http on loopback)", u.Scheme)
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("platform: configured base URL does not parse: %w", err)
+	}
+	if u.Scheme != base.Scheme || u.Host != base.Host {
+		return fmt.Errorf("platform: claim_url origin %s://%s does not match the configured platform.base_url origin %s://%s",
+			u.Scheme, u.Host, base.Scheme, base.Host)
+	}
+	return nil
 }
 
 // AgentStatus is what Status returns (§5.2), flattened.
@@ -247,6 +324,25 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 	}
 	if wire.Status == "" {
 		return nil, errors.New("platform: status response carried no status")
+	}
+	// WP2-adversarial-review finding 13: an unrecognized status (a typo,
+	// a future value this build predates, or a hostile response) must
+	// not be trusted as anything more specific than "keep polling" — the
+	// alternative, falling through the switch statements callers build
+	// on this value, has previously let an unrecognized string like
+	// "PENDING_REVIEW" reach the enroll-and-redeem path. unclaimed is
+	// the one status every caller already treats as "nothing to do yet,
+	// try again later," which is the correct, safe default here.
+	switch wire.Status {
+	case "unclaimed", "claimed", "expired":
+	default:
+		wire.Status = "unclaimed"
+		wire.Scopes = nil
+	}
+	for _, slot := range wire.Mining.Slots {
+		if hasControlChar(slot) {
+			return nil, errors.New("platform: a slot name in the status response contains a control character; refusing")
+		}
 	}
 	out := &AgentStatus{
 		Status:                         wire.Status,
