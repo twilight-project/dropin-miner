@@ -520,7 +520,7 @@ func TestConnectRefusesToGuessAmongMultipleSlots(t *testing.T) {
 	}
 
 	// Naming one of the offered slots resolves it.
-	cfg, err := os.ReadFile(cfgPath)
+	cfg, err := os.ReadFile(cfgPath) // #nosec G304 -- the test's own writeTOML output, not an external path
 	if err != nil {
 		t.Fatal(err)
 	}
