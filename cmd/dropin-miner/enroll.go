@@ -442,6 +442,21 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	default:
 		fmt.Fprintf(stderr, "agent:  unrecognized status %q from a previous poll\n", reg.Status)
 	}
+
+	// WP4b (design f0ddb69 §5.5): both notes below are read-before-declare
+	// / conflict bookkeeping the store already has, no AS round trip
+	// needed here — printAgentIdentityStatus stays disk-only by design
+	// (see printQueue's comment on the same point).
+	if held, ok, herr := store.LoadPayoutBindingHeld(); herr == nil && ok {
+		fmt.Fprintf(stdout, "payout: HELD — the AS has %s active for this participant; this installation "+
+			"would declare %s. Changing the active binding is an operator-activated change.\n",
+			held.Active, held.Local)
+	}
+	if part, ok, perr := store.LoadEpochParticipation(); perr == nil && ok && part.Conflict {
+		fmt.Fprintf(stdout, "mining: another installation of this participant holds slot %d epoch %d; "+
+			"this installation's observations for it are queued until its window closes, then dropped\n",
+			part.SlotID, part.TargetEpoch)
+	}
 }
 
 // printQueue reports the local backlog.

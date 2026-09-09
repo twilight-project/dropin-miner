@@ -19,6 +19,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -118,8 +119,10 @@ func writeStubJSON(w http.ResponseWriter, status int, v any) {
 type stubOnboardingAS struct {
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	declared string
+	mu            sync.Mutex
+	declared      string
+	activeAddress string // "" means no active binding yet (GET answers 404)
+	declareCalls  int
 }
 
 func newStubAS(t *testing.T) *stubOnboardingAS {
@@ -149,10 +152,29 @@ func newStubAS(t *testing.T) *stubOnboardingAS {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.declared = body.Address
+		f.declareCalls++
 		f.mu.Unlock()
 		writeStubJSON(w, http.StatusOK, map[string]any{
 			"status": "ACTIVE", "address": body.Address, "canonical_address": body.Address,
 			"effective": true, "declared_at": "2026-09-09T00:00:00Z",
+		})
+	})
+	mux.HandleFunc("GET /v1/payout/declaration", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		active := f.activeAddress
+		f.mu.Unlock()
+		// "nothing declared yet" is 200 with active: null, not a 404 — the
+		// route always answers for a claimed participant (payout.go's
+		// PayoutStanding: "Active is the address in force, or nil").
+		if active == "" {
+			writeStubJSON(w, http.StatusOK, map[string]any{"active": nil, "pending": nil})
+			return
+		}
+		writeStubJSON(w, http.StatusOK, map[string]any{
+			"active": map[string]any{
+				"status": "ACTIVE", "address": active, "canonical_address": active,
+				"effective": true, "declared_at": "2026-09-09T00:00:00Z",
+			},
 		})
 	})
 	f.srv = httptest.NewServer(mux)
@@ -164,6 +186,43 @@ func (f *stubOnboardingAS) declaredAddress() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.declared
+}
+
+func (f *stubOnboardingAS) declarationAttempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.declareCalls
+}
+
+func (f *stubOnboardingAS) setActiveAddress(addr string) {
+	f.mu.Lock()
+	f.activeAddress = addr
+	f.mu.Unlock()
+}
+
+// miningClient builds a *auth.MiningClient against this stub, the same
+// shape as pkg/auth/payout_test.go's payoutAS.client — enough for
+// PayoutStanding/DeclarePayoutAddress, which is all declarePayoutIfSafe's
+// tests below need.
+func (f *stubOnboardingAS) miningClient(t *testing.T) (*auth.MiningClient, string) {
+	t.Helper()
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshToken("rt-0"); err != nil {
+		t.Fatal(err)
+	}
+	d, err := auth.NewDiscoverer(auth.DiscoveryConfig{BaseURL: f.srv.URL, ChainID: "twilight-1", SlotID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oc, err := auth.NewOAuthClient(context.Background(), d, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth.NewMiningClient(d, oc, store), stateDir
 }
 
 // ── config helper ─────────────────────────────────────────────────────
@@ -712,5 +771,108 @@ func TestDeclarationRunsUnattendedAfterEnrollment(t *testing.T) {
 	}
 	if got := as.declaredAddress(); got != "twilight1unattended" {
 		t.Fatalf("declared address = %q, want twilight1unattended", got)
+	}
+}
+
+// WP4b (design f0ddb69 §5.5): "read before declaring". Three direct tests
+// of declarePayoutIfSafe against stubOnboardingAS, plus one integration
+// test (TestStatusReportsBothAddressesOnBindingConflict below) proving
+// status surfaces the held case end to end.
+
+func TestDeclareProceedsWhenNoActiveBinding(t *testing.T) {
+	as := newStubAS(t) // activeAddress unset: GET answers 404, ErrNoPayoutDeclaration
+	mining, stateDir := as.miningClient(t)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	declarePayoutIfSafe(context.Background(), mining, store, "twilight1new", &stdout, &stderr)
+
+	if got := as.declaredAddress(); got != "twilight1new" {
+		t.Fatalf("declared address = %q, want twilight1new (no active binding, must proceed)", got)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr: %s", stderr.String())
+	}
+}
+
+func TestDeclareProceedsWhenActiveMatchesLocal(t *testing.T) {
+	as := newStubAS(t)
+	as.setActiveAddress("twilight1same")
+	mining, stateDir := as.miningClient(t)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	declarePayoutIfSafe(context.Background(), mining, store, "twilight1same", &stdout, &stderr)
+
+	if got := as.declarationAttempts(); got != 1 {
+		t.Fatalf("declaration attempts = %d, want 1 — WP4b: \"a declaration of the same address is not a change\"", got)
+	}
+	if _, ok, _ := store.LoadPayoutBindingHeld(); ok {
+		t.Fatal("a matching declaration must not leave a held-binding note")
+	}
+}
+
+func TestDeclareReadsStandingFirstAndSkipsWhenActiveDiffers(t *testing.T) {
+	as := newStubAS(t)
+	as.setActiveAddress("twilight1active")
+	mining, stateDir := as.miningClient(t)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	declarePayoutIfSafe(context.Background(), mining, store, "twilight1local", &stdout, &stderr)
+
+	if got := as.declarationAttempts(); got != 0 {
+		t.Fatalf("declaration attempts = %d, want 0 — a different active address must never be declared over blind", got)
+	}
+	held, ok, err := store.LoadPayoutBindingHeld()
+	if err != nil || !ok || held.Local != "twilight1local" || held.Active != "twilight1active" {
+		t.Fatalf("LoadPayoutBindingHeld() = %+v, ok=%v, err=%v", held, ok, err)
+	}
+	if !strings.Contains(stdout.String(), "twilight1active") || !strings.Contains(stdout.String(), "twilight1local") {
+		t.Fatalf("stdout does not name both addresses: %s", stdout.String())
+	}
+}
+
+// End to end: connect enrolls, declares against a stub AS that already
+// has a DIFFERENT address active, and `status` shows both — without a
+// second network round trip (printAgentIdentityStatus reads the store).
+func TestStatusReportsBothAddressesOnBindingConflict(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	as := newStubAS(t)
+	as.setActiveAddress("twilight1operator")
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatal("connect failed")
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePayoutAddress("twilight1mine"); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("mining")
+	if code, out, _ := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("resume exited %d: %s", code, out)
+	}
+	if got := as.declarationAttempts(); got != 0 {
+		t.Fatalf("declaration attempts = %d, want 0 (active address differs)", got)
+	}
+
+	var stdout, stderr bytes.Buffer
+	printAgentIdentityStatus([]string{"-config", cfgPath}, &stdout, &stderr, os.Getenv)
+	if !strings.Contains(stdout.String(), "twilight1operator") || !strings.Contains(stdout.String(), "twilight1mine") {
+		t.Fatalf("status does not name both addresses:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "HELD") {
+		t.Fatalf("status does not say the binding is held:\n%s", stdout.String())
 	}
 }

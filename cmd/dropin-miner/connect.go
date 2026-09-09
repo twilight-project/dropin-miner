@@ -267,13 +267,50 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 	fmt.Fprintln(stdout, "enrolled for mining on", slot)
 
 	if address, ok, aerr := store.LoadPayoutAddress(); aerr == nil && ok {
-		if _, derr := miningClient.DeclarePayoutAddress(ctx, address); derr != nil {
-			fmt.Fprintln(stderr, "dropin-miner: payout declaration:", derr)
-		} else {
-			fmt.Fprintln(stdout, "payout address declared:", address)
-		}
+		declarePayoutIfSafe(ctx, miningClient, store, address, stdout, stderr)
 	}
 	return true, exitOK
+}
+
+// declarePayoutIfSafe is §5.5's read-before-declare rule (design f0ddb69):
+// the AS classifies a declaration as first or change on the PARTICIPANT's
+// activation history, not the installation, so a second agent declaring
+// blind can turn an ordinary "same address again" into a held change an
+// operator has to clear. Read the participant's current binding first:
+// no active binding, or it already matches local, and declaring is safe
+// (a first declaration, or a no-op repeat of the active one — WP4b:
+// "a declaration of the same address is not a change"). An active
+// binding naming a DIFFERENT address means a real change is in flight
+// from some other agent or a prior manual declare; this call declares
+// nothing and leaves it for status/an operator, per the design text
+// ("declares nothing ... status reports both addresses").
+func declarePayoutIfSafe(ctx context.Context, miningClient *auth.MiningClient, store *auth.Store, localAddress string, stdout, stderr io.Writer) {
+	// PayoutStanding answers "no active binding" as a normal 200 with
+	// Active == nil (payout.go: "Active is the address in force, or
+	// nil") — unlike DeclarePayoutAddress's decode path, it has no 404
+	// special case, so any error here is a real one, not "nothing
+	// declared yet."
+	standing, err := miningClient.PayoutStanding(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner: payout standing:", err)
+		return
+	}
+	if standing != nil && standing.Active != nil && standing.Active.Address != localAddress {
+		if serr := store.SavePayoutBindingHeld(localAddress, standing.Active.Address); serr != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", serr)
+		}
+		fmt.Fprintf(stdout, "payout address NOT declared: the AS already has %s active for this participant, "+
+			"this installation would declare %s. Run `dropin-miner status` for both addresses; changing the "+
+			"binding is an operator-activated change, not something this client can do unattended.\n",
+			standing.Active.Address, localAddress)
+		return
+	}
+	if _, derr := miningClient.DeclarePayoutAddress(ctx, localAddress); derr != nil {
+		fmt.Fprintln(stderr, "dropin-miner: payout declaration:", derr)
+		return
+	}
+	_ = store.ClearPayoutBindingHeld()
+	fmt.Fprintln(stdout, "payout address declared:", localAddress)
 }
 
 // chooseSlot picks which platform-advertised slot to enroll into.
