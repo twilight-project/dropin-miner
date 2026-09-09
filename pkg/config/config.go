@@ -134,6 +134,12 @@ type Mining struct {
 	// pre-decided payout destination, so an install with no terminal
 	// can still enable mining without a wallet ever being created here.
 	PayoutAddress string
+	// PlatformSlot names which platform-advertised mining slot connect
+	// should enroll into, required only when the platform ever offers
+	// more than one (WP2-review judgment call 1's ruling: one slot
+	// offered, take it; more than one, refuse and require this — no
+	// automatic AS-audience matching on the client's part).
+	PlatformSlot string
 }
 
 // Platform is the search-platform control plane connect and mining
@@ -259,6 +265,10 @@ type fileConfig struct {
 		// (agent onboarding design §5.5). Read only when Enabled is also
 		// explicit in the file — it names an address, not a decision.
 		PayoutAddress string `toml:"payout_address"`
+		// PlatformSlot names the platform-advertised mining slot to
+		// enroll into, when the platform ever offers more than one
+		// (WP2-review judgment call 1).
+		PlatformSlot string `toml:"platform_slot"`
 	} `toml:"mining"`
 	Miner struct {
 		Enabled       bool     `toml:"enabled"`
@@ -413,6 +423,7 @@ type rawConfig struct {
 	miningCollectorMaxBackoff  time.Duration
 	miningCollectorMaxAttempts int
 	miningPayoutAddress        string
+	miningPlatformSlot         string
 	miningEnabledExplicit      bool
 
 	minerEnabled       bool
@@ -518,6 +529,9 @@ func (r *rawConfig) applyFile(path string) error {
 	r.miningEnabledExplicit = md.IsDefined("mining", "enabled")
 	if f.Mining.PayoutAddress != "" {
 		r.miningPayoutAddress = f.Mining.PayoutAddress
+	}
+	if f.Mining.PlatformSlot != "" {
+		r.miningPlatformSlot = f.Mining.PlatformSlot
 	}
 	if f.Mining.ASURL != "" {
 		r.miningASURL = f.Mining.ASURL
@@ -754,6 +768,7 @@ func (r *rawConfig) finishMining() (Mining, error) {
 		CollectorMaxBackoff:  r.miningCollectorMaxBackoff,
 		CollectorMaxAttempts: r.miningCollectorMaxAttempts,
 		PayoutAddress:        r.miningPayoutAddress,
+		PlatformSlot:         r.miningPlatformSlot,
 	}
 	if r.miningSlotID != nil {
 		m.SlotID = *r.miningSlotID

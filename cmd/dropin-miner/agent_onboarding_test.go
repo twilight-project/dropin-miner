@@ -103,6 +103,14 @@ func (f *stubPlatform) claim(scopes ...string) {
 	f.scopes = scopes
 }
 
+// setSlots overrides the single-slot default (WP2-review judgment call 1:
+// chooseSlot's more-than-one-offered path).
+func (f *stubPlatform) setSlots(slots ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.slots = slots
+}
+
 func (f *stubPlatform) counts() (register, status, enroll int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -451,6 +459,78 @@ func TestConnectCaseMiningGrantedLater(t *testing.T) {
 	}
 	if got := as.declaredAddress(); got != "twilight1later" {
 		t.Fatalf("declared address = %q, want twilight1later", got)
+	}
+}
+
+// WP2-review ruling on judgment call 1: one slot offered, take it; more
+// than one, refuse and require mining.platform_slot rather than guessing.
+func TestChooseSlot(t *testing.T) {
+	cases := []struct {
+		name         string
+		slots        []string
+		platformSlot string
+		wantSlot     string
+		wantErr      bool
+	}{
+		{"none offered", nil, "", "", false},
+		{"exactly one: taken regardless of platform_slot", []string{"twilight-slot-3"}, "", "twilight-slot-3", false},
+		{"more than one, no platform_slot: refused", []string{"a", "b"}, "", "", true},
+		{"more than one, platform_slot matches: taken", []string{"a", "b"}, "b", "b", false},
+		{"more than one, platform_slot matches none: refused", []string{"a", "b"}, "c", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			slot, errText := chooseSlot(c.slots, c.platformSlot)
+			if slot != c.wantSlot {
+				t.Errorf("slot = %q, want %q", slot, c.wantSlot)
+			}
+			if c.wantErr && errText == "" {
+				t.Error("wanted a non-empty refusal message, got none")
+			}
+			if !c.wantErr && errText != "" {
+				t.Errorf("unexpected refusal message: %q", errText)
+			}
+		})
+	}
+}
+
+// End to end: a platform offering more than one slot refuses to enroll
+// until mining.platform_slot names one of them.
+func TestConnectRefusesToGuessAmongMultipleSlots(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	platform.setSlots("twilight-slot-3", "twilight-slot-7")
+	as := newStubAS(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatal("first connect failed")
+	}
+	platform.claim("credits", "mining")
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code == exitOK {
+		t.Fatal("connect exited OK despite an ambiguous slot choice")
+	}
+	if !strings.Contains(errOut, "platform_slot") {
+		t.Fatalf("refusal did not mention mining.platform_slot: %q", errOut)
+	}
+	if reg, _ := loadAgent(t, stateDir); reg.LastEnrollmentSlot != "" {
+		t.Fatal("enrolled despite an unresolved slot ambiguity")
+	}
+
+	// Naming one of the offered slots resolves it.
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath2 := writeTOML(t, string(cfg)+"platform_slot = \"twilight-slot-7\"\n")
+	code, out, _ := runConnect(t, cfgPath2, nil)
+	if code != exitOK || !strings.Contains(out, "enrolled for mining") {
+		t.Fatalf("did not enroll once platform_slot named one of the offered slots: code=%d out=%q", code, out)
+	}
+	if reg, _ := loadAgent(t, stateDir); reg.LastEnrollmentSlot != "twilight-slot-7" {
+		t.Fatalf("enrolled on %q, want twilight-slot-7", reg.LastEnrollmentSlot)
 	}
 }
 

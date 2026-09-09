@@ -28,6 +28,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
@@ -258,9 +259,12 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 			return true, exitOK
 		}
 
-		slot := chooseSlot(st.MiningSlots)
+		slot, errText := chooseSlot(st.MiningSlots, cfg.Mining.PlatformSlot)
 		if slot == "" {
-			fmt.Fprintln(stderr, "dropin-miner: mining scope granted, but the platform offered no slot")
+			if errText == "" {
+				errText = "mining scope granted, but the platform offered no slot"
+			}
+			fmt.Fprintln(stderr, "dropin-miner:", errText)
 			return true, exitTransport
 		}
 		token, err := client.Enroll(ctx, reg.AgentID, key, slot)
@@ -371,18 +375,32 @@ func addressSettled(store *auth.Store, address string) bool {
 
 // chooseSlot picks which platform-advertised slot to enroll into.
 //
-// JUDGMENT CALL, flagged for confirmation: the design's §5.2 examples
-// always show exactly one slot ("slots": ["twilight-slot-3"]), and
-// nothing in §5 states how a platform slot NAME maps to this client's
-// configured mining.slot_id (a number, the AS's own identifier) when
-// more than one is offered. Until that mapping exists, the first
-// offered slot is used — correct for the one-slot case the design
-// documents, silently arbitrary if a platform ever offers more than one.
-func chooseSlot(slots []string) string {
-	if len(slots) == 0 {
-		return ""
+// WP2-review ruling on judgment call 1: one slot offered, take it. More
+// than one, refuse and require mining.platform_slot naming which one —
+// automatic matching against the AS's own audience is a question for the
+// AS discovery document, not something this client guesses at. errText is
+// empty unless a genuine refusal happened (more than one slot, and either
+// no platform_slot configured or one that names none of them), in which
+// case it names what was offered so the message the caller prints is
+// actionable.
+func chooseSlot(slots []string, platformSlot string) (slot, errText string) {
+	switch len(slots) {
+	case 0:
+		return "", ""
+	case 1:
+		return slots[0], ""
 	}
-	return slots[0]
+	if platformSlot != "" {
+		for _, s := range slots {
+			if s == platformSlot {
+				return s, ""
+			}
+		}
+		return "", fmt.Sprintf("mining.platform_slot %q does not match any slot the platform offered (%s)",
+			platformSlot, strings.Join(slots, ", "))
+	}
+	return "", fmt.Sprintf("the platform offered more than one mining slot (%s); set mining.platform_slot to name which one",
+		strings.Join(slots, ", "))
 }
 
 // buildMiningClient constructs the AS mining client from an
