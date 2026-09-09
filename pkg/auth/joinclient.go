@@ -383,7 +383,20 @@ func (m *MiningClient) receiptKey(ctx context.Context, kid string) (ed25519.Publ
 	return nil, fmt.Errorf("auth: receipt kid %q not resolvable in the published receipt-key set", kid)
 }
 
-// joinRefusal maps the stable §26 envelope into an error.
+// ErrEnrollmentConflict is JoinEpoch's refusal when the accepted
+// enrollment for this (participant, slot, target_epoch) belongs to a
+// different installation (contract §26/§23: CONTRACT-JOIN-006,
+// "different installation ... -> 409 ENROLLMENT_CONFLICT"). WP4b's
+// finding: several installations of one participant are allowed, but
+// only one holds a given epoch — this is that check, from the loser's
+// side. Not a failure this installation should surface as one
+// (agent onboarding design §2.3/§5.5): another installation of the same
+// participant already has this epoch.
+var ErrEnrollmentConflict = errors.New("auth: enrollment conflict — another installation of this participant holds this epoch")
+
+// joinRefusal maps the stable §26 envelope into an error, wrapping
+// ErrEnrollmentConflict when the code names it so a caller can branch on
+// errors.Is rather than parsing the message.
 func joinRefusal(status int, raw []byte) error {
 	var env struct {
 		Error struct {
@@ -392,6 +405,9 @@ func joinRefusal(status int, raw []byte) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &env); err == nil && env.Error.Code != "" {
+		if env.Error.Code == "ENROLLMENT_CONFLICT" {
+			return fmt.Errorf("auth: AS refused (%d %s): %s: %w", status, env.Error.Code, env.Error.Message, ErrEnrollmentConflict)
+		}
 		return fmt.Errorf("auth: AS refused (%d %s): %s", status, env.Error.Code, env.Error.Message)
 	}
 	return fmt.Errorf("auth: AS refused with status %d", status)
