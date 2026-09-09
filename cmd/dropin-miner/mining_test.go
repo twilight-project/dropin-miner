@@ -589,10 +589,10 @@ func TestFlushOnEnrollmentConflictRecordsStatusNotFailure(t *testing.T) {
 	if !f.driver.hasJoined(1042) {
 		t.Fatal("epoch 1042 was not remembered; the next tick would retry the same conflict every minute")
 	}
-	rec, ok, err := f.store.LoadEpochParticipation()
-	if err != nil || !ok || !rec.Conflict || rec.SlotID != testSlotID || rec.TargetEpoch != 1042 {
-		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want a conflict recorded for slot %d epoch 1042",
-			rec, ok, err, testSlotID)
+	conflicts, err := f.store.EpochConflicts()
+	if err != nil || len(conflicts) != 1 || conflicts[0].SlotID != testSlotID || conflicts[0].TargetEpoch != 1042 {
+		t.Fatalf("EpochConflicts() = %+v, err=%v; want a conflict recorded for slot %d epoch 1042",
+			conflicts, err, testSlotID)
 	}
 	if strings.Contains(f.log.String(), "level=WARN") || strings.Contains(f.log.String(), "level=ERROR") {
 		t.Fatalf("an enrollment conflict logged at warn/error level, read as a failure by an operator watching logs:\n%s", f.log.String())
@@ -610,34 +610,12 @@ func TestFlushOnProxyBindingMismatchRecordsStatusNotFailure(t *testing.T) {
 	f := newDriverFixture(t, as, nil)
 	f.tick() // join succeeds (no joinRefusalCode set); the exchange is what refuses here
 
-	rec, ok, err := f.store.LoadEpochParticipation()
-	if err != nil || !ok || !rec.Conflict || rec.TargetEpoch != 1042 {
-		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want a conflict recorded for epoch 1042", rec, ok, err)
+	conflicts, err := f.store.EpochConflicts()
+	if err != nil || len(conflicts) != 1 || conflicts[0].TargetEpoch != 1042 {
+		t.Fatalf("EpochConflicts() = %+v, err=%v; want a conflict recorded for epoch 1042", conflicts, err)
 	}
 	if strings.Contains(f.log.String(), "level=WARN") || strings.Contains(f.log.String(), "level=ERROR") {
 		t.Fatalf("a binding mismatch logged at warn/error level, read as a failure by an operator watching logs:\n%s", f.log.String())
-	}
-}
-
-// A successful capability exchange that DOES carry a deadline persists
-// it; a conflict on that SAME epoch afterward must not lose it (the
-// store-level round-trip is in pkg/auth/store_test.go — this proves the
-// driver is the thing that actually calls it, end to end against a real
-// exchange response).
-func TestFlushCapabilitySuccessPersistsDeadlineDriverEndToEnd(t *testing.T) {
-	deadline := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
-	as := newFakeAS(t)
-	as.set(func(s *asState) {
-		s.epoch, s.joinable = 1042, true
-		s.capabilityDeadline = deadline.Format(time.RFC3339)
-	})
-	f := newDriverFixture(t, as, nil)
-	f.tick()
-
-	rec, ok, err := f.store.LoadEpochParticipation()
-	if err != nil || !ok || rec.Conflict || rec.CapabilityDeadline != deadline.Format(time.RFC3339) {
-		t.Fatalf("LoadEpochParticipation() = %+v, ok=%v, err=%v; want deadline %s persisted, no conflict",
-			rec, ok, err, deadline.Format(time.RFC3339))
 	}
 }
 

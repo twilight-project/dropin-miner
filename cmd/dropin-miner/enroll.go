@@ -452,10 +452,12 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 			"would declare %s. Changing the active binding is an operator-activated change.\n",
 			held.Active, held.Local)
 	}
-	if part, ok, perr := store.LoadEpochParticipation(); perr == nil && ok && part.Conflict {
-		fmt.Fprintf(stdout, "mining: another installation of this participant holds slot %d epoch %d; "+
-			"this installation's observations for it are queued until its window closes, then dropped\n",
-			part.SlotID, part.TargetEpoch)
+	if conflicts, cerr := store.EpochConflicts(); cerr == nil {
+		for _, c := range conflicts {
+			fmt.Fprintf(stdout, "mining: another installation of this participant holds slot %d epoch %d; "+
+				"this installation's observations for it are queued until the AS's target moves past it, then dropped\n",
+				c.SlotID, c.TargetEpoch)
+		}
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -421,106 +420,111 @@ func (s *Store) LoadPayoutAddress() (address string, ok bool, err error) {
 	return rec.Address, true, nil
 }
 
-// EpochParticipation is this installation's durable memory of the one
-// (slot, epoch) it most recently tried to participate in — WP4b (design
-// f0ddb69 §2.3/§5.5): several installations of one participant may exist,
-// but only one holds a given epoch, and flush is a fresh process every
-// run with nothing else remembering either fact across invocations.
-//
-// CapabilityDeadline is set once, the first time a capability exchange
-// SUCCEEDS for (SlotID, TargetEpoch) — it is not otherwise persisted
-// anywhere (scope.Context is in-memory only). Conflict is set when
-// ErrEnrollmentConflict or ErrProxyBindingMismatch is seen for that same
-// pair. A later flush that hits either error reads CapabilityDeadline (if
-// this installation ever held the epoch before losing it) to decide
-// whether the observations it queued for that epoch are now provably
-// worthless (deadline passed) or still worth holding onto in case the
-// conflict was transient.
-//
-// Like enrollmentRecord, this tracks a single current (slot, epoch) pair,
-// not a history: moving to a new target epoch overwrites it. That is a
-// deliberate simplification, not an oversight — the same one
-// enrollmentRecord already makes — and it is sound as long as a
-// conflict's deadline is acted on before the driver moves to a new
-// target, which flush.go does inline, every run, before promoting or
-// delivering anything.
-type EpochParticipation struct {
-	SlotID             uint64 `json:"slot_id"`
-	TargetEpoch        uint64 `json:"target_epoch"`
-	CapabilityDeadline string `json:"capability_deadline,omitempty"` // RFC3339
-	Conflict           bool   `json:"conflict,omitempty"`
-}
-
-// SaveEpochCapabilitySuccess records that a capability exchange succeeded
-// for (slotID, targetEpoch) with the given deadline (§31's
-// observation_submission_deadline) — the durable fact a later conflict on
-// the SAME epoch can compare "now" against. Moving to a new epoch starts
-// a fresh record; Conflict is not carried over from whatever was there
-// before, since a fresh success means this installation currently holds
-// the binding.
-func (s *Store) SaveEpochCapabilitySuccess(slotID, targetEpoch uint64, deadline time.Time) error {
-	rec := EpochParticipation{SlotID: slotID, TargetEpoch: targetEpoch}
-	if !deadline.IsZero() {
-		rec.CapabilityDeadline = deadline.UTC().Format(time.RFC3339)
-	}
-	return s.saveEpochParticipation(rec)
+// ConflictedEpoch is one (slot, epoch) pair another installation of this
+// participant is confirmed to hold — WP4b (design aba1245 §2.3/§5.5).
+// This installation never obtained a capability for it (ErrEnrollmentConflict
+// on join, or ErrProxyBindingMismatch on exchange) and never will: the AS's
+// current target moving past TargetEpoch is what proves the observations
+// this installation queued for it are worthless, not a clock. That is the
+// finding that replaced the first version of this record, which was a
+// single CapabilityDeadline-gated slot: the deadline only exists when this
+// installation itself once held the epoch before losing it, which is the
+// RARE case (ErrProxyBindingMismatch after a prior success) — the common
+// case (ErrEnrollmentConflict on join, never held at all) has no deadline
+// to compare against and the drop never fired. A single record also meant
+// a second conflicted epoch silently clobbered the first's.
+type ConflictedEpoch struct {
+	SlotID      uint64 `json:"slot_id"`
+	TargetEpoch uint64 `json:"target_epoch"`
 }
 
 // SaveEpochConflict records that ErrEnrollmentConflict or
 // ErrProxyBindingMismatch was seen for (slotID, targetEpoch): another
-// installation of this participant holds it. If a CapabilityDeadline is
-// already on file for this exact (slot, epoch) — this installation held
-// it before losing it — that deadline is preserved rather than cleared,
-// so the caller can still act on it.
+// installation of this participant holds it. Adds to the bounded set;
+// a pair already on file is left alone rather than duplicated.
 func (s *Store) SaveEpochConflict(slotID, targetEpoch uint64) error {
-	rec := EpochParticipation{SlotID: slotID, TargetEpoch: targetEpoch, Conflict: true}
-	if existing, ok, err := s.LoadEpochParticipation(); err == nil && ok &&
-		existing.SlotID == slotID && existing.TargetEpoch == targetEpoch {
-		rec.CapabilityDeadline = existing.CapabilityDeadline
+	set, err := s.loadEpochConflicts()
+	if err != nil {
+		return err
 	}
-	return s.saveEpochParticipation(rec)
+	for _, c := range set {
+		if c.SlotID == slotID && c.TargetEpoch == targetEpoch {
+			return nil
+		}
+	}
+	return s.saveEpochConflicts(append(set, ConflictedEpoch{SlotID: slotID, TargetEpoch: targetEpoch}))
 }
 
-// ClearEpochParticipation removes the record once a conflict has been
-// acted on (its observations dropped, or the epoch no longer matters) so
-// a later flush does not repeat the drop.
-func (s *Store) ClearEpochParticipation() error {
-	err := os.Remove(filepath.Join(s.dir, "epoch_participation.json"))
-	if errors.Is(err, fs.ErrNotExist) {
+// EpochConflicts returns every (slot, epoch) pair this installation knows
+// another installation of this participant holds. Bounded in practice: an
+// entry leaves the set as soon as a flush observes the AS's current target
+// has moved past it (RemoveEpochConflicts), which happens on ordinary epoch
+// rollover regardless of whether this installation had anything queued for
+// it.
+func (s *Store) EpochConflicts() ([]ConflictedEpoch, error) {
+	return s.loadEpochConflicts()
+}
+
+// RemoveEpochConflicts drops the named pairs from the set — called once
+// their queued observations have been acted on (dropped, or found already
+// gone), never speculatively: a caller that removed a pair before
+// processing it and then failed to open the spool would lose the record
+// that anything needed doing.
+func (s *Store) RemoveEpochConflicts(done []ConflictedEpoch) error {
+	if len(done) == 0 {
 		return nil
 	}
-	return err
+	set, err := s.loadEpochConflicts()
+	if err != nil {
+		return err
+	}
+	kept := set[:0]
+	for _, c := range set {
+		remove := false
+		for _, d := range done {
+			if c.SlotID == d.SlotID && c.TargetEpoch == d.TargetEpoch {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			kept = append(kept, c)
+		}
+	}
+	return s.saveEpochConflicts(kept)
 }
 
-func (s *Store) saveEpochParticipation(rec EpochParticipation) error {
-	raw, err := json.Marshal(rec)
+func (s *Store) saveEpochConflicts(set []ConflictedEpoch) error {
+	if set == nil {
+		set = []ConflictedEpoch{}
+	}
+	raw, err := json.Marshal(set)
 	if err != nil {
-		return fmt.Errorf("auth: encode epoch participation: %w", err)
+		return fmt.Errorf("auth: encode epoch conflicts: %w", err)
 	}
-	tmp := filepath.Join(s.dir, "epoch_participation.json.tmp")
+	tmp := filepath.Join(s.dir, "epoch_conflicts.json.tmp")
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("auth: write epoch participation: %w", err)
+		return fmt.Errorf("auth: write epoch conflicts: %w", err)
 	}
-	if err := os.Rename(tmp, filepath.Join(s.dir, "epoch_participation.json")); err != nil {
-		return fmt.Errorf("auth: persist epoch participation: %w", err)
+	if err := os.Rename(tmp, filepath.Join(s.dir, "epoch_conflicts.json")); err != nil {
+		return fmt.Errorf("auth: persist epoch conflicts: %w", err)
 	}
 	return nil
 }
 
-// LoadEpochParticipation returns the stored record, ok=false when this
-// installation has never succeeded or conflicted on an epoch.
-func (s *Store) LoadEpochParticipation() (rec EpochParticipation, ok bool, err error) {
-	raw, err := s.readSecret("epoch_participation.json")
+func (s *Store) loadEpochConflicts() ([]ConflictedEpoch, error) {
+	raw, err := s.readSecret("epoch_conflicts.json")
 	if errors.Is(err, fs.ErrNotExist) {
-		return EpochParticipation{}, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return EpochParticipation{}, false, err
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return EpochParticipation{}, false, fmt.Errorf("auth: decode epoch participation: %w", err)
+	var set []ConflictedEpoch
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return nil, fmt.Errorf("auth: decode epoch conflicts: %w", err)
 	}
-	return rec, true, nil
+	return set, nil
 }
 
 // PayoutBindingHeld is what status shows when connect declined to declare

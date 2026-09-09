@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func newStore(t *testing.T) (*Store, string) {
@@ -230,61 +229,59 @@ func TestSaveLoadPayoutAddressRoundTrips(t *testing.T) {
 	}
 }
 
-// SaveEpochCapabilitySuccess records a deadline; a later SaveEpochConflict
-// for the SAME (slot, epoch) must preserve it rather than clearing it —
-// that preserved deadline is what a flush compares "now" against before
-// dropping a conflicted epoch's spooled observations.
-func TestSaveEpochConflictPreservesAKnownDeadlineForTheSameEpoch(t *testing.T) {
+// EpochConflicts is a bounded SET, not a single record — WP2-review
+// defect 1: a single record meant a second conflicted epoch clobbered the
+// first, and its observations were then never dropped.
+func TestEpochConflictsIsASetNotASingleRecord(t *testing.T) {
 	s, _ := newStore(t)
-	if _, ok, err := s.LoadEpochParticipation(); err != nil || ok {
-		t.Fatalf("fresh store: ok=%v err=%v, want ok=false err=nil", ok, err)
-	}
-	deadline := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
-	if err := s.SaveEpochCapabilitySuccess(7, 1042, deadline); err != nil {
-		t.Fatal(err)
-	}
-	got, ok, err := s.LoadEpochParticipation()
-	if err != nil || !ok || got.Conflict || got.CapabilityDeadline != deadline.Format(time.RFC3339) {
-		t.Fatalf("got %+v ok=%v err=%v", got, ok, err)
+	if got, err := s.EpochConflicts(); err != nil || len(got) != 0 {
+		t.Fatalf("fresh store: got %+v err=%v, want empty", got, err)
 	}
 	if err := s.SaveEpochConflict(7, 1042); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err = s.LoadEpochParticipation()
-	if err != nil || !ok || !got.Conflict || got.CapabilityDeadline != deadline.Format(time.RFC3339) {
-		t.Fatalf("conflict on the same epoch lost its known deadline: got %+v ok=%v err=%v", got, ok, err)
+	if err := s.SaveEpochConflict(7, 1043); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v err=%v, want both 1042 and 1043 on file", got, err)
 	}
 }
 
-// A conflict on a DIFFERENT epoch than whatever deadline is on file must
-// not inherit it — that deadline was never earned for this epoch.
-func TestSaveEpochConflictOnADifferentEpochCarriesNoStaleDeadline(t *testing.T) {
+// Recording the same (slot, epoch) conflict twice must not duplicate it —
+// a driver that sees ErrEnrollmentConflict on every tick until the target
+// rolls over would otherwise grow the set without bound.
+func TestSaveEpochConflictDedupesTheSamePair(t *testing.T) {
 	s, _ := newStore(t)
-	if err := s.SaveEpochCapabilitySuccess(7, 1042, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 3; i++ {
+		if err := s.SaveEpochConflict(7, 1042); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := s.SaveEpochConflict(7, 1043); err != nil { // pure join-time conflict, never held 1043
-		t.Fatal(err)
-	}
-	got, ok, err := s.LoadEpochParticipation()
-	if err != nil || !ok || !got.Conflict || got.TargetEpoch != 1043 || got.CapabilityDeadline != "" {
-		t.Fatalf("got %+v ok=%v err=%v, want epoch 1043, conflict, no deadline", got, ok, err)
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %+v err=%v, want exactly one entry", got, err)
 	}
 }
 
-func TestClearEpochParticipation(t *testing.T) {
+func TestRemoveEpochConflicts(t *testing.T) {
 	s, _ := newStore(t)
-	if err := s.ClearEpochParticipation(); err != nil {
-		t.Fatalf("clearing an absent record: %v", err)
+	if err := s.RemoveEpochConflicts(nil); err != nil {
+		t.Fatalf("removing nothing from an absent set: %v", err)
 	}
 	if err := s.SaveEpochConflict(7, 1042); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ClearEpochParticipation(); err != nil {
+	if err := s.SaveEpochConflict(7, 1043); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.LoadEpochParticipation(); err != nil || ok {
-		t.Fatalf("after clear: ok=%v err=%v, want ok=false", ok, err)
+	if err := s.RemoveEpochConflicts([]ConflictedEpoch{{SlotID: 7, TargetEpoch: 1042}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.EpochConflicts()
+	if err != nil || len(got) != 1 || got[0].TargetEpoch != 1043 {
+		t.Fatalf("got %+v err=%v, want only 1043 left", got, err)
 	}
 }
 

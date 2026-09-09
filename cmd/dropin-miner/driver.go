@@ -39,8 +39,7 @@ type epochDriver struct {
 	logger *slog.Logger
 
 	// store persists what WP4b needs to survive across flush invocations
-	// (capability deadlines, epoch conflicts) — see
-	// auth.Store.SaveEpochCapabilitySuccess/SaveEpochConflict. nil in
+	// (which epochs conflicted) — see auth.Store.SaveEpochConflict. nil in
 	// every existing driver-level test that predates this and does not
 	// exercise it; every call site below guards on it being set.
 	store *auth.Store
@@ -319,15 +318,13 @@ func (d *epochDriver) joinIfNeeded(ctx context.Context, epoch uint64) {
 
 // ensure publishes a capability for epoch into the scope holder.
 func (d *epochDriver) ensure(ctx context.Context, epoch uint64) {
-	sc, err := d.caps.Ensure(ctx, epoch)
+	_, err := d.caps.Ensure(ctx, epoch)
 	if err != nil {
 		if errors.Is(err, auth.ErrProxyBindingMismatch) {
 			// WP4b, same fact as joinIfNeeded's ENROLLMENT_CONFLICT branch,
 			// caught here instead when this installation's join appeared to
 			// succeed locally before another installation's is the one the
-			// AS actually bound (contract §30 check 4). SaveEpochConflict
-			// preserves whatever deadline this installation already knows
-			// for this same epoch from an earlier successful exchange.
+			// AS actually bound (contract §30 check 4).
 			if d.store != nil {
 				if serr := d.store.SaveEpochConflict(d.mining.SlotID(), epoch); serr != nil {
 					d.once(ctx, slog.LevelWarn, noteCapability, "mining: could not persist binding conflict", serr,
@@ -346,14 +343,6 @@ func (d *epochDriver) ensure(ctx context.Context, epoch uint64) {
 		return
 	}
 	d.clear(noteCapability)
-	if d.store != nil && !sc.Deadline.IsZero() {
-		// The durable fact SaveEpochConflict's later read depends on: a
-		// capability held successfully for this epoch, and until when.
-		if serr := d.store.SaveEpochCapabilitySuccess(d.mining.SlotID(), epoch, sc.Deadline); serr != nil {
-			d.once(ctx, slog.LevelWarn, noteCapability, "mining: could not persist capability deadline", serr,
-				slog.Uint64("target_epoch", epoch))
-		}
-	}
 }
 
 // hasJoined / remember maintain the bounded joined ring. Linear scan
