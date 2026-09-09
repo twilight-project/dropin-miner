@@ -583,7 +583,7 @@ func TestInstallerMiningQuestionAllThreeAnswers(t *testing.T) {
 		}
 		stdin := bytes.NewBufferString("n\n")
 		br := bufio.NewReader(stdin)
-		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true)
+		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true, false)
 		if code != exitOK || outcome.enabled {
 			t.Fatalf("got %+v code=%d, want disabled", outcome, code)
 		}
@@ -604,7 +604,7 @@ func TestInstallerMiningQuestionAllThreeAnswers(t *testing.T) {
 		}
 		stdin := bytes.NewBufferString("y\ntwilight1typed\n")
 		br := bufio.NewReader(stdin)
-		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true)
+		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true, false)
 		if code != exitOK || !outcome.enabled || outcome.payoutAddress != "twilight1typed" {
 			t.Fatalf("got %+v code=%d", outcome, code)
 		}
@@ -628,7 +628,7 @@ func TestInstallerMiningQuestionAllThreeAnswers(t *testing.T) {
 		stdin := bytes.NewBufferString("y\n\n")
 		br := bufio.NewReader(stdin)
 		var out bytes.Buffer
-		outcome, code := askMiningQuestion(stdin, br, &out, &bytes.Buffer{}, os.Getenv, cfg, store, true)
+		outcome, code := askMiningQuestion(stdin, br, &out, &bytes.Buffer{}, os.Getenv, cfg, store, true, false)
 		if code != exitOK || !outcome.enabled || outcome.payoutAddress == "" {
 			t.Fatalf("got %+v code=%d", outcome, code)
 		}
@@ -637,6 +637,49 @@ func TestInstallerMiningQuestionAllThreeAnswers(t *testing.T) {
 		}
 		if addr, ok, _ := store.LoadPayoutAddress(); !ok || addr != outcome.payoutAddress {
 			t.Fatalf("address not persisted: %q ok=%v want %q", addr, ok, outcome.payoutAddress)
+		}
+	})
+}
+
+// WP4b (design f0ddb69 §5.5): the question was already visually defaulted
+// to "no" (a bare Enter answers N) — participantHasOtherAgent=true adds
+// only an explanatory line, never a mechanical block. A human who
+// understands the tradeoff can still type "y" and enable it anyway.
+func TestMiningQuestionDefaultsToNoWhenParticipantHasAnotherAgent(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("bare Enter: disabled, with the explanatory note", func(t *testing.T) {
+		stdin := bytes.NewBufferString("\n")
+		br := bufio.NewReader(stdin)
+		var stderr bytes.Buffer
+		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &stderr, noEnv, cfg, store, true, true)
+		if code != exitOK || outcome.enabled {
+			t.Fatalf("got %+v code=%d, want disabled", outcome, code)
+		}
+		if !strings.Contains(stderr.String(), "already have mining enabled on another agent") {
+			t.Fatalf("no explanatory note printed:\n%s", stderr.String())
+		}
+	})
+
+	t.Run("explicit y: still overridable", func(t *testing.T) {
+		stdin := bytes.NewBufferString("y\ntwilight1override\n")
+		br := bufio.NewReader(stdin)
+		var stderr bytes.Buffer
+		outcome, code := askMiningQuestion(stdin, br, &bytes.Buffer{}, &stderr, noEnv, cfg, store, true, true)
+		if code != exitOK || !outcome.enabled || outcome.payoutAddress != "twilight1override" {
+			t.Fatalf("got %+v code=%d, want enabled — the note is a default, not a refusal", outcome, code)
+		}
+		if !strings.Contains(stderr.String(), "already have mining enabled on another agent") {
+			t.Fatalf("no explanatory note printed even though it was overridden:\n%s", stderr.String())
 		}
 	})
 }
@@ -656,7 +699,7 @@ func TestScriptedInstallMiningConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false)
+		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false, false)
 		if code != exitOK || outcome.enabled {
 			t.Fatalf("got %+v code=%d", outcome, code)
 		}
@@ -672,7 +715,7 @@ func TestScriptedInstallMiningConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false)
+		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false, false)
 		if code != exitOK || !outcome.enabled || outcome.payoutAddress != "twilight1scripted" {
 			t.Fatalf("got %+v code=%d", outcome, code)
 		}
@@ -692,7 +735,7 @@ func TestScriptedInstallMiningConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &out, &bytes.Buffer{}, noEnv, cfg, store, false)
+		outcome, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &out, &bytes.Buffer{}, noEnv, cfg, store, false, false)
 		if code != exitOK {
 			t.Fatalf("this is documented as NOT an error; got code=%d", code)
 		}
@@ -729,7 +772,7 @@ func TestNoWalletOnNonTerminalPath(t *testing.T) {
 	}
 	walletDir := filepath.Join(stateDir, "..", "wallet")
 	t.Setenv("TOKENDROP_WALLET_DIR", walletDir)
-	if _, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false); code != exitOK {
+	if _, code := askMiningQuestion(&bytes.Buffer{}, bufio.NewReader(&bytes.Buffer{}), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, false, false); code != exitOK {
 		t.Fatalf("code=%d", code)
 	}
 	if _, err := os.Stat(filepath.Join(walletDir, walletKeyFile)); err == nil {

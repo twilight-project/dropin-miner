@@ -176,6 +176,17 @@ type AgentStatus struct {
 	MiningSlots        []string
 	LastEnrollmentSlot string
 	LastEnrollmentAt   string
+	// ParticipantHasOtherMiningAgent is true when this agent's owning
+	// participant already has the mining scope granted on a DIFFERENT
+	// claimed agent (design f0ddb69 §2.3/§5.5: several agents per
+	// participant draw one share; only one holds a given epoch, so
+	// enabling mining on more than one is wasteful and noisy, not
+	// forbidden). Only the platform can know this — it sees every agent
+	// under the participant's org, which no single installation does —
+	// so this field does not exist in §5.2's literal spec text and is an
+	// assumption pending WP1 confirmation, flagged where it is consumed
+	// (cmd/dropin-miner/mining.go's askMiningQuestion).
+	ParticipantHasOtherMiningAgent bool
 }
 
 // HasScope reports whether scope was granted at the claim.
@@ -227,6 +238,8 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 				Slot     string `json:"slot"`
 				MintedAt string `json:"minted_at"`
 			} `json:"last_enrollment"`
+			// ParticipantHasOtherAgent: see AgentStatus's own doc comment.
+			ParticipantHasOtherAgent bool `json:"participant_has_other_agent"`
 		} `json:"mining"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -236,12 +249,13 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 		return nil, errors.New("platform: status response carried no status")
 	}
 	out := &AgentStatus{
-		Status:          wire.Status,
-		Scopes:          wire.Scopes,
-		ClaimExpiresAt:  wire.ClaimExpiresAt,
-		ClaimedAt:       wire.ClaimedAt,
-		MiningAvailable: wire.Mining.Available,
-		MiningSlots:     wire.Mining.Slots,
+		Status:                         wire.Status,
+		Scopes:                         wire.Scopes,
+		ClaimExpiresAt:                 wire.ClaimExpiresAt,
+		ClaimedAt:                      wire.ClaimedAt,
+		MiningAvailable:                wire.Mining.Available,
+		MiningSlots:                    wire.Mining.Slots,
+		ParticipantHasOtherMiningAgent: wire.Mining.ParticipantHasOtherAgent,
 	}
 	if wire.Mining.LastEnrollment != nil {
 		out.LastEnrollmentSlot = wire.Mining.LastEnrollment.Slot

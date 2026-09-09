@@ -145,6 +145,35 @@ func TestPollReportsUnclaimedThenClaimed(t *testing.T) {
 	}
 }
 
+// WP4b (design f0ddb69 §5.5): the wire field cmd/dropin-miner's
+// askMiningQuestion reads to default the mining question to "no" on a
+// participant's later agents — an assumption about §5.2's shape pending
+// WP1 confirmation (client.go's own doc comment on the field). This
+// proves the client decodes it when present and defaults it false when
+// absent, which is all a caller can rely on either way.
+func TestStatusDecodesParticipantHasOtherMiningAgent(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.status = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "claimed", "scopes": []string{"mining"},
+			"mining": map[string]any{"available": true, "slots": []string{"twilight-slot-3"}, "participant_has_other_agent": true},
+		})
+	}
+	c := New(stub.srv.URL)
+	st, err := c.Status(context.Background(), "agent-1", "sr-abc123")
+	if err != nil || !st.ParticipantHasOtherMiningAgent {
+		t.Fatalf("got %+v err=%v, want ParticipantHasOtherMiningAgent=true", st, err)
+	}
+
+	stub.status = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "claimed", "scopes": []string{"mining"}})
+	}
+	st, err = c.Status(context.Background(), "agent-1", "sr-abc123")
+	if err != nil || st.ParticipantHasOtherMiningAgent {
+		t.Fatalf("got %+v err=%v, want ParticipantHasOtherMiningAgent=false when the field is absent", st, err)
+	}
+}
+
 func TestEnrollRequiresClaimedMiningScope(t *testing.T) {
 	stub := newStubPlatform(t)
 	stub.enroll = func(w http.ResponseWriter, r *http.Request) {

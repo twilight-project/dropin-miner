@@ -143,8 +143,15 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 
 	// The one-time mining question, first run only: a second run finds
 	// existed=true above and skips straight to polling.
+	//
+	// participantHasOtherAgent is always false here — this registration
+	// is unclaimed by construction (register just ran, or existed=false
+	// means it never claimed), and only a claimed agent's participant is
+	// something the platform can compare against another agent for.
+	// mining.go's cmdMining is the one call site that CAN poll status
+	// first and pass a real answer (WP4b, design f0ddb69 §5.5).
 	if !existed {
-		if _, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout)); code != exitOK {
+		if _, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout), false); code != exitOK {
 			return code
 		}
 	}

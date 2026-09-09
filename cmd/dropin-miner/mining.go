@@ -51,8 +51,33 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 		return exitTransport
 	}
 
+	// Polled BEFORE the question, unlike connect's first-run ask, which
+	// cannot: this agent is already claimed by construction (LoadAgentRegistration
+	// found one), so the platform has a participant to answer
+	// "does this participant already have another mining agent" about —
+	// the signal a pre-claim registration structurally cannot have (WP4b,
+	// design f0ddb69 §5.5). A poll failure degrades to "unknown" rather
+	// than blocking the local decision: this is a nice-to-have prompt
+	// note, not a safety check.
+	ctx, cancel := operatorContext(30 * time.Second)
+	defer cancel()
+	key, _, err := resolveAPIKey(getenv, cfg.Miner)
+	if err != nil || key == "" {
+		fmt.Fprintln(stderr, "dropin-miner: no api key resolved; run `dropin-miner connect` first")
+		return exitTransport
+	}
+	client := platform.New(cfg.Platform.BaseURL)
+	participantHasOtherAgent := false
+	if st, serr := client.Status(ctx, reg.AgentID, key); serr == nil {
+		reg.Status, reg.Scopes, reg.ClaimExpiresAt = st.Status, st.Scopes, st.ClaimExpiresAt
+		_ = store.SaveAgentRegistration(reg)
+		participantHasOtherAgent = st.ParticipantHasOtherMiningAgent
+	} else {
+		fmt.Fprintln(stderr, "dropin-miner: could not reach the platform to check status; proceeding on what was last known:", serr)
+	}
+
 	br := bufio.NewReader(stdin)
-	outcome, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout))
+	outcome, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout), participantHasOtherAgent)
 	if code != exitOK {
 		return code
 	}
@@ -73,14 +98,6 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	}
 
 	// Already granted: act now rather than waiting for the next search.
-	ctx, cancel := operatorContext(30 * time.Second)
-	defer cancel()
-	key, _, err := resolveAPIKey(getenv, cfg.Miner)
-	if err != nil || key == "" {
-		fmt.Fprintln(stderr, "dropin-miner: no api key resolved; run `dropin-miner connect` first")
-		return exitTransport
-	}
-	client := platform.New(cfg.Platform.BaseURL)
 	_, code = pollOnce(ctx, stdout, stderr, client, store, cfg, &reg, key)
 	return code
 }
@@ -116,7 +133,18 @@ type miningEnableOutcome struct {
 // branch is already what every automated test of it exercises (a real
 // *os.File character device is not something a unit test can fake
 // portably; forcing the boolean is the injection point instead).
-func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
+//
+// participantHasOtherAgent is WP4b's "defaults to no on every agent
+// after the first" (design f0ddb69 §5.5) — an explanatory line before
+// the prompt, not a mechanical change: the question was already visually
+// defaulted to "no" (a bare Enter answers N), so the only thing WP4b
+// adds is telling the human WHY, when the platform can say so. It can
+// only ever be true post-claim (only the platform sees a participant's
+// other agents, and there is no participant to compare against before
+// one exists) — cmdConnect's pre-claim first-run call always passes
+// false; cmdMining's call polls status first specifically to have a real
+// answer here.
+func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive, participantHasOtherAgent bool) (miningEnableOutcome, int) {
 	if cfg.MiningEnabledExplicit || !interactive {
 		if !cfg.Mining.Enabled {
 			return miningEnableOutcome{}, exitOK
@@ -134,6 +162,11 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 		return miningEnableOutcome{enabled: true, payoutAddress: cfg.Mining.PayoutAddress}, exitOK
 	}
 
+	if participantHasOtherAgent {
+		fmt.Fprintln(stderr, "Note: you already have mining enabled on another agent. Several installations of one "+
+			"participant draw one share, so enabling it here earns nothing extra and mostly adds conflict noise "+
+			"during epochs where both are live.")
+	}
 	fmt.Fprint(stderr, "Enable mining rewards? [y/N] ")
 	line, _ := br.ReadString('\n')
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y") {
