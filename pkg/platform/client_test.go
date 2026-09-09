@@ -174,6 +174,71 @@ func TestStatusDecodesParticipantHasOtherMiningAgent(t *testing.T) {
 	}
 }
 
+// console_url is search-router's fix for §2.2's re-approval UX (a human
+// otherwise has to submit an already-consumed claim code and fail before
+// discovering the console link) — confirmed live against the real
+// deployment. Proves it decodes and passes the same origin-lock
+// validation claim_url already gets.
+func TestStatusDecodesConsoleURLOnThePortalOrigin(t *testing.T) {
+	stub := newStubPlatform(t)
+	consoleURL := stub.srv.URL + "/projects/8fe850f9-eb9a-4a80-b9c8-7341bd346a48"
+	stub.status = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "claimed", "scopes": []string{"credits"}, "console_url": consoleURL,
+			"mining": map[string]any{"available": false},
+		})
+	}
+	c := New(stub.srv.URL, stub.srv.URL)
+	st, err := c.Status(context.Background(), "agent-1", "sr-abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ConsoleURL != consoleURL {
+		t.Fatalf("ConsoleURL = %q, want %q", st.ConsoleURL, consoleURL)
+	}
+}
+
+// Absent console_url (an older platform, or an unclaimed agent) leaves it
+// empty rather than erroring — callers fall back to the generic address.
+func TestStatusConsoleURLDefaultsEmptyWhenAbsent(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.status = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unclaimed", "scopes": []string{}})
+	}
+	c := New(stub.srv.URL, stub.srv.URL)
+	st, err := c.Status(context.Background(), "agent-1", "sr-abc123")
+	if err != nil || st.ConsoleURL != "" {
+		t.Fatalf("got ConsoleURL=%q err=%v, want empty and no error", st.ConsoleURL, err)
+	}
+}
+
+// An off-origin (or control-character-bearing) console_url is dropped,
+// not failed — unlike claim_url, which IS the point of a register call,
+// console_url is supplementary to an otherwise-good status poll: the
+// scopes and enrollment progress this same response carries are still
+// worth having even when console_url itself is hostile or malformed.
+func TestStatusDropsAnInvalidConsoleURLWithoutFailingTheWholePoll(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.status = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "claimed", "scopes": []string{"credits", "mining"},
+			"console_url": "https://not-the-platform.example/projects/evil",
+			"mining":      map[string]any{"available": true, "slots": []string{"twilight-slot-3"}},
+		})
+	}
+	c := New(stub.srv.URL, stub.srv.URL)
+	st, err := c.Status(context.Background(), "agent-1", "sr-abc123")
+	if err != nil {
+		t.Fatalf("an invalid console_url failed the whole status poll: %v", err)
+	}
+	if st.ConsoleURL != "" {
+		t.Fatalf("ConsoleURL = %q, want dropped (empty) for an off-origin value", st.ConsoleURL)
+	}
+	if !st.HasScope("mining") {
+		t.Fatalf("the rest of the response (scopes) should still be usable: %+v", st)
+	}
+}
+
 func TestEnrollRequiresClaimedMiningScope(t *testing.T) {
 	stub := newStubPlatform(t)
 	stub.enroll = func(w http.ResponseWriter, r *http.Request) {

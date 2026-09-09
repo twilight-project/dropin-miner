@@ -20,6 +20,9 @@ what catch a drift.
 `pkg/platform` is the one exception to all of the above: it was never copied
 from `tokendrop-proxy` and carries no `PROVENANCE` entry. It implements a
 second, separately-owned contract — the search platform's agent-onboarding
-control plane (`platform.nyks.dev`), authored in `search-router`'s own design
-doc, not the AS's — the same "implementer here, authority elsewhere"
-convention, just a different upstream. See `AGENTS.md`'s authority section.
+control plane, authored in `search-router`'s own design doc, not the AS's —
+the same "implementer here, authority elsewhere" convention, just a
+different upstream. Two hosts, not one: `agents-v1.nyks.dev` (register/
+status/enroll) and `platform.nyks.dev` (the human portal a claim_url/
+console_url points at) — found by live testing, not in the design doc's
+original text. See `AGENTS.md`'s authority section.

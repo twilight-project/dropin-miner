@@ -40,10 +40,11 @@ import (
 type stubPlatform struct {
 	srv *httptest.Server
 
-	mu     sync.Mutex
-	status string // "unclaimed" | "claimed" | "expired"
-	scopes []string
-	slots  []string
+	mu         sync.Mutex
+	status     string // "unclaimed" | "claimed" | "expired"
+	scopes     []string
+	slots      []string
+	consoleURL string // "" means the stub omits console_url, matching an older platform
 
 	registerCalls int
 	statusCalls   int
@@ -69,12 +70,16 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 	mux.HandleFunc("GET /v1/agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		f.statusCalls++
-		st, scopes, slots := f.status, f.scopes, f.slots
+		st, scopes, slots, consoleURL := f.status, f.scopes, f.slots, f.consoleURL
 		f.mu.Unlock()
-		writeStubJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"status": st, "scopes": scopes,
 			"mining": map[string]any{"available": len(slots) > 0, "slots": slots},
-		})
+		}
+		if consoleURL != "" {
+			body["console_url"] = consoleURL
+		}
+		writeStubJSON(w, http.StatusOK, body)
 	})
 	mux.HandleFunc("POST /v1/agents/enroll", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
@@ -103,12 +108,28 @@ func (f *stubPlatform) claim(scopes ...string) {
 	f.scopes = scopes
 }
 
+// setStatus forces a status the ordinary lifecycle (claim) doesn't reach
+// on its own — namely "expired".
+func (f *stubPlatform) setStatus(status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status = status
+}
+
 // setSlots overrides the single-slot default (WP2-review judgment call 1:
 // chooseSlot's more-than-one-offered path).
 func (f *stubPlatform) setSlots(slots ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.slots = slots
+}
+
+// setConsoleURL makes the stub's poll response include console_url, as
+// the real platform now does (found live testing §2.2's re-approval UX).
+func (f *stubPlatform) setConsoleURL(url string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.consoleURL = url
 }
 
 func (f *stubPlatform) counts() (register, status, enroll int) {
@@ -1271,6 +1292,199 @@ func TestStatusReportsBothAddressesOnBindingConflict(t *testing.T) {
 // declaration — connect.lock serializes them, and finding 6's re-read
 // means every invocation after the first sees the winner's result already
 // on disk and does nothing further. Goroutines contend on connect.lock
+// mining enable's re-approval message had never been driven at the
+// cmdMining level at all (only askMiningQuestion, a level below it) —
+// which is how a dead one-time claim_url shipped as that message
+// unnoticed until a live run against the real platform 404'd on it
+// (search-router's handleAgentClaim refuses any resubmission outright,
+// even by the original owner). The fix points at the platform's generic
+// claim address instead (reachable console grant, search-router commit
+// d20a6ac) — this pins BOTH that the dead per-code URL is gone AND that
+// the generic address present.
+func TestMiningEnableReApprovalPointsAtTheGenericClaimAddressNotTheDeadOneTimeURL(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadClaimURL := platform.srv.URL + "/claim/AB12-CD34"
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"credits"}, ClaimURL: deadClaimURL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("credits") // claimed, credits only — mining not granted
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	wantAddr := cfg.Platform.BaseURL + "/claim"
+	if !strings.Contains(out, wantAddr) {
+		t.Errorf("stdout does not name the generic claim address %q:\n%s", wantAddr, out)
+	}
+	if strings.Contains(out, deadClaimURL) {
+		t.Errorf("stdout still names the dead, already-consumed one-time claim URL:\n%s", out)
+	}
+}
+
+// When the platform's poll response carries console_url (confirmed live:
+// search-router added this after the generic-claim-address fix above,
+// specifically to remove the "submit a doomed code first" step), mining
+// enable's re-approval message must prefer it over the generic address —
+// the whole point of shipping it.
+func TestMiningEnableReApprovalPrefersTheRealConsoleURLWhenThePlatformSendsOne(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "claimed", Scopes: []string{"credits"},
+		ClaimURL: platform.srv.URL + "/claim/AB12-CD34",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	platform.claim("credits") // claimed, credits only — mining not granted
+	realConsoleURL := platform.srv.URL + "/projects/8fe850f9-eb9a-4a80-b9c8-7341bd346a48"
+	platform.setConsoleURL(realConsoleURL)
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, realConsoleURL) {
+		t.Errorf("stdout does not name the real console_url %q:\n%s", realConsoleURL, out)
+	}
+	genericAddr := cfg.Platform.BaseURL + "/claim"
+	if strings.Contains(out, genericAddr) {
+		t.Errorf("stdout fell back to the generic claim address %q even though a real console_url was available:\n%s", genericAddr, out)
+	}
+}
+
+// An agent that was never claimed at all has a DIFFERENT, still-valid
+// claim link — reg.ClaimURL hasn't been consumed by anything yet, unlike
+// the already-claimed re-approval case above. Printing the console/generic
+// fallback here would be worse, not just different: it lands the human on
+// a bare claim form with no code to type, when they already have a working
+// link. Found tracing the code after the console_url fix, not live —
+// worth pinning before it becomes a live surprise the way the dead
+// re-approval URL was.
+func TestMiningEnableOnAnUnclaimedAgentPrintsTheOriginalStillValidClaimLink(t *testing.T) {
+	platform := newStubPlatform(t) // default status: "unclaimed"
+	platform.setConsoleURL(platform.srv.URL + "/projects/should-not-be-used")
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalClaimURL := platform.srv.URL + "/claim/AB12-CD34"
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "unclaimed", ClaimURL: originalClaimURL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, originalClaimURL) {
+		t.Errorf("stdout does not name the original, still-valid claim URL %q:\n%s", originalClaimURL, out)
+	}
+	if strings.Contains(out, "should-not-be-used") {
+		t.Errorf("stdout used the console_url fallback for an unclaimed agent, which has no project yet:\n%s", out)
+	}
+	// The bare generic address (cfg.Platform.BaseURL+"/claim") is a
+	// substring of originalClaimURL too, sharing the same origin — so the
+	// wording, not a URL substring check, is what actually distinguishes
+	// "unclaimed" from the already-claimed re-approval branch.
+	if strings.Contains(out, "Sign in and grant it") {
+		t.Errorf("stdout used the already-claimed re-approval wording for a never-claimed agent:\n%s", out)
+	}
+}
+
+// An expired registration has no valid path forward at all — not the
+// original link (its window closed), not a console grant (nothing was
+// ever claimed to grant a scope on). Matches pollOnce's identical wording
+// for the same state elsewhere.
+func TestMiningEnableOnAnExpiredRegistrationSaysToRegisterAgain(t *testing.T) {
+	platform := newStubPlatform(t)
+	platform.setStatus("expired")
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "https://as.example.invalid")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credentialsPath(cfg.Miner)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-key"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadClaimURL := platform.srv.URL + "/claim/AB12-CD34"
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "expired", ClaimURL: deadClaimURL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	code := cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &stdout, &bytes.Buffer{}, noEnv)
+	if code != exitOK {
+		t.Fatalf("cmdMining enable: code=%d stdout=%s", code, stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "run `dropin-miner connect` again for a new one") {
+		t.Errorf("stdout does not say to register again:\n%s", out)
+	}
+	if strings.Contains(out, deadClaimURL) {
+		t.Errorf("stdout still names the expired claim URL:\n%s", out)
+	}
+}
+
 // exactly as separate processes would (minerlock_unix.go: a flock belongs
 // to the open file description, not the process), so this is a faithful
 // in-process model of what search's detached spawns actually do.
