@@ -676,13 +676,28 @@ func (r *rawConfig) finish() (*Config, error) {
 	// base_url (every existing stub-backed test does exactly this) would
 	// silently register against production the moment connect/mining
 	// enable actually ran — which is exactly what happened once, live,
-	// before this fix. When base_url is loopback and agents_api_url is
-	// unset, assume the same stub serves both roles instead of reaching
-	// for the real one.
+	// before this fix. Three cases, only two of which have a safe
+	// implicit answer:
+	//   - base_url is exactly the real platform's default: agents_api_url
+	//     defaults to the real agents API. The ordinary case.
+	//   - base_url is loopback: assume the same local stub serves both
+	//     roles, matching every existing test's own setup.
+	//   - base_url names anything else (a devnet, a staging portal) and
+	//     agents_api_url is unset: refused. A custom non-loopback base_url
+	//     gives no safe signal about which API host it pairs with —
+	//     defaulting to production here is exactly the footgun this whole
+	//     fix exists to close, just for a devnet instead of a laptop.
 	agentsAPIRaw := r.agentsAPIURL
 	if agentsAPIRaw == "" {
-		agentsAPIRaw = defaultAgentsAPIURL
-		if pu, perr := url.Parse(platformBaseURL); perr == nil && isLoopbackHost(pu.Hostname()) {
+		switch platformBaseURL {
+		case defaultPlatformBaseURL:
+			agentsAPIRaw = defaultAgentsAPIURL
+		default:
+			pu, perr := url.Parse(platformBaseURL)
+			if perr != nil || !isLoopbackHost(pu.Hostname()) {
+				return nil, errors.New("platform.agents_api_url: required when platform.base_url names anything other " +
+					"than the default platform — a devnet or staging deployment must name both")
+			}
 			agentsAPIRaw = platformBaseURL
 		}
 	}

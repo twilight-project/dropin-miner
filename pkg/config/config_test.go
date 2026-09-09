@@ -533,13 +533,29 @@ func TestAgentsAPIURLExplicitValueOverridesTheLoopbackDefault(t *testing.T) {
 // The two [platform] URLs are independently configurable — setting one
 // must not disturb the other's default.
 func TestPlatformURLsAreIndependentlyConfigurable(t *testing.T) {
-	body := "[platform]\nbase_url = \"https://portal.example.com\"\n"
+	body := "[platform]\nbase_url = \"https://portal.example.com\"\nagents_api_url = \"https://agents.example.com\"\n"
 	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
 	if cfg.Platform.BaseURL != "https://portal.example.com" {
 		t.Fatalf("base_url: got %q", cfg.Platform.BaseURL)
 	}
-	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
-		t.Fatalf("agents_api_url should still default, got %q", cfg.Platform.AgentsAPIURL)
+	if cfg.Platform.AgentsAPIURL != "https://agents.example.com" {
+		t.Fatalf("agents_api_url: got %q", cfg.Platform.AgentsAPIURL)
+	}
+}
+
+// WP2-review edge case: a custom non-loopback base_url (a devnet, a
+// staging portal) gives no safe signal about which API host pairs with
+// it — defaulting to production here would be the same footgun the
+// loopback fix above exists to close, just for a devnet instead of a
+// laptop. Refused, not defaulted.
+func TestNonDefaultNonLoopbackBaseURLRequiresExplicitAgentsAPIURL(t *testing.T) {
+	body := "[platform]\nbase_url = \"https://portal.devnet.example.com\"\n"
+	err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if err == nil {
+		t.Fatal("a devnet base_url with no agents_api_url was accepted, silently defaulting to production")
+	}
+	if !strings.Contains(err.Error(), "agents_api_url") {
+		t.Errorf("the refusal does not name the missing key: %v", err)
 	}
 }
 
