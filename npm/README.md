@@ -115,7 +115,8 @@ spool_dir      = "/home/you/.tokendrop/spool"
 #                                     more than one mining slot to enroll into
 
 [platform]
-base_url = "https://platform.nyks.dev"   # the search platform connect/mining enable talk to
+base_url       = "https://platform.nyks.dev"    # the human portal and claim pages
+agents_api_url = "https://agents-v1.nyks.dev"    # register/status/enroll — a separate host
 
 [miner]
 enabled        = true
@@ -129,7 +130,11 @@ The `[mining]` block is the proxy's, unchanged: a machine that already runs
 `tokendrop-proxy` can point this at the same state directory and be the same
 participant. `[platform]` and the two extra `[mining]` keys above are
 `connect`/`mining enable`'s own (agent onboarding design, §5.5) — see
-`dropin-miner connect -h` / `dropin-miner mining -h`.
+`dropin-miner connect -h` / `dropin-miner mining -h`. The two `[platform]`
+URLs are genuinely different hosts, not a redundant pair: `base_url` is
+only ever compared against, never dialed (it is where a printed claim
+URL must point); `agents_api_url` is what `connect`/`mining enable`
+actually send requests to.
 
 ## Building
 

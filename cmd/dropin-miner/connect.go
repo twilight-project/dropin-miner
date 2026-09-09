@@ -175,7 +175,7 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	ctx, cancel := operatorContext(outerBound)
 	defer cancel()
 
-	client := platform.New(cfg.Platform.BaseURL)
+	client := platform.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
 	br := bufio.NewReader(stdin)
 
 	reg, existed, err := store.LoadAgentRegistration()

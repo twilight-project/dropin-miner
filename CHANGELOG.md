@@ -23,6 +23,18 @@ subjects wouldn't make obvious on its own.
   Full design: `tokendrop-auth-server-design`'s
   `docs/implementation/search-platform-agent-onboarding-design.md`.
 
+- **`[platform]` is now two URLs, not one — fixes a real live-test failure,
+  not a hypothetical.** `connect`/`mining enable` assumed the search platform's
+  human portal and its machine-facing `/v1/agents/*` API shared one origin
+  (`platform.nyks.dev`); the first live test against the real deployment
+  registered a `404`, because the API actually lives on a separate host,
+  `agents-v1.nyks.dev`. New `platform.agents_api_url` (defaults to
+  `https://agents-v1.nyks.dev`) is what register/status/enroll actually dial;
+  `platform.base_url` (unchanged, `https://platform.nyks.dev`) is now purely
+  the origin a returned `claim_url` is checked against, never dialed itself.
+  An existing config naming only `base_url` keeps working unchanged — the new
+  key has its own default.
+
 ## v0.1.7
 
 - **Fresh installs now default to the public testnet.** `setup.sh`, `install.ps1`,

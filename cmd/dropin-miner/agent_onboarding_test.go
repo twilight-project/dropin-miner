@@ -313,7 +313,7 @@ func connectConfig(t *testing.T, platformURL, asURL string) (cfgPath, stateDir s
 	dir := t.TempDir()
 	stateDir = filepath.Join(dir, "state")
 	var b strings.Builder
-	fmt.Fprintf(&b, "[platform]\nbase_url = %q\n", platformURL)
+	fmt.Fprintf(&b, "[platform]\nbase_url = %q\nagents_api_url = %q\n", platformURL, platformURL)
 	if asURL != "" {
 		fmt.Fprintf(&b, "\n[mining]\nenabled = true\nas_url = %q\nchain_id = \"twilight-1\"\nslot_id = 7\nstate_dir = %q\n",
 			asURL, stateDir)
@@ -340,8 +340,8 @@ func scriptedMiningConfig(t *testing.T, platformURL, extra string) (cfgPath, sta
 	t.Helper()
 	dir := t.TempDir()
 	stateDir = filepath.Join(dir, "state")
-	body := fmt.Sprintf("[platform]\nbase_url = %q\n\n[mining]\nstate_dir = %q\nas_url = \"https://as.example.invalid\"\nchain_id = \"twilight-1\"\nslot_id = 7\n%s\n",
-		platformURL, stateDir, extra)
+	body := fmt.Sprintf("[platform]\nbase_url = %q\nagents_api_url = %q\n\n[mining]\nstate_dir = %q\nas_url = \"https://as.example.invalid\"\nchain_id = \"twilight-1\"\nslot_id = 7\n%s\n",
+		platformURL, platformURL, stateDir, extra)
 	return writeTOML(t, body), stateDir
 }
 

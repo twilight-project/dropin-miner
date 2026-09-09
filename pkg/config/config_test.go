@@ -471,6 +471,94 @@ func TestPlatformBaseURLAllowsPlainHTTPOnLoopback(t *testing.T) {
 	}
 }
 
+// platform.agents_api_url defaults to the real agents API, separate from
+// platform.base_url (the human portal) — live testing found the two are
+// different hosts in the real deployment, not one shared origin.
+func TestAgentsAPIURLDefaults(t *testing.T) {
+	cfg := load(t, nil, noEnv)
+	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
+		t.Fatalf("got %q, want the default", cfg.Platform.AgentsAPIURL)
+	}
+	if cfg.Platform.AgentsAPIURL == cfg.Platform.BaseURL {
+		t.Fatalf("agents_api_url and base_url defaulted to the same value; they are different hosts")
+	}
+}
+
+// Same https-or-loopback rule as base_url (invariant 5): connect/mining
+// enable send the platform-issued sr- key in Authorization to this one.
+func TestAgentsAPIURLRejectsRoutablePlainHTTP(t *testing.T) {
+	body := "[platform]\nagents_api_url = \"http://agents.example.com\"\n"
+	err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if err == nil {
+		t.Fatal("plain http platform.agents_api_url was accepted at load")
+	}
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Errorf("the refusal does not name the rule: %v", err)
+	}
+}
+
+func TestAgentsAPIURLAllowsPlainHTTPOnLoopback(t *testing.T) {
+	body := "[platform]\nagents_api_url = \"http://127.0.0.1:9091\"\n"
+	if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+		t.Errorf("loopback platform.agents_api_url was refused: %v", err)
+	}
+}
+
+// WP2-review must-fix: a dev/test config naming only a loopback
+// base_url (every existing stub-backed test does exactly this) must not
+// silently default agents_api_url to the real platform — connect/mining
+// enable would then register against production while believing it was
+// talking to a local stub, which is exactly what happened once, live,
+// before this fix.
+func TestAgentsAPIURLDefaultsToBaseURLWhenBaseURLIsLoopback(t *testing.T) {
+	body := "[platform]\nbase_url = \"http://127.0.0.1:9999\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.AgentsAPIURL != "http://127.0.0.1:9999" {
+		t.Fatalf("agents_api_url defaulted to %q, want the loopback base_url reused, not the real platform",
+			cfg.Platform.AgentsAPIURL)
+	}
+}
+
+// The loopback default is a convenience, not a lock-in: an explicit
+// agents_api_url still wins, including pointing a loopback base_url at
+// a real (or a second, differently-loopback) agents API.
+func TestAgentsAPIURLExplicitValueOverridesTheLoopbackDefault(t *testing.T) {
+	body := "[platform]\nbase_url = \"http://127.0.0.1:9999\"\nagents_api_url = \"https://agents-v1.nyks.dev\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
+		t.Fatalf("got %q, want the explicit value", cfg.Platform.AgentsAPIURL)
+	}
+}
+
+// The two [platform] URLs are independently configurable — setting one
+// must not disturb the other's default.
+func TestPlatformURLsAreIndependentlyConfigurable(t *testing.T) {
+	body := "[platform]\nbase_url = \"https://portal.example.com\"\nagents_api_url = \"https://agents.example.com\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.BaseURL != "https://portal.example.com" {
+		t.Fatalf("base_url: got %q", cfg.Platform.BaseURL)
+	}
+	if cfg.Platform.AgentsAPIURL != "https://agents.example.com" {
+		t.Fatalf("agents_api_url: got %q", cfg.Platform.AgentsAPIURL)
+	}
+}
+
+// WP2-review edge case: a custom non-loopback base_url (a devnet, a
+// staging portal) gives no safe signal about which API host pairs with
+// it — defaulting to production here would be the same footgun the
+// loopback fix above exists to close, just for a devnet instead of a
+// laptop. Refused, not defaulted.
+func TestNonDefaultNonLoopbackBaseURLRequiresExplicitAgentsAPIURL(t *testing.T) {
+	body := "[platform]\nbase_url = \"https://portal.devnet.example.com\"\n"
+	err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if err == nil {
+		t.Fatal("a devnet base_url with no agents_api_url was accepted, silently defaulting to production")
+	}
+	if !strings.Contains(err.Error(), "agents_api_url") {
+		t.Errorf("the refusal does not name the missing key: %v", err)
+	}
+}
+
 // MiningEnabledExplicit is the signal connect/mining enable use to decide
 // whether to ask their terminal question at all. It must tell "the file
 // wrote enabled = false" apart from "the file said nothing about
