@@ -9,9 +9,12 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -61,9 +64,11 @@ func cmdMining(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	// note, not a safety check.
 	ctx, cancel := operatorContext(30 * time.Second)
 	defer cancel()
-	key, _, err := resolveAPIKey(getenv, cfg.Miner)
-	if err != nil || key == "" {
-		fmt.Fprintln(stderr, "dropin-miner: no api key resolved; run `dropin-miner connect` first")
+	// WP2-adversarial-review finding 3: the platform bearer, from
+	// credentials.json only — never resolveAPIKey's env fallbacks.
+	key, err := platformKey(cfg.Miner)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
 	client := platform.New(cfg.Platform.BaseURL)
@@ -145,7 +150,13 @@ type miningEnableOutcome struct {
 // false; cmdMining's call polls status first specifically to have a real
 // answer here.
 func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive, participantHasOtherAgent bool) (miningEnableOutcome, int) {
-	if cfg.MiningEnabledExplicit || !interactive {
+	if !interactive {
+		// No terminal to ask anything of: the file is the only voice
+		// here, trusted silently — the scripted-install path.
+		if err := store.SaveMiningEnabled(cfg.Mining.Enabled); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return miningEnableOutcome{}, exitTransport
+		}
 		if !cfg.Mining.Enabled {
 			return miningEnableOutcome{}, exitOK
 		}
@@ -162,20 +173,49 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 		return miningEnableOutcome{enabled: true, payoutAddress: cfg.Mining.PayoutAddress}, exitOK
 	}
 
-	if participantHasOtherAgent {
-		fmt.Fprintln(stderr, "Note: you already have mining enabled on another agent. Several installations of one "+
-			"participant draw one share, so enabling it here earns nothing extra and mostly adds conflict noise "+
-			"during epochs where both are live.")
-	}
-	fmt.Fprint(stderr, "Enable mining rewards? [y/N] ")
-	line, _ := br.ReadString('\n')
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y") {
+	// Interactive from here on. WP2-adversarial-review finding 4: the
+	// terminal answer is the decision (design rule 5), not the config
+	// file — even when the file already wrote enabled = true (what
+	// setup.sh writes), the human at the terminal right now is who this
+	// question is actually for. An EXPLICIT false, though, is a
+	// deliberate operator opt-out and is not re-litigated by asking
+	// again — that half of the old gate stays.
+	if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
+		if err := store.SaveMiningEnabled(false); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return miningEnableOutcome{}, exitTransport
+		}
 		return miningEnableOutcome{}, exitOK
 	}
 
-	fmt.Fprint(stderr, "Payout address (leave empty to create a wallet here): ")
-	addrLine, _ := br.ReadString('\n')
-	address := strings.TrimSpace(addrLine)
+	enabled := cfg.MiningEnabledExplicit && cfg.Mining.Enabled // file already answered this half
+	if !cfg.MiningEnabledExplicit {
+		if participantHasOtherAgent {
+			fmt.Fprintln(stderr, "Note: you already have mining enabled on another agent. Several installations of one "+
+				"participant draw one share, so enabling it here earns nothing extra and mostly adds conflict noise "+
+				"during epochs where both are live.")
+		}
+		fmt.Fprint(stderr, "Enable mining rewards? [y/N] ")
+		line, _ := br.ReadString('\n')
+		enabled = strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+	}
+	if err := store.SaveMiningEnabled(enabled); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return miningEnableOutcome{}, exitTransport
+	}
+	if !enabled {
+		return miningEnableOutcome{}, exitOK
+	}
+
+	// The address question is asked at a terminal whenever nothing is on
+	// file — even when enabled = true was already written (finding 4's
+	// concrete failure: this used to be unreachable in exactly that case).
+	address := cfg.Mining.PayoutAddress
+	if address == "" {
+		fmt.Fprint(stderr, "Payout address (leave empty to create a wallet here): ")
+		addrLine, _ := br.ReadString('\n')
+		address = strings.TrimSpace(addrLine)
+	}
 
 	if address == "" {
 		dir, err := openWalletDir("", getenv)
@@ -183,18 +223,38 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 			fmt.Fprintln(stderr, "dropin-miner:", err)
 			return miningEnableOutcome{}, exitTransport
 		}
-		passphrase, code := walletPassphrase(stdin, br, stderr, getenv, true)
-		if code != 0 {
-			return miningEnableOutcome{}, code
-		}
-		addr, mnemonic, err := createWallet(dir, passphrase)
-		if err != nil {
+		// WP2-adversarial-review finding 2: an empty answer means "handle
+		// the wallet for me," not "create one unconditionally" — a wallet
+		// already at dir (from a prior `wallet init`, or a previous run of
+		// this very question) already answers that. createWallet has no
+		// existence check of its own by design (wallet.go: callers own
+		// every human-facing decision, including this one); a funded
+		// wallet silently overwritten in place is unrecoverable.
+		if _, err := os.Lstat(filepath.Join(dir, walletKeyFile)); err == nil {
+			sc, _, err := loadSidecar(dir, getenv)
+			if err != nil {
+				fmt.Fprintln(stderr, "dropin-miner: a wallet already exists in "+dir+" but its address could not be read:", err)
+				return miningEnableOutcome{}, exitTransport
+			}
+			fmt.Fprintln(stdout, "a wallet already exists at "+dir+"; reusing its address: "+sc.Address)
+			address = sc.Address
+		} else if !errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintln(stderr, "dropin-miner:", err)
 			return miningEnableOutcome{}, exitTransport
+		} else {
+			passphrase, code := walletPassphrase(stdin, br, stderr, getenv, true)
+			if code != 0 {
+				return miningEnableOutcome{}, code
+			}
+			addr, mnemonic, err := createWallet(dir, passphrase)
+			if err != nil {
+				fmt.Fprintln(stderr, "dropin-miner:", err)
+				return miningEnableOutcome{}, exitTransport
+			}
+			printMnemonic(stdout, dir, addr, mnemonic)
+			fmt.Fprintln(stdout)
+			address = addr
 		}
-		printMnemonic(stdout, dir, addr, mnemonic)
-		fmt.Fprintln(stdout)
-		address = addr
 	}
 
 	if err := store.SavePayoutAddress(address); err != nil {
