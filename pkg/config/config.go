@@ -349,7 +349,6 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		upstream:              defaultUpstream,
 		logLevel:              "info",
 		platformBaseURL:       defaultPlatformBaseURL,
-		agentsAPIURL:          defaultAgentsAPIURL,
 		observe: Observe{
 			MemoryBudgetBytes:    defaultObservationBudget,
 			RingBytes:            defaultRingBytes,
@@ -672,7 +671,22 @@ func (r *rawConfig) finish() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	agentsAPIURL, err := parsePlatformURL(r.agentsAPIURL, "platform.agents_api_url")
+	// WP2-review must-fix: agents_api_url used to default unconditionally
+	// to the real platform, so a dev/test config naming only a loopback
+	// base_url (every existing stub-backed test does exactly this) would
+	// silently register against production the moment connect/mining
+	// enable actually ran — which is exactly what happened once, live,
+	// before this fix. When base_url is loopback and agents_api_url is
+	// unset, assume the same stub serves both roles instead of reaching
+	// for the real one.
+	agentsAPIRaw := r.agentsAPIURL
+	if agentsAPIRaw == "" {
+		agentsAPIRaw = defaultAgentsAPIURL
+		if pu, perr := url.Parse(platformBaseURL); perr == nil && isLoopbackHost(pu.Hostname()) {
+			agentsAPIRaw = platformBaseURL
+		}
+	}
+	agentsAPIURL, err := parsePlatformURL(agentsAPIRaw, "platform.agents_api_url")
 	if err != nil {
 		return nil, err
 	}

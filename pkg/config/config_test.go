@@ -504,6 +504,32 @@ func TestAgentsAPIURLAllowsPlainHTTPOnLoopback(t *testing.T) {
 	}
 }
 
+// WP2-review must-fix: a dev/test config naming only a loopback
+// base_url (every existing stub-backed test does exactly this) must not
+// silently default agents_api_url to the real platform — connect/mining
+// enable would then register against production while believing it was
+// talking to a local stub, which is exactly what happened once, live,
+// before this fix.
+func TestAgentsAPIURLDefaultsToBaseURLWhenBaseURLIsLoopback(t *testing.T) {
+	body := "[platform]\nbase_url = \"http://127.0.0.1:9999\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.AgentsAPIURL != "http://127.0.0.1:9999" {
+		t.Fatalf("agents_api_url defaulted to %q, want the loopback base_url reused, not the real platform",
+			cfg.Platform.AgentsAPIURL)
+	}
+}
+
+// The loopback default is a convenience, not a lock-in: an explicit
+// agents_api_url still wins, including pointing a loopback base_url at
+// a real (or a second, differently-loopback) agents API.
+func TestAgentsAPIURLExplicitValueOverridesTheLoopbackDefault(t *testing.T) {
+	body := "[platform]\nbase_url = \"http://127.0.0.1:9999\"\nagents_api_url = \"https://agents-v1.nyks.dev\"\n"
+	cfg := load(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if cfg.Platform.AgentsAPIURL != "https://agents-v1.nyks.dev" {
+		t.Fatalf("got %q, want the explicit value", cfg.Platform.AgentsAPIURL)
+	}
+}
+
 // The two [platform] URLs are independently configurable — setting one
 // must not disturb the other's default.
 func TestPlatformURLsAreIndependentlyConfigurable(t *testing.T) {

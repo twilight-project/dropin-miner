@@ -334,18 +334,32 @@ func TestClaimURLValidatesAgainstThePortalOriginNotTheAPIOrigin(t *testing.T) {
 	if reg.ClaimURL != portal.URL+"/claim/X" {
 		t.Fatalf("got %q", reg.ClaimURL)
 	}
+}
 
-	// The negative: a claim_url matching the API origin instead of the
-	// configured portal origin is still off-origin and still refused —
-	// proves the check moved to portalBaseURL, not that it stopped
-	// checking anything.
+// The property that actually matters, named rather than left implied by
+// the origin-mismatch check above: a claim_url on the AGENTS API's own
+// origin — not some unrelated third origin, specifically the origin this
+// request was just sent to — must still be rejected. A compromised or
+// malicious API host must not be able to hand back a claim_url pointing
+// the human at itself; only the configured portal origin is trusted to
+// be where a real claim page lives.
+func TestClaimURLOnTheAgentsAPIOriginIsRejectedNotJustAnyMismatch(t *testing.T) {
+	api := newStubPlatform(t)
+	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer portal.Close()
 	api.register = func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, map[string]any{
+			// The API host handing back a claim_url pointing at ITSELF,
+			// not the configured portal — the phishing shape this guards
+			// against, not an arbitrary off-origin string.
 			"agent_id": "a", "key": "sr-1", "claim_url": api.srv.URL + "/claim/X",
 		})
 	}
 	if _, err := New(api.srv.URL, portal.URL).Register(context.Background(), "", nil); err == nil {
-		t.Fatal("a claim_url on the API origin (not the configured portal origin) was accepted")
+		t.Fatal("a claim_url on the agents API's own origin was accepted; " +
+			"a compromised API host could point a human at a page it controls")
 	}
 }
 
