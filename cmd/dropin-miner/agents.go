@@ -941,42 +941,60 @@ func readWithMode(ops agentOps, path string) ([]byte, os.FileMode, error) {
 // just enough (network on, plus the tokendrop directories as writable roots)
 // in a marked block we own and can cleanly remove.
 
-// codexSandboxRoots is the set of directories a search and its background
-// flush must be able to write for mining to record: the intake, sessions,
-// state and spool dirs themselves, cleaned, deduplicated and sorted. It is
-// empty when the config is unreadable or mining is not configured — cases
-// where the sandbox does not matter because nothing is recorded.
+// codexSandboxRoots is the set of directories a Codex-run search must be able
+// to write, cleaned, deduplicated and sorted. Empty only when there is no
+// readable config at all; otherwise it is never empty, because:
 //
-// The four directories, never their parent. With the default layout they
-// share one parent, the tokendrop home, and a writable home would also
+//   - The state dir is always included. After every served search the client
+//     spawns the detached claim resume (spawnConnectResume in search.go),
+//     mining or not, and that resume writes connect.lock, the cooldown stamp
+//     and agent.json under the state dir. Gated off, a Codex-hosted agent's
+//     claim would never be picked up from a search.
+//   - The intake, sessions and spool dirs are added when [miner] enabled is
+//     set — where the miner records searches. We gate on the static config
+//     flag, never the runtime mining decision (miningActive): agents install
+//     runs once, so a later `mining enable` must not need a reinstall to
+//     earn — that silent-earning gap is the bug this whole block fixes.
+//
+// The directories themselves, never their parent. With the default layout
+// they share one parent, the tokendrop home, and a writable home would also
 // hand every sandboxed Codex command tokendrop.toml, credentials.json and
-// wallet/. The config is trusted: a rewritten as_url or router upstream is
-// an https host of the writer's choosing, and the refresh token and the
-// platform key are sent there on the next flush or search. Codex's default
-// sandbox could read those files before this block existed; it could not
-// redirect where they go, and it must not be able to after it either. The
-// state dir has to be writable because the detached flush rotates the
-// refresh token there — a deletion-only exposure, not an exfiltration one.
+// wallet/. The config is trusted: a rewritten as_url or router upstream is an
+// https host of the writer's choosing, and the refresh token and the platform
+// key are sent there on the next flush or search. Codex's default sandbox
+// could read those files before this block existed; it could not redirect
+// where they go, and it must not be able to after it either. The state dir is
+// writable because the claim resume and the flush rotate the refresh token
+// there — a deletion-only exposure, not an exfiltration one.
 func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 	if entry.cfg == "" {
 		return nil
 	}
 	cfg, _, err := loadConfig(entry.cfg, getenv)
-	if err != nil || cfg == nil || !cfg.Miner.Enabled {
+	if err != nil || cfg == nil {
 		return nil
 	}
 	seen := map[string]bool{}
 	var roots []string
-	for _, d := range []string{cfg.Miner.IntakeDir, cfg.Miner.SessionsDir, cfg.Mining.StateDir, cfg.Mining.SpoolDir} {
+	add := func(d string) {
 		if d == "" {
-			continue
+			return
 		}
 		d = filepath.Clean(d)
 		if d == "." || d == string(filepath.Separator) || seen[d] {
-			continue
+			return
 		}
 		seen[d] = true
 		roots = append(roots, d)
+	}
+	// Always: the claim resume writes here after every search, mining or not.
+	add(cfg.Mining.StateDir)
+	// Only where the miner records searches — the static flag, not the
+	// runtime decision, so a later `mining enable` earns without a reinstall.
+	if cfg.Miner.Enabled {
+		add(cfg.Miner.IntakeDir)
+		add(cfg.Miner.SessionsDir)
+		add(cfg.Mining.SpoolDir)
 	}
 	sort.Strings(roots)
 	return roots

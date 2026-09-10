@@ -80,8 +80,8 @@ enabled = true
 router_url = "https://router.example.invalid"
 intake_dir = %q
 sessions_dir = %q
-`, filepath.Join(home, "state"), filepath.Join(home, "spool"),
-		filepath.Join(home, "intake"), filepath.Join(home, "sessions"))
+`, filepath.ToSlash(filepath.Join(home, "state")), filepath.ToSlash(filepath.Join(home, "spool")),
+		filepath.ToSlash(filepath.Join(home, "intake")), filepath.ToSlash(filepath.Join(home, "sessions")))
 	cfgPath = filepath.Join(home, "tokendrop.toml")
 	if err := os.WriteFile(cfgPath, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
@@ -168,14 +168,53 @@ func TestCodexInstallRefusesForeignSandboxTable(t *testing.T) {
 	}
 }
 
-// When there is no readable config or mining is off, the sandbox does not
-// matter (nothing records) — the installer writes no block and just notes it.
-func TestCodexInstallWithoutMiningWritesNoSandboxBlock(t *testing.T) {
+// With [miner] off the miner records nothing — but the detached claim resume
+// still writes the state dir after every served search, so the block must
+// exist with the state dir as its one writable root, and not the others.
+func TestCodexInstallWithMinerOffStillWritesStateDirRoot(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := fmt.Sprintf("[mining]\nstate_dir = %q\n\n[miner]\nenabled = false\n",
+		filepath.ToSlash(filepath.Join(home, "state")))
+	cfgPath := filepath.Join(home, "tokendrop.toml")
+	if err := os.WriteFile(cfgPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, ops := newFakeMachine("codex")
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", cfgPath, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	got := string(m.files["/home/u/.codex/config.toml"])
+	if got == "" {
+		t.Fatal("no block written though the claim resume writes the state dir")
+	}
+	if !strings.Contains(got, "network_access = true") {
+		t.Errorf("network not enabled:\n%s", got)
+	}
+	// The state dir alone.
+	if !strings.Contains(got, "writable_roots = ["+fmt.Sprintf("%q", filepath.Join(home, "state"))+"]") {
+		t.Errorf("writable_roots is not the state dir alone:\n%s", got)
+	}
+	for _, other := range []string{"intake", "sessions", "spool"} {
+		if strings.Contains(got, fmt.Sprintf("%q", filepath.Join(home, other))) {
+			t.Errorf("%s is a writable root though [miner] is off:\n%s", other, got)
+		}
+	}
+	if strings.Contains(got, fmt.Sprintf("%q", home)+"]") || strings.Contains(got, fmt.Sprintf("%q", home)+",") {
+		t.Errorf("the tokendrop home itself is a writable root:\n%s", got)
+	}
+}
+
+// No readable config at all: there is no state dir to name, so no block is
+// written — just the note.
+func TestCodexInstallWithNoReadableConfigWritesNoBlock(t *testing.T) {
 	m, ops := newFakeMachine("codex")
 	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
 		t.Fatalf("install: %d\n%s", code, out)
 	}
 	if b, ok := m.files["/home/u/.codex/config.toml"]; ok {
-		t.Errorf("wrote a config.toml with no mining configured:\n%s", b)
+		t.Errorf("wrote a config.toml with no readable config:\n%s", b)
 	}
 }

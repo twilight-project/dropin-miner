@@ -126,18 +126,19 @@ cannot rewrite a command, so its hooks maintain the lineage file and the
 search reads it. The shell hook also allows our command, so Cursor never
 prompts for it.
 
-**Codex** gets a skill, and — when mining is configured — a small marked block
-in `~/.codex/config.toml` that widens its sandbox just enough for a search to
-run: network on, plus the four tokendrop directories — intake, sessions,
-state, spool — as writable roots so the mining observation can be recorded.
-Deliberately those four and not the home itself: `tokendrop.toml`,
-`credentials.json` and `wallet/` stay read-only to sandboxed commands, so a
-command that goes wrong inside Codex cannot rewrite where your credentials are
-sent. Without the block, Codex's default `workspace-write`
-sandbox lets the search return results but silently blocks the observation
-write, so searches earn nothing. If you already keep your own
-`[sandbox_workspace_write]` table, install leaves it alone and prints the two
-settings to add by hand.
+**Codex** gets a skill, and — whenever a config is present — a small marked
+block in `~/.codex/config.toml` that widens its sandbox just enough: network
+on, plus the tokendrop **state** directory as a writable root (the detached
+claim resume writes there after every search, mining or not), and the intake,
+sessions and spool directories too once `[miner]` records searches, so the
+mining observation can be recorded. Deliberately those directories and never
+the home itself: `tokendrop.toml`, `credentials.json` and `wallet/` stay
+read-only to sandboxed commands, so a command that goes wrong inside Codex
+cannot rewrite where your credentials are sent. Without the block, Codex's
+default `workspace-write` sandbox lets the search return results but silently
+blocks the write, so searches earn nothing and the claim is never picked up.
+If you already keep your own `[sandbox_workspace_write]` table, install leaves
+it alone and prints the settings to add by hand.
 
 **opencode** gets an in-process plugin that threads the search, plus a line to
 paste into `AGENTS.md`.
