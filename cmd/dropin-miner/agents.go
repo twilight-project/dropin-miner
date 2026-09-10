@@ -54,6 +54,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -121,6 +123,7 @@ type agentPaths struct {
 	claudeSkill    string
 	claudeSettings string
 	codexSkill     string
+	codexConfig    string
 	cursorSkill    string
 	cursorHooks    string
 	opencodePlugin string
@@ -143,6 +146,7 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 		claudeSkill:    filepath.Join(claudeDir, "skills", agentsName, "SKILL.md"),
 		claudeSettings: filepath.Join(claudeDir, "settings.json"),
 		codexSkill:     filepath.Join(codexHome, "skills", agentsName, "SKILL.md"),
+		codexConfig:    filepath.Join(codexHome, "config.toml"),
 		cursorSkill:    filepath.Join(o.home, ".cursor", "skills", agentsName, "SKILL.md"),
 		cursorHooks:    filepath.Join(o.home, ".cursor", "hooks.json"),
 		opencodePlugin: filepath.Join(xdg, "opencode", "plugins", agentsName+".js"),
@@ -326,7 +330,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 
 	var plan agentPlan
 	if sub == "install" {
-		plan = buildInstallPlan(ops, paths, selected, entry)
+		plan = buildInstallPlan(ops, paths, selected, entry, getenv)
 	} else {
 		plan = buildUninstallPlan(ops, paths, selected, entry)
 	}
@@ -540,9 +544,10 @@ func renderSkill(entry binEntry, prefer string) []byte {
 	return []byte(r.Replace(skillMD))
 }
 
-func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, entry binEntry) agentPlan {
+func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, entry binEntry, getenv func(string) string) agentPlan {
 	var p agentPlan
 	prefer := readPrefer(ops, entry)
+	codexRoots := codexSandboxRoots(entry, getenv)
 	for _, s := range selected {
 		switch s.id {
 		case "claude":
@@ -557,7 +562,11 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 			if !planWrite(ops, s.label, paths.codexSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
-			p.notes = append(p.notes, s.label+": shell commands run sandboxed with no network by default; allow network for this command or searches fail silently")
+			if len(codexRoots) > 0 {
+				planCodexSandbox(ops, s.label, paths.codexConfig, codexRoots, &p)
+			} else {
+				p.notes = append(p.notes, s.label+": shell commands run sandboxed; if searches record nothing, allow this command network access and let it write to your tokendrop home")
+			}
 		case "cursor":
 			changed := planWrite(ops, s.label, paths.cursorSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
 			if planHooksMerge(ops, s.label, paths.cursorHooks, &p, entry, cursorHooks(entry)) {
@@ -814,6 +823,12 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface,
 			}
 		case "codex":
 			rm(filepath.Dir(paths.codexSkill))
+			if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
+				if next, had := removeMarkedBlock(existing); had {
+					planWrite(ops, s.label, paths.codexConfig, next, mode, "remove sandbox block", &p)
+					removed = true
+				}
+			}
 		case "cursor":
 			rm(filepath.Dir(paths.cursorSkill))
 			if planHooksRemove(ops, s.label, paths.cursorHooks, &p, entry.command, "hooks") {
@@ -915,6 +930,156 @@ func readWithMode(ops agentOps, path string) ([]byte, os.FileMode, error) {
 		mode = info.Mode().Perm()
 	}
 	return b, mode, nil
+}
+
+// ── Codex sandbox ────────────────────────────────────────────────────────
+//
+// Codex runs the search as a sandboxed shell command. Its default
+// workspace-write profile blocks network and denies writes outside the open
+// project, so the search's mining observation — written under the tokendrop
+// home — is silently dropped and nothing is earned. We widen the sandbox
+// just enough (network on, plus the tokendrop directories as writable roots)
+// in a marked block we own and can cleanly remove.
+
+// codexSandboxRoots is the set of directories a Codex-run search must be able
+// to write, cleaned, deduplicated and sorted. Empty only when there is no
+// readable config at all; otherwise it is never empty, because:
+//
+//   - The state dir is always included. After every served search the client
+//     spawns the detached claim resume (spawnConnectResume in search.go),
+//     mining or not, and that resume writes connect.lock, the cooldown stamp
+//     and agent.json under the state dir. Gated off, a Codex-hosted agent's
+//     claim would never be picked up from a search.
+//   - The intake, sessions and spool dirs are added when [miner] enabled is
+//     set — where the miner records searches. We gate on the static config
+//     flag, never the runtime mining decision (miningActive): agents install
+//     runs once, so a later `mining enable` must not need a reinstall to
+//     earn — that silent-earning gap is the bug this whole block fixes.
+//
+// The directories themselves, never their parent. With the default layout
+// they share one parent, the tokendrop home, and a writable home would also
+// hand every sandboxed Codex command tokendrop.toml, credentials.json and
+// wallet/. The config is trusted: a rewritten as_url or router upstream is an
+// https host of the writer's choosing, and the refresh token and the platform
+// key are sent there on the next flush or search. Codex's default sandbox
+// could read those files before this block existed; it could not redirect
+// where they go, and it must not be able to after it either. The state dir is
+// writable because the claim resume and the flush rotate the refresh token
+// there — a deletion-only exposure, not an exfiltration one.
+func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
+	if entry.cfg == "" {
+		return nil
+	}
+	cfg, _, err := loadConfig(entry.cfg, getenv)
+	if err != nil || cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var roots []string
+	add := func(d string) {
+		if d == "" {
+			return
+		}
+		d = filepath.Clean(d)
+		if d == "." || d == string(filepath.Separator) || seen[d] {
+			return
+		}
+		seen[d] = true
+		roots = append(roots, d)
+	}
+	// Always: the claim resume writes here after every search, mining or not.
+	add(cfg.Mining.StateDir)
+	// Only where the miner records searches — the static flag, not the
+	// runtime decision, so a later `mining enable` earns without a reinstall.
+	if cfg.Miner.Enabled {
+		add(cfg.Miner.IntakeDir)
+		add(cfg.Miner.SessionsDir)
+		add(cfg.Mining.SpoolDir)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+// planCodexSandbox writes (or refreshes) our marked sandbox block in Codex's
+// config.toml. A [sandbox_workspace_write] table we did not write is left
+// untouched and reported with a snippet, mirroring the refuse-rather-than-
+// guess rule the installer uses everywhere else.
+func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agentPlan) {
+	existing, mode, err := readWithMode(ops, path)
+	if err != nil {
+		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
+		return
+	}
+	stripped, _ := removeMarkedBlock(existing)
+	if bytes.Contains(stripped, []byte("[sandbox_workspace_write]")) {
+		p.refused = append(p.refused, fmt.Sprintf(
+			"%s: %s already defines [sandbox_workspace_write]; add these settings to it by hand so searches can record:\n%s",
+			label, path, indentBlock(sandboxSettings(roots))))
+		return
+	}
+	next := appendMarkedBlock(stripped, codexSandboxBlock(roots))
+	planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
+}
+
+func sandboxSettings(roots []string) string {
+	quoted := make([]string, len(roots))
+	for i, r := range roots {
+		quoted[i] = strconv.Quote(r)
+	}
+	return "[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [" + strings.Join(quoted, ", ") + "]\n"
+}
+
+func codexSandboxBlock(roots []string) []byte {
+	return []byte(agentsMarkerBegin + "\n" +
+		"# Lets dropin-miner's search reach the router and record its mining\n" +
+		"# observation under your tokendrop home. Without this, Codex's default\n" +
+		"# sandbox blocks the write and searches earn nothing.\n" +
+		sandboxSettings(roots) +
+		agentsMarkerEnd + "\n")
+}
+
+// removeMarkedBlock strips the block between our markers (inclusive) and
+// reports whether it removed anything, leaving surrounding content intact.
+func removeMarkedBlock(b []byte) ([]byte, bool) {
+	s := string(b)
+	i := strings.Index(s, agentsMarkerBegin)
+	if i < 0 {
+		return b, false
+	}
+	j := strings.Index(s[i:], agentsMarkerEnd)
+	if j < 0 {
+		return b, false
+	}
+	end := i + j + len(agentsMarkerEnd)
+	if end < len(s) && s[end] == '\n' {
+		end++
+	}
+	pre := strings.TrimRight(s[:i], "\n")
+	post := s[end:]
+	switch {
+	case pre == "":
+		return []byte(post), true
+	case post == "":
+		return []byte(pre + "\n"), true
+	default:
+		return []byte(pre + "\n\n" + post), true
+	}
+}
+
+func appendMarkedBlock(b, block []byte) []byte {
+	pre := strings.TrimRight(string(b), "\n")
+	if pre == "" {
+		return block
+	}
+	return []byte(pre + "\n\n" + string(block))
+}
+
+func indentBlock(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 func decodeJSONObject(b []byte) (map[string]any, error) {

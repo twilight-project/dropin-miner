@@ -300,8 +300,12 @@ else
   cat <<MSG
 Claude Code, Codex, Cursor and opencode can each get a web-search skill that
 runs through the router, so their searches earn rewards. This writes a skill
-file and, where the agent supports them, hook entries into its own config
-(shown before anything is written).
+file and, where the agent supports them, hook entries into its own config.
+For Codex it also widens the sandbox in ~/.codex/config.toml: network access
+on, and the tokendrop state directory made writable (the claim resume writes
+there after every search), plus intake, sessions and spool once mining is on —
+never the config, the stored key or the wallet. So a search can record its
+observation and the claim can resolve. Answering yes here accepts all of that.
 
 MSG
   printf 'Set up the coding agents found on this machine now? [Y/n]: '
