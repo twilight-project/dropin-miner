@@ -163,8 +163,8 @@ make build      # bin/dropin-miner
 make verify     # build, test, race, vet (incl. Windows), lint, vuln, tidy, cross-compile
 ```
 
-Go 1.25 or newer; tests also require Node.js 22 or newer on PATH to exercise
-the embedded opencode plugin. The participant packages under `pkg/` are copied from
+Go 1.25 or newer; tests require a modern Node.js runtime capable of executing
+the embedded opencode plugin. CI uses Node.js 22. The participant packages under `pkg/` are copied from
 `tokendrop-proxy` with their golden vectors; see `pkg/README.md`.
 
 ## Two things worth knowing
