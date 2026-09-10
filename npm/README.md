@@ -73,12 +73,16 @@ dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
 dropin-miner wallet init|address|register|balance|send
 dropin-miner connect [-name ...] [-mining]
-dropin-miner mining enable
+dropin-miner mining enable | disable
 ```
 
 `connect` and `mining enable` are the search platform's agent-onboarding path —
-register, get claimed at a printed URL, then mine unattended. `setup.sh` and
-`install.ps1` don't use them yet; they're available to run directly.
+register, get claimed at a printed URL, then mine unattended. `mining disable`
+stops mining for this installation's agent — a best-effort self-service
+revocation at the AS, distinct from the platform's own granted scope, which
+only a human at the console can revoke; `status` says so plainly whenever this
+state holds. `setup.sh` and `install.ps1` don't use any of these yet; they're
+available to run directly.
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
 falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
@@ -135,6 +139,14 @@ URLs are genuinely different hosts, not a redundant pair: `base_url` is
 only ever compared against, never dialed (it is where a printed claim
 URL must point); `agents_api_url` is what `connect`/`mining enable`
 actually send requests to.
+
+`[miner] enabled` means only that router intake is configured — it is not
+the mining on/off switch. That decision lives in one place: whatever
+`connect`'s first run, `mining enable`, or `mining disable` last decided,
+persisted to the state directory and read by search intake, the flush,
+connect, its resume, and `status` alike. Editing `[mining] enabled` by hand
+after the fact does nothing on its own; run `mining enable`/`mining disable`
+instead.
 
 ## Building
 

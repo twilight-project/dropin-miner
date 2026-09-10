@@ -54,6 +54,10 @@ unattended once claimed.
              payout address (empty creates a wallet — passphrase, mnemonic
              once, exactly like wallet init) or re-prints the claim URL if
              the scope was not granted yet
+  mining disable stop mining here: revokes this installation's own AS
+             family, best-effort — never blocks on the network. The
+             platform's granted scope survives it; only a human at the
+             console revokes that. mining enable mints a fresh family
   status     report what this installation has and has not completed
 
 manual enrollment (the portal's older path; still works, coexists with

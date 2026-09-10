@@ -305,6 +305,30 @@ func TestSaveLoadPayoutBindingHeldRoundTrips(t *testing.T) {
 	}
 }
 
+func TestSaveLoadClearRevokePendingRoundTrips(t *testing.T) {
+	s, _ := newStore(t)
+	if pending, err := s.LoadRevokePending(); err != nil || pending {
+		t.Fatalf("fresh store: pending=%v err=%v, want pending=false err=nil", pending, err)
+	}
+	if err := s.SaveRevokePending(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := s.LoadRevokePending(); err != nil || !pending {
+		t.Fatalf("after save: pending=%v err=%v, want pending=true", pending, err)
+	}
+	if err := s.ClearRevokePending(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := s.LoadRevokePending(); err != nil || pending {
+		t.Fatalf("after clear: pending=%v err=%v, want pending=false", pending, err)
+	}
+	// Clearing an already-absent marker is not an error — mining enable
+	// calls this unconditionally on every enable, marker or not.
+	if err := s.ClearRevokePending(); err != nil {
+		t.Fatalf("clearing an absent marker: %v", err)
+	}
+}
+
 // WP2-adversarial-review finding 9: SavePayoutAddress is the one place
 // every payout address in the agent-onboarding flow is validated.
 func TestSavePayoutAddressRejectsNonBech32(t *testing.T) {

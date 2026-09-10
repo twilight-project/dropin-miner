@@ -429,6 +429,14 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	if err != nil {
 		return true
 	}
+	// miningActive treats an unreadable decision the same as an explicit
+	// "off" (a corrupt file is a lost decision, not an absent one — its
+	// only two writers are askMiningQuestion and `mining disable`), but
+	// that must never be silent: named here so "why does this report
+	// mining as stopped" has an answer other than guessing.
+	if _, _, derr := store.LoadMiningEnabled(); derr != nil {
+		fmt.Fprintf(stdout, "mining:  the stored decision could not be read (%v); treating mining as stopped until this is fixed\n", derr)
+	}
 	reg, ok, err := store.LoadAgentRegistration()
 	if err != nil {
 		// WP2-adversarial-review finding 17: an undecodable agent.json
@@ -462,16 +470,16 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 				fmt.Fprintf(stdout, "        enrolled on %s, no payout address on file yet\n", reg.LastEnrollmentSlot)
 			}
 		} else if hasScope(reg.Scopes, "mining") {
-			if cfg.MiningEnabledExplicit && !cfg.Mining.Enabled {
-				fmt.Fprintln(stdout, "        mining scope granted, but mining.enabled = false locally; not enrolling")
+			if !miningActive(store) {
+				printMiningStoppedPair(stdout)
 			} else if reg.SlotRefusal != "" {
 				// finding 15: name the refusal explicitly rather than let
 				// a participant discover it only from a resume's silent
 				// no-op.
 				fmt.Fprintln(stdout, "        mining scope granted, but not enrolled: "+reg.SlotRefusal)
-			} else if !cfg.Mining.Enabled || cfg.Mining.ASBaseURL == "" {
+			} else if cfg.Mining.ASBaseURL == "" {
 				fmt.Fprintln(stdout, "        mining scope granted, but this installation's [mining] block names no "+
-					"authorization server yet — set mining.as_url/chain_id/slot_id and mining.enabled = true")
+					"authorization server yet — set mining.as_url/chain_id/slot_id, then run `dropin-miner mining enable`")
 			} else if _, hasAddr, _ := store.LoadPayoutAddress(); !hasAddr {
 				fmt.Fprintln(stdout, "        mining enabled, no wallet yet (no terminal was available at setup) — "+
 					"run `dropin-miner mining enable` at a terminal, or set mining.payout_address")

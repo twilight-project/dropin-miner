@@ -310,46 +310,6 @@ func (s *Store) LoadReceipt(slotID, targetEpoch uint64) (string, bool, error) {
 	return string(raw), true, nil
 }
 
-// enrollmentRecord is the durable pointer to the epoch this installation
-// is enrolled in. It is what lets the mining plane spool observations
-// with the right delivery context from the first request after a
-// restart, before any network round-trip to the AS has happened —
-// fail-open means the proxy must never wait on the AS to start serving.
-type enrollmentRecord struct {
-	SlotID      uint64 `json:"slot_id"`
-	TargetEpoch uint64 `json:"target_epoch"`
-}
-
-// SaveEnrollment records the enrolled target after a successful
-// JoinEpoch. Later epochs overwrite earlier ones: enrollment advances,
-// and the receipt files keep the full history (SaveReceipt).
-func (s *Store) SaveEnrollment(slotID, targetEpoch uint64) error {
-	raw, err := json.Marshal(enrollmentRecord{SlotID: slotID, TargetEpoch: targetEpoch})
-	if err != nil {
-		return fmt.Errorf("auth: encode enrollment: %w", err)
-	}
-	// Unlike a receipt, this file legitimately changes every epoch, so
-	// saveStateFile (replace) rather than createExclusive (first-write-only).
-	return s.saveStateFile("enrollment.json", raw)
-}
-
-// LoadEnrollment returns the enrolled target, ok=false when this
-// installation has never joined an epoch.
-func (s *Store) LoadEnrollment() (slotID, targetEpoch uint64, ok bool, err error) {
-	raw, err := s.readSecret("enrollment.json")
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, 0, false, nil
-	}
-	if err != nil {
-		return 0, 0, false, err
-	}
-	var rec enrollmentRecord
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return 0, 0, false, fmt.Errorf("auth: decode enrollment: %w", err)
-	}
-	return rec.SlotID, rec.TargetEpoch, true, nil
-}
-
 // AgentRegistration is this installation's identity on the search
 // platform (agent onboarding design §3): what register minted, what the
 // claim did to it, and what the last enrollment call recorded. It is the
@@ -722,8 +682,15 @@ func (s *Store) SaveMiningEnabled(enabled bool) error {
 // LoadMiningEnabled returns the persisted decision, ok=false when
 // askMiningQuestion has never run for this installation (a state
 // directory that predates this fix, or one where connect's first run has
-// not happened yet). Callers fall back to config.MiningEnabledExplicit /
-// config.Mining.Enabled in that case — the same check this replaces.
+// not happened yet — or a scripted install through setup.sh/install.ps1,
+// which writes [mining] enabled directly and has no terminal question of
+// its own to run this from at all). cmd/dropin-miner's miningActive is
+// the one place that reads this — every other flag search intake, the
+// flush, connect, the resume and status used to each check on their own
+// ([miner] enabled, config.Mining.Enabled) is gone; miningActive treats
+// ok=false the same as a legacy scripted install always has: mining
+// active by default, exactly as setup.sh's unconditional `[mining]
+// enabled = true` already implies today.
 func (s *Store) LoadMiningEnabled() (enabled bool, ok bool, err error) {
 	raw, err := s.readSecret("mining_decision.json")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -739,4 +706,41 @@ func (s *Store) LoadMiningEnabled() (enabled bool, ok bool, err error) {
 		return false, false, fmt.Errorf("auth: decode mining decision: %w", err)
 	}
 	return rec.Enabled, true, nil
+}
+
+// SaveRevokePending marks that `mining disable` stopped mining locally
+// but could not confirm the AS accepted the self-service revocation
+// (network down, AS unreachable) — the family may still be live there.
+// A later flush or resume retries it and clears this marker on success;
+// nothing here ever depends on the marker to decide whether mining is
+// active locally — mining_decision.json alone (miningActive) already
+// settled that, unconditionally, before this file is ever written.
+func (s *Store) SaveRevokePending() error {
+	return s.saveStateFile("revoke_pending.json", []byte(`{"pending":true}`))
+}
+
+// LoadRevokePending reports whether an AS-side revocation from a past
+// `mining disable` is still outstanding.
+func (s *Store) LoadRevokePending() (pending bool, err error) {
+	_, err = s.readSecret("revoke_pending.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ClearRevokePending removes the marker once the AS confirms the
+// revocation, or once a fresh `mining enable` mints a new family that
+// supersedes whatever the marker was tracking (mining.go: enabling is
+// what makes the old family's fate moot, not this file surviving to be
+// retried against the new one).
+func (s *Store) ClearRevokePending() error {
+	err := os.Remove(filepath.Join(s.dir, "revoke_pending.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }

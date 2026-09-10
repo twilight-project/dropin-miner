@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/pkg/auth"
 )
 
 type fakeRouter struct {
@@ -152,6 +154,42 @@ func TestSearchPostsToTheRouterPrintsVerbatimAndRecordsIntake(t *testing.T) {
 	}
 	if len(h.flushes) != 1 || h.flushes[0] != cfg {
 		t.Errorf("a flush was not started after the search: %v", h.flushes)
+	}
+}
+
+// [miner] enabled says intake is configured; it must never override a
+// stored decision to stop mining. A served search with mining disabled
+// still gets answered (invariant 1) but records nothing and starts no
+// flush — design item 1's collapse of the three flags that used to gate
+// this into mining_decision.json alone.
+func TestSearchStopsIntakeAndFlushSpawnAfterMiningDisabled(t *testing.T) {
+	fr, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "01a03e86-fictional")
+		_, _ = w.Write([]byte(routerBody))
+	})
+	_ = fr
+	store, err := auth.OpenStore(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	h := fixedSearchOps(root)
+	code, _, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-fictional"},
+		"-config", cfg, "how", "do", "ports", "work")
+	if code != exitOK {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	recs, _, err := readIntake(filepath.Join(root, "intake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("intake was recorded despite mining being disabled: %v", recs)
+	}
+	if len(h.flushes) != 0 {
+		t.Fatalf("a flush was spawned despite mining being disabled: %v", h.flushes)
 	}
 }
 

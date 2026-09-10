@@ -130,13 +130,28 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	if code != 0 {
 		return rep, code
 	}
-	_ = oauthClient
 
 	store, err := auth.OpenStore(m.StateDir)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner flush: key store:", err)
 		return rep, exitTransport
 	}
+
+	// [miner] enabled (checked above, in cmdFlush) says intake is
+	// configured; it is not the mining decision. mining_decision.json
+	// (miningActive) is, and this is one of the five places design item
+	// 1 names it must gate: a disabled installation's flush retries a
+	// pending AS-side revocation (item 2.3) if there is one, and
+	// otherwise does none of the join/promote/submit work below — there
+	// is nothing to join or declare for a family this installation chose
+	// to stop, and "not enrolled; run enroll" below would be actively
+	// misleading for one that used to be.
+	if !miningActive(store) {
+		retryPendingRevoke(ctx, store, oauthClient)
+		fmt.Fprintln(stdout, "flush: mining is stopped here; nothing to do")
+		return rep, exitOK
+	}
+
 	enrolled := func() bool {
 		_, ok, err := store.LoadRefreshToken()
 		return err == nil && ok
