@@ -29,6 +29,11 @@
 - [ ] Tests added/updated for the change
 - [ ] Commit messages carry the reasoning (what was rejected and why), no `Co-Authored-By`/`Claude-Session` trailers (AGENTS.md convention)
 - [ ] Docs/CHANGELOG updated if participant- or operator-visible behavior changed
+- [ ] State-directory change, if any (a new or changed file under a participant's state dir): named below with its writer and its reader — N/A otherwise
+
+State-directory notes:
+
+<!-- File name, what writes it, what reads it. Delete this block if N/A. -->
 
 ## Safety & invariants
 
@@ -40,6 +45,10 @@ Required when the change touches the earning path, custody, or the wire contract
 - [ ] Secrets never in argv (stdin or owner-only 0600 files only)
 - [ ] No unadvertised URL assembled or called; new hosts are configured, not discovered
 - [ ] AS-facing types still conform to the frozen wire fixtures; the provider response decode stays permissive
+- [ ] Durable before visible, remove only on ack (invariant 7): a spool write is fsync'd via temp-file + atomic rename before the result is shown, and a spool record leaves delivery only on a durable AS ack
+- [ ] A claim/console URL is printed, never opened (invariant 11): `connect.go`/`mining.go` import no `os/exec`
+- [ ] `platform.base_url` is validated and compared against, never dialed; only `agents_api_url` is (invariant 12)
+- [ ] Tests never contact a real `*.nyks.dev` host — `httptest` stubs only
 - [ ] `pkg/` still does not import `cmd/`, and still carries no chain-SDK import
 
 ## Security considerations
@@ -54,7 +63,15 @@ Notes:
 
 ## Review
 
-- [ ] Injection-checked every non-obvious guarantee this PR adds (revert the guard, confirm red at the file:line, restore) — see AGENTS.md's testing discipline
+Every non-obvious guarantee this PR adds: reverted, confirmed red at the
+file:line below, restored (AGENTS.md's testing discipline). A row is
+required for each; this section does not merge empty if the PR adds any
+guard.
+
+| Guard | Test that goes red | file:line |
+|---|---|---|
+| | | |
+
 - [ ] Risky files / assumptions called out below
 
 ## Reviewer notes
