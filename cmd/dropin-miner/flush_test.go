@@ -85,6 +85,13 @@ func newFlushFixture(t *testing.T, as *fakeAS) *flushFixture {
 	if err := store.SaveRefreshToken("rt-0"); err != nil {
 		t.Fatal(err)
 	}
+	// miningActive's own default (an absent decision reads as stopped)
+	// only applies to a state dir nothing has ever decided anything
+	// about; this fixture models an already-enrolled installation, which
+	// now always means connect asked the mining question at some point.
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
 	router := newRouterRecorder(t)
 	doc := fmt.Sprintf(`
 [mining]

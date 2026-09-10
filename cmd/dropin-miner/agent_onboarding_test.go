@@ -937,9 +937,19 @@ func TestNoResumeSpawnForEnrolledOptedOutOrUnconfigured(t *testing.T) {
 		}
 	})
 
-	// The actionable cases must still spawn.
+	// The actionable cases must still spawn. Both need a decision of
+	// "on" explicitly on file now — an absent decision reads as stopped
+	// (miningActive's own default), matching a real install: connect
+	// always asks before either of these states is reachable.
 	t.Run("still actionable: not yet enrolled, configured", func(t *testing.T) {
 		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, false, "")
+		store, err := auth.OpenStore(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveMiningEnabled(true); err != nil {
+			t.Fatal(err)
+		}
 		cfg := configured
 		cfg.StateDir = stateDir
 		if !shouldResume(&config.Config{Mining: cfg}) {
@@ -949,6 +959,13 @@ func TestNoResumeSpawnForEnrolledOptedOutOrUnconfigured(t *testing.T) {
 
 	t.Run("still actionable: enrolled with an undeclared address", func(t *testing.T) {
 		stateDir := shouldResumeFixture(t, "claimed", []string{"mining"}, true, "twilight16hmu7hucv64zeanfsa58cjdhku98k43j4cnrkr")
+		store, err := auth.OpenStore(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveMiningEnabled(true); err != nil {
+			t.Fatal(err)
+		}
 		cfg := configured
 		cfg.StateDir = stateDir
 		if !shouldResume(&config.Config{Mining: cfg}) {
@@ -1192,6 +1209,31 @@ func TestAFreshInstallAlwaysHasADecisionOnFile(t *testing.T) {
 				t.Fatalf("decision on file = %v, want %v", enabled, tc.wantEnabled)
 			}
 		})
+	}
+}
+
+// The other half of "never in a no-decision state": a state directory
+// nothing has ever decided anything about — no connect, no mining
+// enable, no scripted config ever ran askMiningQuestion against it —
+// reads as stopped, not active. This used to default active for the
+// legacy installers' sake (setup.sh/install.ps1 wrote [mining] enabled
+// = true and enrolled without ever running connect); now that both
+// installers run connect first, an absent file means only "never
+// decided," and that is not the same as "on."
+func TestAnInstallationWithNoDecisionFileAtAllIsStopped(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LoadMiningEnabled(); err != nil || ok {
+		t.Fatalf("setup: expected no decision file, got ok=%v err=%v", ok, err)
+	}
+	if miningActive(store) {
+		t.Fatal("miningActive true with no decision file at all; want false")
 	}
 }
 
@@ -1600,6 +1642,9 @@ func TestConcurrentResumesProduceExactlyOneEnrollmentAndDeclaration(t *testing.T
 	if err := store.SaveAgentRegistration(auth.AgentRegistration{
 		AgentID: "agent-1", Status: "claimed", Scopes: []string{"search", "mining"},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
 		t.Fatal(err)
 	}
 	const addr = "twilight1wx0rwcuexfwc36h0r2cg3fvfsds66f0qadt8cs"
