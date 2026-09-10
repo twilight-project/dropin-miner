@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a defect in dropin-miner (not a security vulnerability)
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not report security vulnerabilities here** — contact the maintainer privately rather than filing a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and its impact.
+      placeholder: Describe the unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, a config snippet, or a failing test that triggers it.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `dropin-miner version`, or the git commit/branch.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - search / hook (the tool-call path)
+        - flush / mining plane (join, promote, submit)
+        - connect / mining enable / mining disable (agent onboarding)
+        - wallet / payout
+        - config / install (setup.sh, install.ps1)
+        - agents (skill/hook install for coding agents)
+        - doctor / status / earnings
+        - unsure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant command output. Redact any API key, refresh token, mnemonic, or wallet address you don't want public.
+      render: shell
