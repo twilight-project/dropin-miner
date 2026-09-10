@@ -190,20 +190,32 @@ func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(strin
 		return exitTransport
 	}
 
-	reg, ok, err := store.LoadAgentRegistration()
+	reg, regOK, err := store.LoadAgentRegistration()
 	if err != nil {
 		// Matches connect's own WP2-adversarial-review finding 17
 		// handling: an undecodable registration is absent, not fatal —
-		// there is nothing here to disable either way.
+		// there may still be a refresh token to act on below.
 		fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be read (treating as absent):", err)
-		ok = false
+		regOK = false
 	}
-	if !ok {
+	// The refresh token, not the agent-onboarding registration, is what
+	// "something here can be disabled" actually means: a setup.sh-shape
+	// installation (enroll/join/login, no connect ever run) has a live
+	// AS family and no agent.json at all. Keying only on LastEnrollmentSlot
+	// left that installation's family untouched forever — "nothing to
+	// disable" was true of the registration, never of the mining itself.
+	_, hasRefresh, err := store.LoadRefreshToken()
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	pending, _ := store.LoadRevokePending() // best-effort; a read error just means "assume no marker"
+
+	if !regOK && !hasRefresh {
 		fmt.Fprintln(stdout, "nothing to disable: this installation has never registered with the search platform")
 		return exitOK
 	}
-	pending, _ := store.LoadRevokePending() // best-effort; a read error just means "assume no marker"
-	if reg.LastEnrollmentSlot == "" && !pending {
+	if !hasRefresh && !pending && (!regOK || reg.LastEnrollmentSlot == "") {
 		fmt.Fprintln(stdout, "mining is not enabled here; nothing to disable")
 		return exitOK
 	}
@@ -219,11 +231,19 @@ func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(strin
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
-	reg.LastEnrollmentSlot = ""
-	reg.LastEnrollmentAt = ""
-	if err := store.SaveAgentRegistration(reg); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
+	// Only clear an agent-onboarding record that actually exists — a
+	// setup.sh-shape installation has none, and writing a fresh all-zero
+	// agent.json where there was never one would invent a registration
+	// this installation never had (status would then read its empty
+	// Status as "unrecognized", a confusing regression for a
+	// participant who has never touched connect).
+	if regOK {
+		reg.LastEnrollmentSlot = ""
+		reg.LastEnrollmentAt = ""
+		if err := store.SaveAgentRegistration(reg); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return exitTransport
+		}
 	}
 
 	// Best-effort AS-side revocation. Never blocks the stop above, which

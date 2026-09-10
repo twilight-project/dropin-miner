@@ -352,9 +352,21 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 // defaults to active exactly as that flow's own unconditional `enabled
 // = true` already implies. There is no config fallback beyond that
 // default — config.Mining.Enabled is never consulted here.
+//
+// err != nil is NOT the same absence: the only two writers of this file
+// are askMiningQuestion and `mining disable`, so a file that exists but
+// cannot be read or parsed is a decision that was made and then lost —
+// most plausibly a disable's "off" — not a decision never made at all.
+// Defaulting a corrupt file to active would resume mining a participant
+// tried to stop; false is the side that costs nothing worse than an
+// extra `mining enable`. printAgentIdentityStatus names the file when
+// this is why mining reads as stopped, so it is never silent either.
 func miningActive(store *auth.Store) bool {
 	enabled, ok, err := store.LoadMiningEnabled()
-	if err != nil || !ok {
+	if err != nil {
+		return false
+	}
+	if !ok {
 		return true
 	}
 	return enabled

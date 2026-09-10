@@ -12,6 +12,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,6 +55,18 @@ func fullyEnrolledInstall(t *testing.T) (cfgPath, stateDir string, platform *stu
 	return cfgPath, stateDir, platform, as
 }
 
+// setupSHShapeConfig builds a config the way setup.sh does: a [mining]
+// block naming a real AS and no [platform] block at all — connect/mining
+// enable are never involved, so there is no agent.json, ever.
+func setupSHShapeConfig(t *testing.T, asURL string) (cfgPath, stateDir string) {
+	t.Helper()
+	dir := t.TempDir()
+	stateDir = filepath.Join(dir, "state")
+	body := fmt.Sprintf("[mining]\nenabled = true\nas_url = %q\nchain_id = \"twilight-1\"\nslot_id = 7\nstate_dir = %q\n",
+		asURL, stateDir)
+	return writeTOML(t, body), stateDir
+}
+
 func runMiningDisable(t *testing.T, cfgPath string) (code int, stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -64,6 +79,53 @@ func runMiningEnable(t *testing.T, cfgPath string) (code int, stdout, stderr str
 	var out, errOut bytes.Buffer
 	code = cmdMining([]string{"enable", "-config", cfgPath}, &bytes.Buffer{}, &out, &errOut, noEnv)
 	return code, out.String(), errOut.String()
+}
+
+// A setup.sh-shape installation (enroll/join/login — no connect ever
+// run) has a refresh token and NO agent.json at all. Disable used to
+// key only on LastEnrollmentSlot/agent.json and call this "nothing to
+// disable, never registered" — true of the registration, never of the
+// live family, which it then left completely untouched. Now it acts on
+// the refresh token directly.
+func TestMiningDisableActsOnARefreshTokenWithNoAgentRegistration(t *testing.T) {
+	as := newStubAS(t)
+	cfgPath, stateDir := setupSHShapeConfig(t, as.srv.URL)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshToken("rt-legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.LoadAgentRegistration(); ok {
+		t.Fatal("setup: an agent registration exists; this case is supposed to have none")
+	}
+
+	code, out, errOut := runMiningDisable(t, cfgPath)
+	if code != exitOK {
+		t.Fatalf("disable exited %d: stdout=%s stderr=%s", code, out, errOut)
+	}
+	if strings.Contains(out, "nothing to disable") || strings.Contains(out, "mining is not enabled here") {
+		t.Fatalf("disable reported nothing to do despite a live refresh token: %q", out)
+	}
+	if !strings.Contains(out, "mining here: stopped") {
+		t.Fatalf("disable did not report stopped: %q", out)
+	}
+	if enabled, ok, _ := store.LoadMiningEnabled(); !ok || enabled {
+		t.Fatalf("decision not persisted as off: enabled=%v ok=%v", enabled, ok)
+	}
+	if _, ok, _ := store.LoadRefreshToken(); ok {
+		t.Fatal("the live family was left untouched — refresh token still on file")
+	}
+	if got := as.revokeCallCount(); got != 1 {
+		t.Fatalf("revoke calls = %d, want 1", got)
+	}
+	// No agent.json existed before, and disable must not invent one —
+	// see cmdMiningDisable's own comment on why that would be worse
+	// than doing nothing (status would misread its zero-value Status).
+	if _, ok, _ := store.LoadAgentRegistration(); ok {
+		t.Fatal("disable created an agent registration that never existed before it")
+	}
 }
 
 // The brick, closed: disable stops mining, and enable — the existing
@@ -115,6 +177,37 @@ func TestMiningDisableThenEnableClosesTheBrick(t *testing.T) {
 	}
 	if got := as.assertionRedemptionCount(); got != redemptionsBefore+1 {
 		t.Fatalf("assertion redemptions = %d, want %d (one fresh enrollment)", got, redemptionsBefore+1)
+	}
+}
+
+// A corrupt mining_decision.json is a lost decision, not an absent one:
+// its only two writers are askMiningQuestion and `mining disable`, so a
+// file that exists but cannot be parsed means something was decided and
+// the record was damaged afterward — never "nothing was ever decided".
+// Defaulting that to active would resume mining a participant tried to
+// stop. Repro this review verified: enroll, disable, corrupt the file,
+// resume — must be zero new redemptions and no repopulated enrollment,
+// not one of each.
+func TestCorruptDecisionFileIsTreatedAsOffNotAbsent(t *testing.T) {
+	cfgPath, stateDir, _, as := fullyEnrolledInstall(t)
+	if code, _, errOut := runMiningDisable(t, cfgPath); code != exitOK {
+		t.Fatalf("disable exited %d: %s", code, errOut)
+	}
+	redemptionsBefore := as.assertionRedemptionCount()
+
+	if err := os.WriteFile(filepath.Join(stateDir, "mining_decision.json"), []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("resume exited %d: stdout=%s stderr=%s", code, out, errOut)
+	}
+	if got := as.assertionRedemptionCount(); got != redemptionsBefore {
+		t.Fatalf("resume re-enrolled against a corrupt decision file: redemptions %d -> %d", redemptionsBefore, got)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.LastEnrollmentSlot != "" {
+		t.Fatalf("resume repopulated the enrollment record against a corrupt decision file: %+v", reg)
 	}
 }
 
@@ -330,5 +423,20 @@ func TestStatusShowsThePermanentPairAfterDisable(t *testing.T) {
 	_ = printAgentIdentityStatus([]string{"-config", cfgPath}, &out, &errOut, noEnv)
 	if !strings.Contains(out.String(), "mining here: stopped") || !strings.Contains(out.String(), "platform authorization: still granted") {
 		t.Fatalf("status did not show the permanent pair: %q", out.String())
+	}
+}
+
+// miningActive's "corrupt is not absent" fail-closed default must never
+// be silent: status names the file so this doesn't read as an
+// unexplained "stopped."
+func TestStatusNamesAnUnreadableDecisionFile(t *testing.T) {
+	cfgPath, stateDir, _, _ := fullyEnrolledInstall(t)
+	if err := os.WriteFile(filepath.Join(stateDir, "mining_decision.json"), []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	_ = printAgentIdentityStatus([]string{"-config", cfgPath}, &out, &errOut, noEnv)
+	if !strings.Contains(out.String(), "mining:") || !strings.Contains(out.String(), "could not be read") {
+		t.Fatalf("status did not name the unreadable decision file: %q", out.String())
 	}
 }

@@ -429,6 +429,14 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	if err != nil {
 		return true
 	}
+	// miningActive treats an unreadable decision the same as an explicit
+	// "off" (a corrupt file is a lost decision, not an absent one — its
+	// only two writers are askMiningQuestion and `mining disable`), but
+	// that must never be silent: named here so "why does this report
+	// mining as stopped" has an answer other than guessing.
+	if _, _, derr := store.LoadMiningEnabled(); derr != nil {
+		fmt.Fprintf(stdout, "mining:  the stored decision could not be read (%v); treating mining as stopped until this is fixed\n", derr)
+	}
 	reg, ok, err := store.LoadAgentRegistration()
 	if err != nil {
 		// WP2-adversarial-review finding 17: an undecodable agent.json
