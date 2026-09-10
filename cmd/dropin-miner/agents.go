@@ -942,10 +942,21 @@ func readWithMode(ops agentOps, path string) ([]byte, os.FileMode, error) {
 // in a marked block we own and can cleanly remove.
 
 // codexSandboxRoots is the set of directories a search and its background
-// flush must be able to write for mining to record: the parents of the
-// intake, spool, state and sessions dirs, deduplicated and sorted. It is
+// flush must be able to write for mining to record: the intake, sessions,
+// state and spool dirs themselves, cleaned, deduplicated and sorted. It is
 // empty when the config is unreadable or mining is not configured — cases
 // where the sandbox does not matter because nothing is recorded.
+//
+// The four directories, never their parent. With the default layout they
+// share one parent, the tokendrop home, and a writable home would also
+// hand every sandboxed Codex command tokendrop.toml, credentials.json and
+// wallet/. The config is trusted: a rewritten as_url or router upstream is
+// an https host of the writer's choosing, and the refresh token and the
+// platform key are sent there on the next flush or search. Codex's default
+// sandbox could read those files before this block existed; it could not
+// redirect where they go, and it must not be able to after it either. The
+// state dir has to be writable because the detached flush rotates the
+// refresh token there — a deletion-only exposure, not an exfiltration one.
 func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 	if entry.cfg == "" {
 		return nil
@@ -960,12 +971,12 @@ func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 		if d == "" {
 			continue
 		}
-		parent := filepath.Dir(d)
-		if parent == "" || parent == "." || parent == string(filepath.Separator) || seen[parent] {
+		d = filepath.Clean(d)
+		if d == "." || d == string(filepath.Separator) || seen[d] {
 			continue
 		}
-		seen[parent] = true
-		roots = append(roots, parent)
+		seen[d] = true
+		roots = append(roots, d)
 	}
 	sort.Strings(roots)
 	return roots

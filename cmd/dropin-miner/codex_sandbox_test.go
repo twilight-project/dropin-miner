@@ -100,16 +100,30 @@ func TestCodexInstallConfiguresSandboxAndUninstallRemovesIt(t *testing.T) {
 	}
 	got := string(m.files["/home/u/.codex/config.toml"])
 	for _, want := range []string{
-		"model = \"gpt-5\"",                                  // preserved
-		agentsMarkerBegin,                                    // our block
-		"[sandbox_workspace_write]",                          //
-		"network_access = true",                              // both restrictions lifted
-		"writable_roots = [" + fmt.Sprintf("%q", home) + "]", // the tokendrop home
+		"model = \"gpt-5\"",         // preserved
+		agentsMarkerBegin,           // our block
+		"[sandbox_workspace_write]", //
+		"network_access = true",     // both restrictions lifted
+		// The four directories themselves, sorted — never the home.
+		"writable_roots = [" + strings.Join([]string{
+			fmt.Sprintf("%q", filepath.Join(home, "intake")),
+			fmt.Sprintf("%q", filepath.Join(home, "sessions")),
+			fmt.Sprintf("%q", filepath.Join(home, "spool")),
+			fmt.Sprintf("%q", filepath.Join(home, "state")),
+		}, ", ") + "]",
 		agentsMarkerEnd,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("config.toml missing %q:\n%s", want, got)
 		}
+	}
+	// The home itself must never be a writable root: it holds
+	// tokendrop.toml, credentials.json and wallet/, and a sandboxed command
+	// that can rewrite the config can redirect the credentials to any https
+	// host on the next run. Asserted on its own line so the guard has a
+	// test that goes red by itself, not only via the exact-string check.
+	if strings.Contains(got, fmt.Sprintf("%q", home)+"]") || strings.Contains(got, fmt.Sprintf("%q", home)+",") {
+		t.Errorf("the tokendrop home itself is a writable root:\n%s", got)
 	}
 
 	// Idempotent: a second install changes nothing.
