@@ -192,10 +192,16 @@ func TestDoctorVerdictsOverTheInputDomain(t *testing.T) {
 	}{
 		{"no authorization stored", func(f *doctorFacts) { f.HasRefresh = false },
 			"enrolled", verdictNo, "holds no authorization", "enroll"},
+		{"no authorization stored, but this install ran connect", func(f *doctorFacts) {
+			f.HasRefresh, f.HasRegistration = false, true
+		}, "enrolled", verdictNo, "holds no authorization", "connect"},
 		{"state dir unreadable", func(f *doctorFacts) { f.LocalErr = errors.New("permission denied") },
 			"enrolled", verdictUnknown, "state directory", "state_dir"},
 		{"the AS refused a stored authorization", func(f *doctorFacts) { f.StatusErr = errors.New("401 invalid_grant") },
 			"enrolled", verdictNo, "did not accept", "enroll"},
+		{"the AS refused a stored authorization, but this install ran connect", func(f *doctorFacts) {
+			f.StatusErr, f.HasRegistration = errors.New("401 invalid_grant"), true
+		}, "enrolled", verdictNo, "did not accept", "mining disable"},
 
 		{"joinable and not joined", func(f *doctorFacts) {
 			f.Status = &auth.EpochStatus{JoinStatus: "NOT_JOINED", Joinable: true}

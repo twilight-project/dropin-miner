@@ -159,14 +159,16 @@ func doctorEnrolledCheck(f doctorFacts) doctorCheck {
 	case !f.HasRefresh:
 		c.Verdict = verdictNo
 		c.Detail = "this installation holds no authorization, so it cannot talk to the AS at all"
-		c.Fix = "dropin-miner enroll -config <file>"
+		c.Fix = doctorEnrollFix(f, "claim the URL `dropin-miner connect` printed, then run `dropin-miner connect` "+
+			"again (or just search — it resumes automatically once the claim goes through)")
 	case f.StatusErr != nil && f.DocErr == nil && f.EpochKnown:
 		// The AS is up and refused an authorization we hold. That is worth
 		// separating from "the AS is down": one is waited out, the other is
 		// re-enrolled.
 		c.Verdict = verdictNo
 		c.Detail = fmt.Sprintf("an authorization is stored here and the AS did not accept it — %v", redact.Error(f.StatusErr))
-		c.Fix = "if this does not clear on its own, re-run: dropin-miner enroll -config <file>"
+		c.Fix = doctorEnrollFix(f, "if this does not clear on its own: dropin-miner mining disable, then "+
+			"dropin-miner mining enable (or just `connect` again) to get a fresh authorization")
 	case f.DocErr != nil:
 		c.Verdict = verdictOK
 		c.Detail = "an authorization is stored here (read locally; the AS was not reachable to confirm it)"
@@ -175,6 +177,20 @@ func doctorEnrolledCheck(f doctorFacts) doctorCheck {
 		c.Detail = "the AS accepted this installation's authorization"
 	}
 	return c
+}
+
+// doctorEnrollFix picks the right remediation for a bad "enrolled" check:
+// connectFix for an installation that has ever run connect (f.HasRegistration
+// — agent.json exists), since there is no enrollment token to redeem by
+// hand there; the old manual `enroll -assertion` path otherwise, for an
+// installation that enrolled without ever registering with the search
+// platform (setup.sh/install.ps1 before they ran connect, or the portal's
+// still-supported manual flow).
+func doctorEnrollFix(f doctorFacts, connectFix string) string {
+	if f.HasRegistration {
+		return connectFix
+	}
+	return "dropin-miner enroll -config <file>"
 }
 
 func doctorJoinedCheck(f doctorFacts) doctorCheck {
