@@ -7,7 +7,14 @@ the mechanical commit-by-commit record — what belongs here is the handful of t
 participant or operator should be told in plain language, that a list of commit
 subjects wouldn't make obvious on its own.
 
-## Unreleased
+## v0.2.0 — 2026-09-10 (the release that makes `connect` the install path)
+
+A minor bump, not a patch: two new commands (`connect`, `mining disable`), a new
+config key (`platform.agents_api_url`), and the installers move from the manual
+enrollment-token flow to `connect`. Nothing an existing config names stops
+working, but every installation from before this release is expected to be
+removed and reinstalled rather than upgraded in place — the state directory's
+meaning changed (one decision file) and no migration is carried for it.
 
 - **Agent onboarding: `dropin-miner connect` and `dropin-miner mining enable`.**
   A headless coding agent can now register itself with the search platform and

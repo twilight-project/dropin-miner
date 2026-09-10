@@ -58,7 +58,7 @@ before a search travels only inside that search's request, capped at 32 KB.
 |---|---|---|---|
 | Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and an allow rule for the search command in `~/.claude/settings.json` |
 | Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
-| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/` (allow network for the command: its sandbox is offline by default) |
+| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus the state dir always and intake/sessions/spool when mining records — never the config, key or wallet) so searches record and the claim resumes |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | anything else | rules line | per-shell | printed for you to paste |
 

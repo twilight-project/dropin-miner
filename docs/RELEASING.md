@@ -49,6 +49,12 @@ whoever's machine is doing the release, after the version bump and the tag.
    about to tag (or already done in an earlier one).
 3. `git tag vX.Y.Z <commit>` and `git push origin vX.Y.Z`. This is what triggers
    `release.yml` — nothing else does.
+   The tag carries the `v` prefix always: `release.yml` matches `v*`, and
+   `npm/install.js` downloads from `releases/download/v${version}`, so a tag named
+   `0.2.0` builds nothing and the npm package of that version can never install.
+   Tag on `twilight-project/dropin-miner` (the `upstream` remote), where the
+   releases live and `install.sh`/`install.ps1`/`npm/install.js` look for them —
+   a tag pushed only to the fork publishes a release nobody's installer can find.
 4. Watch the `release` workflow run; confirm the GitHub Release published with all six
    platform archives plus `checksums.txt`, and that its auto-generated changelog reads
    the way you'd want a participant to read it (this is your last chance to notice a
