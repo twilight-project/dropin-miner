@@ -229,9 +229,10 @@ TOML
 fi
 
 # ── 4. connect ────────────────────────────────────────────────────────────────
-# Registers with the search platform (storing the key it mints — nothing to
-# paste), asks the mining question at a terminal when one is present (the
-# config above already answered it otherwise), and creates or takes a wallet.
+# Asks the mining question at a terminal when one is present (the config
+# above already answered it otherwise), creates or takes a wallet, then
+# registers with the search platform (storing the key it mints — nothing to
+# paste; the answer just given hints the claim page's mining pre-tick).
 # Prints the claim URL and waits a few minutes for it; if nobody has claimed
 # by then it says so and exits 0 — the claim still works whenever it happens,
 # picked up automatically by your first real search. TOKENDROP_WALLET_DIR is
@@ -240,7 +241,7 @@ fi
 say "Connecting"
 WALLET_DIR="$HOME_DIR/wallet"
 export TOKENDROP_WALLET_DIR="$WALLET_DIR"
-"$BIN" connect -mining -config "$CFG" || die "connect failed"
+"$BIN" connect -config "$CFG" || die "connect failed"
 
 # ── 5. shell profile ─────────────────────────────────────────────────────────
 BIN_DIR=$(cd "$(dirname "$BIN")" && pwd)

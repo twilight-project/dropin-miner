@@ -26,11 +26,11 @@ subjects wouldn't make obvious on its own.
 
 - **The installers register instead of enrolling.** `setup.sh` and
   `install.ps1` no longer generate an enrollment token, prompt for an sr- key,
-  or run `join`: they write the config and run `connect -mining`, which
-  registers with the search platform (storing the key it mints), asks the
-  mining question at whichever terminal is present, creates or takes a
-  wallet, and prints a claim link — search works before that link is ever
-  visited. `[mining] enabled = true` is no longer written unconditionally;
+  or run `join`: they write the config and run `connect`, which asks the
+  mining question at whichever terminal is present, registers with the
+  search platform (storing the key it mints), creates or takes a wallet, and
+  prints a claim link — search works before that link is ever visited.
+  `[mining] enabled = true` is no longer written unconditionally;
   a terminal's answer is the decision, and a genuinely non-interactive run
   (`TOKENDROP_MINING=1`, no terminal present) writes it instead, exactly
   matching `connect`'s own scripted-install path. A fresh install is
@@ -41,6 +41,16 @@ subjects wouldn't make obvious on its own.
   `enroll -assertion`, `login`, `join`, `wallet register` and `payout set`
   keep working for the portal's older, manual path; they are simply not
   what either installer runs anymore.
+
+- **`connect` asks the mining question before it registers, not after.**
+  The claim page's mining pre-tick reads the `requested_scopes` hint sent at
+  registration; a fresh `connect` used to register first and ask second, so
+  the hint could only ever come from a flag, not the answer — every install
+  from `setup.sh`/`install.ps1` passed it unconditionally, so the claim page
+  pre-ticked mining even for a participant who had just answered no. The
+  hint is now built from the terminal's answer (or, non-interactively,
+  `[mining].enabled`): `["mining"]` for yes, nothing for no. The `-mining`
+  flag is gone — it was the only source of the hint and is now redundant.
 
 - **`[platform]` is now two URLs, not one — fixes a real live-test failure,
   not a hypothetical.** `connect`/`mining enable` assumed the search platform's

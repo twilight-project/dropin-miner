@@ -47,9 +47,10 @@ onboarding (one-time, per agent): register with the search platform, claim
 it at one URL, done. search works the moment connect stores the key,
 before the claim; mining (if granted) enrolls and declares a payout
 unattended once claimed.
-  connect    register [-name …] [-mining hints the claim page]; prints the
-             claim URL and code and polls (bounded) until claimed. A second
-             run resumes; so does the next search, automatically
+  connect    ask whether to mine, then register [-name …] (the answer hints
+             the claim page's mining pre-tick); prints the claim URL and
+             code and polls (bounded) until claimed. A second run resumes;
+             so does the next search, automatically
   mining enable  turn mining on for an already-connected agent: asks for a
              payout address (empty creates a wallet — passphrase, mnemonic
              once, exactly like wallet init) or re-prints the claim URL if

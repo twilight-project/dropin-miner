@@ -33,7 +33,7 @@ func fullyEnrolledInstall(t *testing.T) (cfgPath, stateDir string, platform *stu
 	as = newStubAS(t)
 	cfgPath, stateDir = connectConfig(t, platform.srv.URL, as.srv.URL)
 
-	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
 		t.Fatal("first connect failed")
 	}
 	store, err := auth.OpenStore(stateDir)

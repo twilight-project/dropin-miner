@@ -356,26 +356,7 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 		if !cfg.Mining.Enabled {
 			return miningEnableOutcome{}, exitOK
 		}
-		// A fresh enrollment about to be minted (below, once an address
-		// exists) supersedes whatever an earlier `mining disable` left
-		// pending — see auth.Store.ClearRevokePending's own comment for
-		// why a stale marker surviving past this point is the dangerous
-		// direction to fail in, not the safe one.
-		if err := store.ClearRevokePending(); err != nil {
-			fmt.Fprintln(stderr, "dropin-miner:", err)
-			return miningEnableOutcome{}, exitTransport
-		}
-		if cfg.Mining.PayoutAddress == "" {
-			fmt.Fprintln(stdout, "mining is enabled in the config, but no payout_address was given and no terminal is "+
-				"available to create a wallet; no wallet was created. Set mining.payout_address, or run "+
-				"`dropin-miner mining enable` at a terminal.")
-			return miningEnableOutcome{enabled: true}, exitOK
-		}
-		if err := store.SavePayoutAddress(cfg.Mining.PayoutAddress); err != nil {
-			fmt.Fprintln(stderr, "dropin-miner:", err)
-			return miningEnableOutcome{}, exitTransport
-		}
-		return miningEnableOutcome{enabled: true, payoutAddress: cfg.Mining.PayoutAddress}, exitOK
+		return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, false)
 	}
 
 	// Interactive from here on. WP2-adversarial-review finding 4: the
@@ -411,14 +392,47 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 	if !enabled {
 		return miningEnableOutcome{}, exitOK
 	}
+	return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, true)
+}
+
+// finishMiningEnabled is the address half of an ALREADY-decided "yes" —
+// clears any stale revoke-pending marker (a fresh enrollment about to be
+// minted supersedes whatever an earlier `mining disable` left pending;
+// see auth.Store.ClearRevokePending's own comment for why a stale marker
+// surviving past this point is the dangerous direction to fail in, not
+// the safe one) and then fills in the address: the configured
+// mining.payout_address if one is set, otherwise — interactive only — a
+// typed address or a created/reused wallet. A non-interactive run with
+// no address configured creates no wallet and leaves the address unset
+// (no wallet on a non-terminal path). Shared by askMiningQuestion's own
+// two branches and, directly, by connect.go's registration retry: an
+// already-decided "yes" with no address on file yet (a crash between the
+// two writes, or an adopted state dir) still needs exactly this half
+// asked, never the enable question again.
+func finishMiningEnabled(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
 	if err := store.ClearRevokePending(); err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return miningEnableOutcome{}, exitTransport
 	}
 
+	if !interactive {
+		if cfg.Mining.PayoutAddress == "" {
+			fmt.Fprintln(stdout, "mining is enabled in the config, but no payout_address was given and no terminal is "+
+				"available to create a wallet; no wallet was created. Set mining.payout_address, or run "+
+				"`dropin-miner mining enable` at a terminal.")
+			return miningEnableOutcome{enabled: true}, exitOK
+		}
+		if err := store.SavePayoutAddress(cfg.Mining.PayoutAddress); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return miningEnableOutcome{}, exitTransport
+		}
+		return miningEnableOutcome{enabled: true, payoutAddress: cfg.Mining.PayoutAddress}, exitOK
+	}
+
 	// The address question is asked at a terminal whenever nothing is on
-	// file — even when enabled = true was already written (finding 4's
-	// concrete failure: this used to be unreachable in exactly that case).
+	// file — even when enabled = true was already written (WP2-review
+	// finding 4's concrete failure: this used to be unreachable in
+	// exactly that case).
 	address := cfg.Mining.PayoutAddress
 	if address == "" {
 		fmt.Fprint(stderr, "Payout address (leave empty to create a wallet here): ")

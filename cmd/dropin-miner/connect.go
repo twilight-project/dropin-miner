@@ -111,7 +111,6 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
-	miningHint := fs.Bool("mining", false, "hint the claim page to pre-tick the mining grant (requested_scopes); grants nothing by itself")
 	resume := fs.Bool("resume", false, "internal: exactly one poll, act, exit — used by the detached resume search spawns")
 	force := fs.Bool("force", false, "overwrite an existing credentials.json even though it already holds a different platform key")
 	if err := fs.Parse(args); err != nil {
@@ -207,11 +206,17 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 	interval := resumePollInterval
 	if !existed {
-		var requestedScopes []string
-		if *miningHint {
-			requestedScopes = []string{"mining"}
+		// Ask before registering: requested_scopes is the hint the claim
+		// page pre-ticks its mining grant from, and the terminal answer
+		// (or, non-interactively, [mining].enabled) is the only source
+		// for it now that there is no -mining flag. participantHasOtherAgent
+		// is always false here — this registration doesn't exist yet, so
+		// there is nothing to compare against.
+		outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout))
+		if code != exitOK {
+			return code
 		}
-		fresh, err := client.Register(ctx, *name, requestedScopes)
+		fresh, err := client.Register(ctx, *name, registrationHint(outcome))
 		if err != nil {
 			fmt.Fprintln(stderr, "dropin-miner: register:", err)
 			return exitTransport
@@ -257,21 +262,6 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
-	}
-
-	// The one-time mining question, first run only: a second run finds
-	// existed=true above and skips straight to polling.
-	//
-	// participantHasOtherAgent is always false here — this registration
-	// is unclaimed by construction (register just ran, or existed=false
-	// means it never claimed), and only a claimed agent's participant is
-	// something the platform can compare against another agent for.
-	// mining.go's cmdMining is the one call site that CAN poll status
-	// first and pass a real answer (WP4b, design f0ddb69 §5.5).
-	if !existed {
-		if _, code := askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout), false); code != exitOK {
-			return code
-		}
 	}
 
 	// WP2-adversarial-review finding 20: the claim URL/code are a
@@ -345,7 +335,7 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 // mining_decision.json is written by askMiningQuestion on every path
 // (connect's first run, `mining enable`, interactive or scripted)
 // before this is ever consulted, so a fresh install is never in a "no
-// decision" state — setup.sh and install.ps1 now run `connect -mining`
+// decision" state — setup.sh and install.ps1 now run `connect`
 // themselves instead of enrolling on their own, so every install this
 // runs against has already been asked. There is no config fallback —
 // config.Mining.Enabled is never consulted here.
@@ -373,6 +363,53 @@ func miningActive(store *auth.Store) bool {
 		return false
 	}
 	return enabled
+}
+
+// decideRegistrationOutcome is cmdConnect's first-run "ask before
+// registering" step (interactive forced by the caller so a test can
+// drive it without a real terminal — see isInteractive's own
+// constraints). A decision already on the store here means a PRIOR
+// connect got as far as asking but never reached Register: most
+// plausibly this exact register call failing last time.
+//
+//   - A prior "no" is read back outright — re-asking an already-declined
+//     question on every failed retry is its own kind of unsafe, and
+//     there is nothing else to fill in.
+//   - A prior "yes" WITH an address already on file is read back too.
+//   - A prior "yes" with NO address on file yet (a crash between the two
+//     writes on a first run, or an adopted state dir carrying a decision
+//     but no address) is NOT read back whole — that would register with
+//     the mining hint and silently never ask for an address at all, in
+//     violation of design rule 5 ("ask before registering," not "ask
+//     once, ever"). finishMiningEnabled asks only the missing half: the
+//     address, not the enable question again.
+//
+// No decision on file at all falls through to askMiningQuestion, exactly
+// as a genuinely first-ever connect always has.
+func decideRegistrationOutcome(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
+	enabled, ok, err := store.LoadMiningEnabled()
+	if err != nil || !ok {
+		return askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, interactive, false)
+	}
+	if !enabled {
+		return miningEnableOutcome{}, exitOK
+	}
+	if address, ok, err := store.LoadPayoutAddress(); err == nil && ok {
+		return miningEnableOutcome{enabled: true, payoutAddress: address}, exitOK
+	}
+	return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, interactive)
+}
+
+// registrationHint turns the mining question's outcome into register's
+// requested_scopes: the claim page's mining pre-tick reads this hint, so
+// it must reflect what was actually just decided (or read back — see the
+// register-failure retry above), never a value fixed before the question
+// was ever asked.
+func registrationHint(outcome miningEnableOutcome) []string {
+	if outcome.enabled {
+		return []string{"mining"}
+	}
+	return nil
 }
 
 // pollOnce checks status once and acts on it: advances the stored
