@@ -57,6 +57,28 @@ whoever's machine is doing the release, after the version bump and the tag.
 5. `npm publish` from `npm/`, by hand. Confirm the published version on npm matches
    the tag.
 
+## Manually verifying install.ps1
+
+Not covered by CI: `ci.yml`'s Windows runner does `go vet`/`go test`/`go build`
+only, never `install.ps1` itself — it downloads a real GitHub release over a
+real network call to `api.github.com`, not something worth building a CI stub
+for one script. `setup.sh`'s equivalent behavior (the config it writes, ending
+with a mining decision on file) has an automated test that actually runs it,
+`cmd/dropin-miner/installer_test.go`; `install.ps1` has no PowerShell
+equivalent yet. After cutting a release, run it once by hand (a real Windows
+machine, or `pwsh` elsewhere — the script is plain PowerShell; the CIM
+processor-architecture query is its only genuinely Windows-only line):
+
+1. `irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex`
+   against a scratch `$env:TOKENDROP_HOME`.
+2. Confirm the checksum step actually ran: a deliberately wrong `checksums.txt`
+   should throw, not silently pass.
+3. Confirm the written `tokendrop.toml` has `[platform]`/`[mining]`/`[miner]`
+   blocks, and no unconditional `enabled = true` under `[mining]` unless
+   `TOKENDROP_MINING=1` was set with input redirected.
+4. Confirm `connect -mining` actually ran: a claim URL printed, and
+   `dropin-miner status` afterward showing the registration it made.
+
 ## What this doesn't cover
 
 Whether `npm/package.json`'s version SHOULD track the GitHub release tag 1:1 (rather
