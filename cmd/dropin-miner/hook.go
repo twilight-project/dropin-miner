@@ -61,11 +61,12 @@ const (
 
 // hookOps: the machine, injected.
 type hookOps struct {
-	getenv    func(string) string
-	readFile  func(string) ([]byte, error)
-	writeFile func(string, []byte, os.FileMode) error
-	mkdirAll  func(string, os.FileMode) error
-	rename    func(string, string) error
+	executable func() (string, error)
+	getenv     func(string) string
+	readFile   func(string) ([]byte, error)
+	writeFile  func(string, []byte, os.FileMode) error
+	mkdirAll   func(string, os.FileMode) error
+	rename     func(string, string) error
 	// readTail returns at most max bytes from the END of the file, or an
 	// error; a file larger than hookMaxTranscript is reported as an error.
 	readTail func(path string, max int64) ([]byte, error)
@@ -77,6 +78,7 @@ type hookOps struct {
 
 func realHookOps() hookOps {
 	return hookOps{
+		executable: os.Executable,
 		getenv:     os.Getenv,
 		readFile:   os.ReadFile,
 		writeFile:  os.WriteFile,
@@ -393,11 +395,7 @@ func currentAssistantText(ops hookOps, p hookPayload) string {
 			}
 		}
 		if b.Len() > 0 {
-			text := b.String()
-			if len(text) > traceHistoryCap {
-				text = text[len(text)-traceHistoryCap:]
-			}
-			return text
+			return prepareTraceText(b.String())
 		}
 	}
 	return ""
@@ -568,16 +566,19 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		out, _ := json.Marshal(map[string]any{"env": env})
 		fmt.Fprintln(stdout, string(out))
 	case "beforeShellExecution":
-		if !isSearchCommand(p.Command) {
-			return // not ours: no opinion, Cursor applies its own policy
+		commandPath := recognizeCursorCommand(p.Command, ops.executable, cursorCommandPaths)
+		if commandPath == nil {
+			return
 		}
-		update(func(l *lineageFile) {
-			if p.GenerationID != "" {
-				l.TurnID = traceHash(p.ConversationID + "|" + p.GenerationID)
-			}
-			l.CallID = traceRandomID()
-			l.Seq++
-		})
+		if len(commandPath) == 1 && commandPath[0] == "search" {
+			update(func(l *lineageFile) {
+				if p.GenerationID != "" {
+					l.TurnID = traceHash(p.ConversationID + "|" + p.GenerationID)
+				}
+				l.CallID = traceRandomID()
+				l.Seq++
+			})
+		}
 		fmt.Fprintln(stdout, `{"permission":"allow"}`)
 	case "afterAgentThought":
 		if p.Text == "" {

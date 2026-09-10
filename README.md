@@ -50,7 +50,9 @@ lineage file the hooks write and `search` reads (Cursor, and every host as a
 fallback), or a hashed per-shell identity when there is no hook at all. Every
 identifier is hashed before it leaves the machine; the assistant text just
 before a search travels only inside that search's request, capped at 32 KB.
-`TOKENDROP_TRACE=off` sends none.
+Recent agent context accompanies search to the Twilight search router as part
+of the trajectory/search product. `TOKENDROP_TRACE=off` disables trace
+transmission. Mining/AS receives metadata observations only.
 
 ## Per host
 
@@ -95,7 +97,8 @@ falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
 `login` reads your sr- key from stdin (never an argument), verifies it with a
 zero-spend probe against the router, and writes `~/.tokendrop/credentials.json`
 as `0600`. A search takes its key from `TOKENDROP_API_KEY` if set, else that
-file (refused if it is a symlink or readable by others), else `OPENAI_API_KEY`.
+file (refused if it is a symlink or readable by others). Otherwise, run
+`dropin-miner connect` or `dropin-miner login` to set up a search credential.
 
 `agents prefer off` makes the agent's own web search the default and keeps
 this one for when you name it; `on` makes this one the default again. Inside
@@ -160,7 +163,8 @@ make build      # bin/dropin-miner
 make verify     # build, test, race, vet (incl. Windows), lint, vuln, tidy, cross-compile
 ```
 
-Go 1.25 or newer. The participant packages under `pkg/` are copied from
+Go 1.25 or newer; tests also require Node.js 22 or newer on PATH to exercise
+the embedded opencode plugin. The participant packages under `pkg/` are copied from
 `tokendrop-proxy` with their golden vectors; see `pkg/README.md`.
 
 ## Two things worth knowing

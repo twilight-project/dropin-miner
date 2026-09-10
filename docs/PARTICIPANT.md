@@ -96,6 +96,10 @@ earn nothing.
 
 ## What travels with a search, and how to turn it off
 
+Recent agent context travels to the Twilight search router as part of the
+trajectory/search product. Mining/AS receives metadata observations only.
+`TOKENDROP_TRACE=off` disables trace transmission.
+
 Each search carries a small `trace` beside the query so the router can group
 one task's searches: hashed session and turn identifiers (your agent's real
 ids never leave the machine), a call counter, and the assistant text just

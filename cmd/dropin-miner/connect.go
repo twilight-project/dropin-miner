@@ -252,12 +252,8 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		}
 	}
 
-	// WP2-adversarial-review finding 3: the PLATFORM bearer, resolved
-	// from credentials.json alone — never resolveAPIKey's
-	// TOKENDROP_API_KEY/OPENAI_API_KEY fallbacks, which exist for
-	// search's router credential and belong to whatever account a
-	// developer's shell happens to export, not necessarily this
-	// installation's own agent.
+	// Platform calls use the stored agent credential; the search environment
+	// override does not apply to this installation's enrollment.
 	key, err := platformKey(cfg.Miner)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)

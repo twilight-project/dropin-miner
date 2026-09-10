@@ -23,7 +23,7 @@ func emptyMiner(t *testing.T) config.Miner {
 	return config.Miner{IntakeDir: filepath.Join(root, "intake"), SessionsDir: filepath.Join(root, "sessions")}
 }
 
-func TestResolveAPIKeyOrderIsEnvThenFileThenOpenAI(t *testing.T) {
+func TestResolveAPIKeyOrderIsEnvThenFile(t *testing.T) {
 	m := emptyMiner(t)
 	path := credentialsPath(m)
 	if filepath.Dir(path) != filepath.Dir(m.IntakeDir) || filepath.Base(path) != credentialsFile {
@@ -44,14 +44,14 @@ func TestResolveAPIKeyOrderIsEnvThenFileThenOpenAI(t *testing.T) {
 	}
 	k, src, err = resolveAPIKey(envOf(map[string]string{"OPENAI_API_KEY": "sk-canary"}), m)
 	if err != nil || k != "sr-canary-stored" || src != keyFromFile {
-		t.Errorf("file should beat OPENAI_API_KEY: %q %q %v", k, src, err)
+		t.Errorf("stored search credential should be selected: %q %q %v", k, src, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	k, src, err = resolveAPIKey(envOf(map[string]string{"OPENAI_API_KEY": "sk-canary"}), m)
-	if err != nil || k != "sk-canary" || src != keyFromOpenAI {
-		t.Errorf("OPENAI_API_KEY is the last resort: %q %q %v", k, src, err)
+	if err != nil || k != "" || src != keyFromNone {
+		t.Errorf("unrelated environment must not supply a key: %q %q %v", k, src, err)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestResolveAPIKeyRefusesAFileOthersCanRead(t *testing.T) {
 	if err := os.Chmod(path, 0o644); err != nil { // #nosec G302 -- intentionally permissive mode, to exercise the refusal path
 		t.Fatal(err)
 	}
-	// Refused, and NOT silently replaced by the OpenAI fallback.
+	// Preserve the file error regardless of unrelated environment values.
 	k, src, err := resolveAPIKey(envOf(map[string]string{"OPENAI_API_KEY": "sk-canary"}), m)
 	if err == nil || !strings.Contains(err.Error(), "refusing") || k != "" || src != keyFromNone {
 		t.Errorf("a readable credentials file must be refused: %q %q %v", k, src, err)

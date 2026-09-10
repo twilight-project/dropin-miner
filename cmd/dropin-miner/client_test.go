@@ -18,7 +18,7 @@ func envOf(m map[string]string) func(string) string {
 
 // The env-only half of key resolution; the credentials file's place in the
 // order is covered in credentials_test.go.
-func TestAPIKeyPrefersTheTokendropKeyOverTheOpenAIKey(t *testing.T) {
+func TestAPIKeyUsesOnlySearchEnvironment(t *testing.T) {
 	m := emptyMiner(t)
 	got, src, err := resolveAPIKey(envOf(map[string]string{ // #nosec G101 -- env-var names and synthetic canaries, not credentials
 		"TOKENDROP_API_KEY": "canary-tenant-key",
@@ -27,8 +27,8 @@ func TestAPIKeyPrefersTheTokendropKeyOverTheOpenAIKey(t *testing.T) {
 	if err != nil || got != "canary-tenant-key" || src != keyFromEnv {
 		t.Errorf("a personal OpenAI key must not shadow the tenant key: got %q from %q (%v)", got, src, err)
 	}
-	if k, src, _ := resolveAPIKey(envOf(map[string]string{"OPENAI_API_KEY": "canary-personal-key"}), m); k != "canary-personal-key" || src != keyFromOpenAI {
-		t.Errorf("fallback: %q from %q", k, src)
+	if k, src, _ := resolveAPIKey(envOf(map[string]string{"OPENAI_API_KEY": "canary-personal-key"}), m); k != "" || src != keyFromNone {
+		t.Errorf("unrelated source: %q from %q", k, src)
 	}
 	if k, src, err := resolveAPIKey(noEnv, m); k != "" || src != keyFromNone || err != nil {
 		t.Errorf("no key set must mean no key: %q %q %v", k, src, err)

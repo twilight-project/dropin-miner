@@ -31,7 +31,8 @@ type fakeHookFS struct {
 func newFakeHookOps(env map[string]string) (*fakeHookFS, hookOps) {
 	f := &fakeHookFS{files: map[string][]byte{}}
 	return f, hookOps{
-		getenv: func(k string) string { return env[k] },
+		executable: os.Executable,
+		getenv:     func(k string) string { return env[k] },
 		readFile: func(p string) ([]byte, error) {
 			b, ok := f.files[p]
 			if !ok {
@@ -357,7 +358,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 	if out != "" {
 		t.Errorf("a foreign command got an opinion: %s", out)
 	}
-	out, _ = runHook(t, ops, hc, "cursor beforeShellExecution", with(map[string]any{"command": `dropin-miner search -format model "q"`}))
+	out, _ = runHook(t, ops, hc, "cursor beforeShellExecution", with(map[string]any{"command": cursorTestSearch(t)}))
 	if strings.TrimSpace(out) != `{"permission":"allow"}` {
 		t.Errorf("our command was not allowed: %s", out)
 	}
@@ -387,7 +388,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 func TestHookCursorWithoutAConversationDoesNothingButAllow(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{sessionsDir: "/sessions"}
-	out, _ := runHook(t, ops, hc, "cursor beforeShellExecution", map[string]any{"command": "dropin-miner search q"})
+	out, _ := runHook(t, ops, hc, "cursor beforeShellExecution", map[string]any{"command": cursorTestSearch(t)})
 	if strings.TrimSpace(out) != `{"permission":"allow"}` {
 		t.Errorf("allow is owed even with no lineage: %s", out)
 	}
@@ -504,3 +505,12 @@ func keys(m map[string][]byte) []string {
 }
 
 var _ = fmt.Sprintf
+
+func cursorTestSearch(t *testing.T) string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return (binEntry{command: executable}).searchCommand() + ` "q"`
+}

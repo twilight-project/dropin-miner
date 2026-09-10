@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"unicode/utf8"
 
 	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
@@ -51,9 +52,8 @@ type traceEnvelope struct {
 	HostMeta  json.RawMessage `json:"host_meta,omitempty"`
 }
 
-// traceHash derives the identifier that travels from an identifier that must
-// not: a keyed sha256, hex, 32 chars. Deterministic per raw id (the router
-// can group), irreversible (the host's own id never leaves the machine).
+// traceHash derives a stable identifier using domain-separated SHA-256
+// with a public prefix, truncated to 16 bytes and encoded as hex.
 func traceHash(raw string) string {
 	if raw == "" {
 		return ""
@@ -99,36 +99,14 @@ func decodeTraceBridge(s string) *traceEnvelope {
 // explain it), then drop history, then drop the envelope. Returns nil when
 // nothing may ride.
 //
-// Scrub before truncate, not after: PR #1 review caught that the reverse
-// order lets a secret straddle the truncation boundary — its identifying
-// prefix (sk-, sr-, ...) falls before the cut, and what remains is a bare,
-// unrecognizable tail that no pattern matches. Scrubbing the full text
-// first means a secret is either fully replaced by the (short, fixed-size)
-// placeholder before truncation ever runs, or it never matched at all;
-// either way there is no fragment left for truncation to create. This also
-// makes traceHistoryCap an exact bound again rather than an approximate
-// one — redaction can only shrink text (a real secret is always longer
-// than "[REDACTED]"), never grow it past the cap after the fact.
-//
-// The scrub is here rather than at the point history text is first read
-// (currentAssistantText, hookCursor's afterAgent* handlers) because every
-// one of those paths reassigns env.History and then reaches capTrace before
-// the envelope is used for anything — encoded into the bridge, marshaled
-// into the search body, or copied into the lineage sidecar (hookLineage
-// writes l.History = env.History AFTER this call, not before). One
-// chokepoint downstream of every construction site is proof it always
-// runs, where scrubbing at each call site would be proof only that this
-// author remembered to. TraceText, not String: see its doc — "bearer" in
-// ordinary prose is trajectory data here, not a log line.
+// Complete source text must reach preparation before any destructive cap.
+// TraceText preserves ordinary trajectory prose; see its package contract.
 func capTrace(env *traceEnvelope) *traceEnvelope {
 	if env == nil {
 		return nil
 	}
 	for i := range env.History {
-		env.History[i].Text = redact.TraceText(env.History[i].Text)
-		if len(env.History[i].Text) > traceHistoryCap {
-			env.History[i].Text = env.History[i].Text[len(env.History[i].Text)-traceHistoryCap:]
-		}
+		env.History[i].Text = prepareTraceText(env.History[i].Text)
 	}
 	if b, err := json.Marshal(env); err == nil && len(b) <= traceEnvelopeCap {
 		return env
@@ -138,4 +116,21 @@ func capTrace(env *traceEnvelope) *traceEnvelope {
 		return env
 	}
 	return nil
+}
+
+// prepareTraceText accepts complete bounded entries and retains a UTF-8 tail
+// only after scrubbing. Oversize entries are omitted without slicing them.
+func prepareTraceText(text string) string {
+	if len(text) > hookTailBytes {
+		return ""
+	}
+	text = redact.TraceText(text)
+	if len(text) > traceHistoryCap {
+		start := len(text) - traceHistoryCap
+		for start < len(text) && !utf8.RuneStart(text[start]) {
+			start++
+		}
+		text = text[start:]
+	}
+	return text
 }
