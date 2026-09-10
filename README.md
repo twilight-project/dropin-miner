@@ -2,7 +2,7 @@
 
 Web search for coding agents that pays the person running the agent.
 
-One binary. Drop it into Claude Code, Codex, Cursor or opencode and their web
+One binary. Drop it into Claude Code, Codex, Cursor, opencode, Pi or Hermes and their web
 searches go through the Twilight search router, carry the agent's
 trajectory, and earn Twilight Slot rewards to an address you control. No
 daemon, no proxy, no MCP server: between tool calls nothing is running.
@@ -62,6 +62,8 @@ transmission. Mining/AS receives metadata observations only.
 | Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
 | Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus the four tokendrop directories made writable — never the config, key or wallet) so searches record and the claim resumes |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
+| Pi | skill | per-shell | `~/.pi/agent/skills/dropin-miner/` |
+| Hermes | skill | per-shell | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/` (loads next session) |
 | anything else | rules line | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only hook entries that name this binary.

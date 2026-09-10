@@ -54,6 +54,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,6 +109,8 @@ var agentSurfaces = []agentSurface{
 	{"codex", "Codex", "codex"},
 	{"cursor", "Cursor", "cursor"},
 	{"opencode", "opencode", "opencode"},
+	{"pi", "Pi", "pi"},
+	{"hermes", "Hermes", "hermes"},
 }
 
 func surfaceByID(id string) (agentSurface, bool) {
@@ -127,6 +130,8 @@ type agentPaths struct {
 	cursorSkill    string
 	cursorHooks    string
 	opencodePlugin string
+	piSkill        string
+	hermesSkill    string
 }
 
 func (o agentOps) paths(getenv func(string) string) agentPaths {
@@ -150,7 +155,28 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 		cursorSkill:    filepath.Join(o.home, ".cursor", "skills", agentsName, "SKILL.md"),
 		cursorHooks:    filepath.Join(o.home, ".cursor", "hooks.json"),
 		opencodePlugin: filepath.Join(xdg, "opencode", "plugins", agentsName+".js"),
+		piSkill:        filepath.Join(o.home, ".pi", "agent", "skills", agentsName, "SKILL.md"),
+		hermesSkill:    filepath.Join(hermesSkillsDir(o.home, getenv), agentsName, "SKILL.md"),
 	}
+}
+
+// hermesSkillsDir mirrors Hermes' own resolution (hermes_constants.py):
+// HERMES_HOME wins; otherwise the platform default — %LOCALAPPDATA%\hermes on
+// Windows, ~/.hermes elsewhere — with skills under <home>/skills. Installs
+// land on machines we do not control, so we honor the override rather than
+// hardcode a single path.
+func hermesSkillsDir(home string, getenv func(string) string) string {
+	if h := strings.TrimSpace(getenv("HERMES_HOME")); h != "" {
+		return filepath.Join(h, "skills")
+	}
+	if runtime.GOOS == "windows" {
+		base := strings.TrimSpace(getenv("LOCALAPPDATA"))
+		if base == "" {
+			base = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(base, "hermes", "skills")
+	}
+	return filepath.Join(home, ".hermes", "skills")
 }
 
 // binEntry is how every host reaches the binary: its absolute path (agents
@@ -581,6 +607,15 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 			p.notes = append(p.notes, s.label+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
+		case "pi":
+			if !planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
+				p.skipped = append(p.skipped, s.label+": already installed")
+			}
+		case "hermes":
+			if !planWrite(ops, s.label, paths.hermesSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
+				p.skipped = append(p.skipped, s.label+": already installed")
+			}
+			p.notes = append(p.notes, s.label+": Hermes loads skills at session start, so this takes effect next session (or run `/skills install --now` inside Hermes)")
 		}
 	}
 	return p
@@ -836,6 +871,10 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface,
 			}
 		case "opencode":
 			rm(paths.opencodePlugin)
+		case "pi":
+			rm(filepath.Dir(paths.piSkill))
+		case "hermes":
+			rm(filepath.Dir(paths.hermesSkill))
 		}
 		if !removed {
 			p.skipped = append(p.skipped, s.label+": not installed")
@@ -897,6 +936,14 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected [
 		case "opencode":
 			if exists(paths.opencodePlugin) {
 				state = "installed (plugin)"
+			}
+		case "pi":
+			if exists(paths.piSkill) {
+				state = "installed (skill)"
+			}
+		case "hermes":
+			if exists(paths.hermesSkill) {
+				state = "installed (skill)"
 			}
 		}
 		found := "not on PATH"
