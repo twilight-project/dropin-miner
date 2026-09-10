@@ -9,13 +9,16 @@ There is nothing to keep running. The miner lives inside your agent's tool
 calls: each search records itself and starts a short background step that
 joins the open epoch and submits; your agent's start and stop do the same.
 
-## You need three things
+## You need two things
 
 | | |
 |---|---|
-| **A search-router account** | `platform.nyks.dev` |
-| **An API key** | project → Keys → `sr-…`. Shown once at creation; mint a new one if you closed that dialog. |
-| **Somewhere to be paid** | setup makes a wallet for you, or you paste a `twilight1…` address you already control (Keplr, say). |
+| **A moment to claim your agent** | Setup prints a link. Visit it, sign in (or create an account — `platform.nyks.dev`), and approve mining. Search itself works before you do this; only the reward waits on it. |
+| **Somewhere to be paid** | Setup makes a wallet for you, or you paste a `twilight1…` address you already control (Keplr, say). |
+
+There is no API key to go and mint first. Setup registers your agent with
+the search platform itself and stores the key it gets back — nothing to
+copy, nothing to paste.
 
 ### Where rewards land
 
@@ -45,33 +48,21 @@ Setup asks, in order:
 
 | it asks | what to know |
 |---|---|
-| **Use the previous installation?** | Only if one is found in `~/.tokendrop` or set aside beside it. Yes keeps your wallet, enrollment and key; the questions below that they answer are then skipped. |
-| **An enrollment token** | Generate it when asked, not before: it lasts 15 minutes and works once. `platform.nyks.dev → Mining → Slot 3 → Generate enrollment token` |
-| **Wallet, or your own address?** | The wallet prints its 24 words once. Have paper ready. |
-| **Your sr- API key** | Typed with echo off, checked against the router without spending, stored owner-only in `~/.tokendrop/credentials.json`. Press Enter to skip and run `dropin-miner login` later. |
+| **Use the previous installation?** | Only if one is found in `~/.tokendrop` or set aside beside it. Yes keeps your wallet, registration and key; the questions below that they answer are then skipped. |
+| **Enable mining rewards?** | A bare Enter answers no — search still works either way. Yes asks the next question now; changing your mind later is `dropin-miner mining enable` (or `mining disable` to stop). |
+| **Wallet, or your own address?** | Only asked after yes above. The wallet prints its 24 words once. Have paper ready. |
 | **Add settings to your shell profile?** | Puts the binary on PATH and sets `TOKENDROP_CONFIG`. Saying no just means longer commands. |
 | **Set up the coding agents found here?** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
 
-Use a key from the **same account you enrolled with**. A key from a different
-account returns a clean 200 and earns nothing, with no error anywhere. That is
-the easiest mistake to make.
-
-To change or check the stored key later:
-
-```bash
-dropin-miner login          # paste a new key; replaces the stored one
-dropin-miner login -show    # where a search would get its key, masked
-dropin-miner login -forget  # remove the stored key
-```
-
-`TOKENDROP_API_KEY` in an agent's environment, when set, takes precedence over
-the stored key — useful for one shell on a second account.
+Then it prints a claim link and waits a few minutes for you to visit it. Not
+required right there and then: search already works, and revisiting the link
+later (or just using an agent — it resumes on its own) finishes the rest.
 
 ## Then check
 
 ```bash
+dropin-miner status          # what this installation has and has not completed
 dropin-miner payout show     # ACTIVE, and the address as the chain renders it
-dropin-miner login -show     # which key a search would use
 dropin-miner agents status   # which agents are set up
 dropin-miner doctor          # connected, enrolled, joined, paid, earning
 ```
@@ -168,6 +159,14 @@ operator at <https://platform.nyks.dev/contact-us> and say which address you
 want to change *to*. Nobody needs your API key, your recovery phrase, or the
 contents of `~/.tokendrop/` to approve a payout address, and no operator will
 ask you for them.
+
+## Manual enrollment
+
+The portal's older path — `dropin-miner enroll -assertion`, `login`, `join`,
+`wallet register`, `payout set` — still works and coexists with `connect`,
+for the rare case scripting against those specific commands directly is what
+you want. `dropin-miner help` describes each. Everything above this line is
+the path setup actually takes; this one it does not.
 
 ## Removing it, and coming back
 
