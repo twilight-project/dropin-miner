@@ -128,15 +128,15 @@ prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
 block in `~/.codex/config.toml` that widens its sandbox just enough: network
-on, plus the tokendrop **state** directory as a writable root (the detached
-claim resume writes there after every search, mining or not), and the intake,
-sessions and spool directories too once `[miner]` records searches, so the
-mining observation can be recorded. Deliberately those directories and never
-the home itself: `tokendrop.toml`, `credentials.json` and `wallet/` stay
-read-only to sandboxed commands, so a command that goes wrong inside Codex
-cannot rewrite where your credentials are sent. Without the block, Codex's
-default `workspace-write` sandbox lets the search return results but silently
-blocks the write, so searches earn nothing and the claim is never picked up.
+on, and the tokendrop intake, sessions, state and spool directories made
+writable, so the mining observation can be recorded and the detached claim
+resume can write there after every search. Deliberately those directories and
+never the home itself: `tokendrop.toml`, `credentials.json` and `wallet/`
+stay read-only to sandboxed commands, so a command that goes wrong inside
+Codex cannot rewrite where your credentials are sent. Without the block,
+Codex's default `workspace-write` sandbox lets the search return results but
+silently blocks the write, so searches earn nothing and the claim is never
+picked up.
 If you already keep your own `[sandbox_workspace_write]` table, install leaves
 it alone and prints the settings to add by hand.
 
