@@ -46,18 +46,33 @@ type stubPlatform struct {
 	slots      []string
 	consoleURL string // "" means the stub omits console_url, matching an older platform
 
-	registerCalls int
-	statusCalls   int
-	enrollCalls   int
+	registerCalls           int
+	statusCalls             int
+	enrollCalls             int
+	lastRequestedScopes     []string
+	lastRequestedScopesSeen bool
+	failNextRegisters       int
 }
 
 func newStubPlatform(t *testing.T) *stubPlatform {
 	t.Helper()
 	f := &stubPlatform{status: "unclaimed", slots: []string{"twilight-slot-3"}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/agents/register", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			RequestedScopes []string `json:"requested_scopes"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.registerCalls++
+		f.lastRequestedScopes = body.RequestedScopes
+		f.lastRequestedScopesSeen = true
+		if f.failNextRegisters > 0 {
+			f.failNextRegisters--
+			f.mu.Unlock()
+			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "internal"}})
+			return
+		}
 		f.mu.Unlock()
 		writeStubJSON(w, http.StatusCreated, map[string]any{
 			"agent_id": "agent-1", "key": "sr-stubkey",
@@ -136,6 +151,24 @@ func (f *stubPlatform) counts() (register, status, enroll int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registerCalls, f.statusCalls, f.enrollCalls
+}
+
+// requestedScopes returns the requested_scopes the most recent register
+// call actually sent (nil if it sent none, or omitted the field
+// entirely), and whether a register call has happened at all.
+func (f *stubPlatform) requestedScopes() (scopes []string, seen bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastRequestedScopes, f.lastRequestedScopesSeen
+}
+
+// failNextRegister makes the next n register calls fail with a 500 —
+// used to exercise a register call that fails after the mining question
+// has already been answered and persisted.
+func (f *stubPlatform) failNextRegister(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failNextRegisters = n
 }
 
 func writeStubJSON(w http.ResponseWriter, status int, v any) {
@@ -480,10 +513,11 @@ func TestConnectCaseAccountExistsSearchAndMining(t *testing.T) {
 	as := newStubAS(t)
 	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
 
-	// First run: register, and (non-interactive stdin, [mining] enabled
-	// explicit=true with no address) the mining question resolves via
-	// config, silently, with no address yet.
-	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+	// First run: (non-interactive stdin, [mining] enabled explicit=true
+	// with no address) the mining question resolves via config, silently,
+	// with no address yet — then registers, hinting the scope it just
+	// decided.
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
 		t.Fatal("first connect failed")
 	}
 	// Give it a payout address the way a scripted install would: set it
@@ -513,9 +547,10 @@ func TestConnectCaseAccountExistsSearchAndMining(t *testing.T) {
 	}
 }
 
-// Case: claimed with search only, mining added later — connect's
-// -mining hint at registration is not required; the granted scope
-// alone triggers enrollment on the next poll (design decision 3).
+// Case: claimed with search only, mining added later — a registration hint
+// (a "no" at the terminal, here) is not binding on the platform; the
+// granted scope alone triggers enrollment on the next poll (design
+// decision 3).
 func TestConnectCaseMiningGrantedLater(t *testing.T) {
 	withShortConnectTimings(t)
 	platform := newStubPlatform(t)
@@ -638,7 +673,7 @@ func TestAddressSetAfterEnrollmentIsDeclaredOnTheNextRun(t *testing.T) {
 	as := newStubAS(t)
 	cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
 
-	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
 		t.Fatal("first connect failed")
 	}
 	platform.claim("credits", "mining")
@@ -690,7 +725,7 @@ func TestDeclareIsNotRepeatedOnceSettled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, _, _ := runConnect(t, cfgPath, nil, "-mining"); code != exitOK {
+	if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
 		t.Fatal("first connect failed")
 	}
 	if err := store.SavePayoutAddress("twilight1225q9dwktuz2vjj0q220m2jjy3x8cajwcfueq0"); err != nil {

@@ -90,7 +90,7 @@ func TestRegisterReturnsAgentIdentity(t *testing.T) {
 		t.Error("empty requested_scopes was sent as a field instead of omitted")
 	}
 
-	// -mining sends requested_scopes as a hint.
+	// A non-empty requested_scopes is sent as a hint.
 	stub.register = func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&sawBody)
 		writeJSON(w, http.StatusCreated, map[string]any{

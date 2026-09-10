@@ -104,14 +104,15 @@ $env:TOKENDROP_CONFIG = $cfg
 & (Join-Path $BinDir "dropin-miner.exe") version
 
 # ── connect ────────────────────────────────────────────────────────────────
-# Registers, stores the key it mints, asks the mining question in this
-# window when one is present, creates or takes a wallet. Prints the claim
+# Asks the mining question in this window when one is present, creates or
+# takes a wallet, then registers and stores the key it mints (the answer
+# just given hints the claim page's mining pre-tick). Prints the claim
 # URL and waits a few minutes for it; if nobody has claimed by then it says
 # so and exits — the claim still works whenever it happens, picked up
 # automatically by your first real search.
 Write-Host "==> Connecting"
 $env:TOKENDROP_WALLET_DIR = Join-Path $HomeDir "wallet"
-& (Join-Path $BinDir "dropin-miner.exe") connect -mining -config $cfg
+& (Join-Path $BinDir "dropin-miner.exe") connect -config $cfg
 if ($LASTEXITCODE -ne 0) { throw "connect failed (exit $LASTEXITCODE)" }
 
 Write-Host @"

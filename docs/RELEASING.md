@@ -76,7 +76,7 @@ processor-architecture query is its only genuinely Windows-only line):
 3. Confirm the written `tokendrop.toml` has `[platform]`/`[mining]`/`[miner]`
    blocks, and no unconditional `enabled = true` under `[mining]` unless
    `TOKENDROP_MINING=1` was set with input redirected.
-4. Confirm `connect -mining` actually ran: a claim URL printed, and
+4. Confirm `connect` actually ran: a claim URL printed, and
    `dropin-miner status` afterward showing the registration it made.
 
 ## What this doesn't cover

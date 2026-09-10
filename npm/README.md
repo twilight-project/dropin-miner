@@ -33,7 +33,7 @@ Everything happens at four moments the agent already has.
 
 | moment | who runs it | what happens |
 |---|---|---|
-| install | you, once | connect registers and stores the key, mining question, wallet or address, skill and hooks written per agent, claim link printed |
+| install | you, once | mining question, wallet or address, connect registers and stores the key, skill and hooks written per agent, claim link printed |
 | session start | a hook | seed the context-window counter, start a flush |
 | tool call | the agent | `dropin-miner search` posts to the router with your key and the trace envelope, prints results, records the served request id, starts a flush |
 | session end | a hook | start a flush |
@@ -74,7 +74,7 @@ dropin-miner flush [-force]
 dropin-miner login [-show | -forget | -key-env VAR]
 dropin-miner enroll | payout | join | status | doctor | earnings
 dropin-miner wallet init|address|register|balance|send
-dropin-miner connect [-name ...] [-mining]
+dropin-miner connect [-name ...]
 dropin-miner mining enable | disable
 ```
 
