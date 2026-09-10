@@ -63,6 +63,19 @@ router_url = "` + f.srv.URL + `"
 	if err := os.WriteFile(cfg, []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// miningActive's own default (an absent decision reads as stopped)
+	// is meant for a state dir nothing has ever decided anything about;
+	// this fixture models an installation mining is already configured
+	// for, so it needs an explicit decision the way a real one would
+	// have from connect. Tests exercising the disabled state overwrite
+	// this.
+	store, err := auth.OpenStore(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
 	return f, cfg, root
 }
 

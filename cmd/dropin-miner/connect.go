@@ -344,30 +344,33 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 //
 // mining_decision.json is written by askMiningQuestion on every path
 // (connect's first run, `mining enable`, interactive or scripted)
-// before this is ever consulted, so a fresh agent-onboarding install is
-// never in a "no decision" state. ok=false — no decision file at all —
-// is the scripted-legacy-install state instead: setup.sh/install.ps1
-// write `[mining] enabled = true` straight into the config and have no
-// terminal question of their own to persist a decision from, so this
-// defaults to active exactly as that flow's own unconditional `enabled
-// = true` already implies. There is no config fallback beyond that
-// default — config.Mining.Enabled is never consulted here.
+// before this is ever consulted, so a fresh install is never in a "no
+// decision" state — setup.sh and install.ps1 now run `connect -mining`
+// themselves instead of enrolling on their own, so every install this
+// runs against has already been asked. There is no config fallback —
+// config.Mining.Enabled is never consulted here.
 //
-// err != nil is NOT the same absence: the only two writers of this file
-// are askMiningQuestion and `mining disable`, so a file that exists but
-// cannot be read or parsed is a decision that was made and then lost —
-// most plausibly a disable's "off" — not a decision never made at all.
-// Defaulting a corrupt file to active would resume mining a participant
-// tried to stop; false is the side that costs nothing worse than an
-// extra `mining enable`. printAgentIdentityStatus names the file when
-// this is why mining reads as stopped, so it is never silent either.
+// ok=false (no decision file at all) used to default to active, for the
+// legacy installers that enrolled without ever running connect and so
+// never wrote one. Now that both installers run connect, an absent file
+// means only one thing: a state directory nothing has ever decided
+// anything about, which is not active until something says so — return
+// false, the same as an unreadable one.
+//
+// err != nil is NOT the same as never having decided, though the answer
+// is the same: the only two writers of this file are askMiningQuestion
+// and `mining disable`, so a file that exists but cannot be read or
+// parsed is a decision that was made and then lost — most plausibly a
+// disable's "off" — not a decision never made. Defaulting a corrupt
+// file to active would resume mining a participant tried to stop; false
+// is the side that costs nothing worse than an extra `mining enable`.
+// printAgentIdentityStatus names the file when THIS is why mining reads
+// as stopped (a bare absent file needs no such note — there is nothing
+// to explain beyond "never decided").
 func miningActive(store *auth.Store) bool {
-	enabled, ok, err := store.LoadMiningEnabled()
+	enabled, _, err := store.LoadMiningEnabled()
 	if err != nil {
 		return false
-	}
-	if !ok {
-		return true
 	}
 	return enabled
 }

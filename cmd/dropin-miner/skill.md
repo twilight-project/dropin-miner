@@ -34,9 +34,15 @@ never change it on your own.
 {{PREFER_RULES}}
 - Do not search when the answer is already known and not time-sensitive, or when the
   data is private to this machine or project.
-- HTTP 401, or an exit saying `no API key`, means this machine has no valid sr- key.
-  Tell the user to run `dropin-miner login` (it reads the key from the terminal and
-  stores it owner-only; `TOKENDROP_API_KEY` in the environment overrides it). Never
-  put the key in a command line or a file yourself. Do not retry.
+- HTTP 401, or an exit saying `no API key`, means this installation has not
+  registered yet. Tell the user to run `dropin-miner connect` — it registers
+  and stores a key itself, and search works right after, before any claim.
+  If it prints a claim URL, show it to the user exactly as printed: never
+  open it yourself, and never shorten, paraphrase, or summarize it away.
+  Visiting it is on the user's own time — nothing here blocks on it, and a
+  later search picks the claim up automatically once they do. `dropin-miner
+  status` says what has been claimed and whether mining is enrolled. Never
+  put a key in a command line or a file yourself. Do not retry the search
+  until the user says `connect` is done.
 - Do not silently fall back to another search tool on an error; the user earns
   through this one. Report the error and let them decide.

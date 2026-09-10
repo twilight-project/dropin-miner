@@ -433,6 +433,39 @@ func TestMinerAllowsPlainHTTPRouterURLOnLoopback(t *testing.T) {
 	}
 }
 
+// [miner] enabled = true used to require [mining] enabled = true too — a
+// real bug the installer rewrite's own end-to-end test found: setup.sh
+// always writes [miner] enabled = true (router intake is configured
+// unconditionally) but no longer writes [mining] enabled = true
+// unconditionally — that is the mining decision now, made by connect, not
+// the installer. What [miner] actually needs is an AS to eventually talk
+// to, not that mining is currently on.
+func TestMinerEnabledDoesNotRequireMiningEnabled(t *testing.T) {
+	// filepath.ToSlash: a raw t.TempDir() on Windows is C:\Users\..., and
+	// TOML's basic-string escaping reads an un-slashed backslash as the
+	// start of an escape sequence (\U needs eight hex digits) — the same
+	// rule TestUpstreamCAFile above already works around.
+	body := "[mining]\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\nstate_dir = \"" + filepath.ToSlash(t.TempDir()) + "\"\n\n" +
+		"[miner]\nenabled = true\nintake_dir = \"" + filepath.ToSlash(t.TempDir()) + "\"\nsessions_dir = \"" + filepath.ToSlash(t.TempDir()) + "\"\n"
+	if _, _, err := Load([]string{"-config", writeTOML(t, body)}, noEnv); err != nil {
+		t.Fatalf("[miner] enabled = true with [mining] enabled unset (only as_url given) was refused: %v", err)
+	}
+}
+
+// The genuine gap [miner] enabled = true still refuses: no [mining] block
+// worth anything at all (no AS named) — a hand-edited config could reach
+// this; the installer, which always names an AS, cannot.
+func TestMinerEnabledStillRequiresAnASNamed(t *testing.T) {
+	body := "[miner]\nenabled = true\nintake_dir = \"" + filepath.ToSlash(t.TempDir()) + "\"\nsessions_dir = \"" + filepath.ToSlash(t.TempDir()) + "\"\n"
+	err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv)
+	if err == nil {
+		t.Fatal("[miner] enabled = true with no [mining] as_url at all was accepted")
+	}
+	if !strings.Contains(err.Error(), "needs a [mining] block") {
+		t.Errorf("the refusal does not name the rule: %v", err)
+	}
+}
+
 func TestMiningRejectsUserinfoURL(t *testing.T) {
 	body := "[mining]\nenabled = true\nas_url = \"https://token@as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
 	if err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv); !strings.Contains(err.Error(), "userinfo") {

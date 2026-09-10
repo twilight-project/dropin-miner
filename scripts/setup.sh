@@ -1,24 +1,46 @@
 #!/bin/sh
 # dropin-miner setup — everything after the binary, asked as it goes.
 #
-#   config, enrollment, where you get paid, the first join, your API key,
-#   your shell profile, your coding agents, and a first flush. No service:
-#   the miner runs inside your agents' tool calls and nowhere else.
+#   Write the config, then hand off to `connect`: it registers with the
+#   search platform, stores the key it mints, asks the mining question at
+#   whichever terminal is present, creates or takes a wallet, and — once
+#   you claim the printed URL — enrolls and declares a payout unattended.
+#   No enrollment token to generate, no key to paste, no join to run by
+#   hand. No service: the miner runs inside your agents' tool calls and
+#   nowhere else.
 #
 # Env knobs (all optional):
-#   TOKENDROP_BIN        the dropin-miner binary (default: ./bin/dropin-miner, then PATH)
-#   TOKENDROP_HOME       state directory (default ~/.tokendrop — shared with a proxy if you run one)
+#   TOKENDROP_BIN                     the dropin-miner binary (default:
+#                                      ./bin/dropin-miner, then PATH)
+#   TOKENDROP_HOME                    state directory (default ~/.tokendrop —
+#                                      shared with a proxy if you run one)
 #   TOKENDROP_SLOT / TOKENDROP_CHAIN / TOKENDROP_AS_URL / TOKENDROP_ROUTER_URL
-#                        the Slot to mine for (defaults: 3, twilight-testnet-1,
-#                        https://rewards.nyks.dev, https://router-api.nyks.dev)
+#                                      the Slot to mine for (defaults: 3,
+#                                      twilight-testnet-1, https://rewards.nyks.dev,
+#                                      https://router-api.nyks.dev)
+#   TOKENDROP_PLATFORM_URL / TOKENDROP_AGENTS_API_URL
+#                                      the search platform (defaults:
+#                                      https://platform.nyks.dev,
+#                                      https://agents-v1.nyks.dev — two hosts,
+#                                      not a typo; see README)
+#   TOKENDROP_MINING=1                no terminal (piped, CI): answer the
+#                                      mining question "yes" the way a
+#                                      terminal would, matching connect's own
+#                                      scripted-install path. Ignored when a
+#                                      terminal IS present — that answer
+#                                      always comes from the terminal.
+#                                      TOKENDROP_PAYOUT_ADDRESS, if also set,
+#                                      is used as the payout address.
 set -eu
 
 SLOT="${TOKENDROP_SLOT:-3}"
-# Current target: the public testnet (twilight-testnet-1). Change these four
+# Current target: the public testnet (twilight-testnet-1). Change these six
 # lines (here + install.ps1 + README.md + npm/README.md) at the mainnet cutover.
 CHAIN="${TOKENDROP_CHAIN:-twilight-testnet-1}"
 AS_URL="${TOKENDROP_AS_URL:-https://rewards.nyks.dev}"
 ROUTER="${TOKENDROP_ROUTER_URL:-https://router-api.nyks.dev}"
+PLATFORM_URL="${TOKENDROP_PLATFORM_URL:-https://platform.nyks.dev}"
+AGENTS_API_URL="${TOKENDROP_AGENTS_API_URL:-https://agents-v1.nyks.dev}"
 HOME_DIR="${TOKENDROP_HOME:-$HOME/.tokendrop}"
 
 say(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -44,22 +66,26 @@ say "Using binary: $BIN"; "$BIN" version 2>/dev/null || true
 
 # ── 1b. a previous installation ──────────────────────────────────────────────
 # Nothing we ship ever deletes the state directory: it holds the wallet, the
-# enrollment and the stored key. A user who removed the miner and comes
+# registration and the stored key. A user who removed the miner and comes
 # back, or who set the directory aside as ~/.tokendrop.bak-*, should get
-# those back rather than a second wallet and a second enrollment.
+# those back rather than a second wallet and a second registration.
 #
 # What counts as an installation is any of: wallet/wallet.key,
-# state/refresh.token, credentials.json. describe_install prints what a
-# directory holds; adopt_install moves those pieces (and any unsent spool)
-# into HOME_DIR, never overwriting one that is already there.
-has_install(){ [ -f "$1/wallet/wallet.key" ] || [ -f "$1/state/refresh.token" ] || [ -f "$1/credentials.json" ]; }
+# state/refresh.token (enrolled at the AS), state/agent.json (registered
+# with the search platform — connect's own record, which may exist without
+# the AS enrollment ever having completed), credentials.json. describe_install
+# prints what a directory holds; adopt_install moves those pieces (and any
+# unsent spool) into HOME_DIR, never overwriting one that is already there.
+has_install(){ [ -f "$1/wallet/wallet.key" ] || [ -f "$1/state/refresh.token" ] || [ -f "$1/state/agent.json" ] || [ -f "$1/credentials.json" ]; }
 describe_install(){
   d="$1"; parts=""
   if [ -f "$d/wallet/wallet.key" ]; then
     addr=$("$BIN" wallet address -dir "$d/wallet" 2>/dev/null || echo "?")
     parts="wallet $addr"
   fi
-  [ -f "$d/state/refresh.token" ] && parts="${parts:+$parts, }enrolled"
+  if [ -f "$d/state/refresh.token" ] || [ -f "$d/state/agent.json" ]; then
+    parts="${parts:+$parts, }enrolled"
+  fi
   [ -f "$d/credentials.json" ] && parts="${parts:+$parts, }stored API key"
   [ -d "$d/spool" ] && [ -n "$(ls -A "$d/spool" 2>/dev/null)" ] && parts="${parts:+$parts, }unsent spool"
   printf '%s' "$parts"
@@ -102,7 +128,7 @@ adopt_install(){
 
 if has_install "$HOME_DIR"; then
   say "Previous installation found in $HOME_DIR: $(describe_install "$HOME_DIR")"
-  echo "Its wallet, enrollment and key are used as they are; only what is missing is set up."
+  echo "Its wallet, registration and key are used as they are; only what is missing is set up."
 else
   # Siblings a person or an earlier removal might have left: ~/.tokendrop.bak-DATE,
   # ~/.tokendrop.old, ~/.tokendrop-anything. Newest first.
@@ -115,7 +141,7 @@ else
   if [ -n "$FOUND" ]; then
     say "A previous installation is set aside at $FOUND"
     echo "It holds: $(describe_install "$FOUND")"
-    echo "Using it means the same wallet, the same enrollment and no new tokens to generate."
+    echo "Using it means the same wallet, the same registration and no new tokens to generate."
     if [ -t 0 ]; then
       printf '\nUse it? [Y/n]: '
       read -r ADOPT || ADOPT=n
@@ -129,8 +155,21 @@ else
         if [ -z "$(ls -A "$FOUND" 2>/dev/null)" ]; then rmdir "$FOUND" && echo "  removed the now-empty $FOUND"
         else echo "  left the rest of $FOUND in place (config, logs); delete it when you like"; fi
         ;;
-      *) echo "Left it alone. A fresh wallet and enrollment follow." ;;
+      *) echo "Left it alone. A fresh wallet and registration follow." ;;
     esac
+  fi
+fi
+
+# A stored mining decision can travel silently with an adopted state/
+# directory (it is just one more file in the merge above); say what it is
+# rather than let connect's silence on the question read as "it forgot to
+# ask" — connect will not ask again while a decision is already on file.
+if [ -f "$HOME_DIR/state/mining_decision.json" ]; then
+  if grep -q '"enabled":true' "$HOME_DIR/state/mining_decision.json" 2>/dev/null; then
+    say "A stored mining decision came with this installation: mining is ON. connect will not ask again."
+  else
+    say "A stored mining decision came with this installation: mining is OFF."
+    echo "To turn it on: $BIN mining enable -config $HOME_DIR/tokendrop.toml"
   fi
 fi
 
@@ -143,13 +182,36 @@ CFG="$HOME_DIR/tokendrop.toml"
 if [ -f "$CFG" ] && grep -q '^\[miner\]' "$CFG"; then
   say "Config already has a [miner] block: $CFG (left as is)"
 else
+  # [mining] never says enabled = true unconditionally: a terminal answers
+  # connect's own question, and that answer is the decision. Only a
+  # genuinely non-interactive run (no terminal, TOKENDROP_MINING=1) writes
+  # it here — connect persists whatever this ends up saying either way, so
+  # every install ends with a decision on file, never an absent one.
+  #
+  # Two heredocs with a plain printf between them, not a spliced variable:
+  # command substitution strips trailing newlines, and a MINING_LINES
+  # variable built by concatenating two of them lost the newline between
+  # "enabled = true" and "payout_address = ...", writing invalid TOML
+  # ("truepayout_address"). Appending directly to the file has no such
+  # trap.
   cat > "$CFG" <<TOML
 [[provider]]
 name     = "search-router"
 upstream = "$ROUTER"   # the GATEWAY, not the verification API
 
+[platform]
+base_url       = "$PLATFORM_URL"
+agents_api_url = "$AGENTS_API_URL"
+
 [mining]
-enabled   = true
+TOML
+  if [ ! -t 0 ] && [ "${TOKENDROP_MINING:-}" = "1" ]; then
+    printf 'enabled   = true\n' >> "$CFG"
+    if [ -n "${TOKENDROP_PAYOUT_ADDRESS:-}" ]; then
+      printf 'payout_address = "%s"\n' "$TOKENDROP_PAYOUT_ADDRESS" >> "$CFG"
+    fi
+  fi
+  cat >> "$CFG" <<TOML
 as_url    = "$AS_URL"
 chain_id  = "$CHAIN"
 slot_id   = $SLOT
@@ -166,100 +228,21 @@ TOML
   say "Wrote $CFG"
 fi
 
-# ── 4. enroll ────────────────────────────────────────────────────────────────
-if [ -f "$HOME_DIR/state/refresh.token" ]; then
-  say "Already enrolled — skipping."
-else
-  cat <<'MSG'
-
-Generate your enrollment token NOW (not earlier — it expires in 15 minutes
-and is single-use):
-
-    https://platform.nyks.dev  ->  Mining  ->  Slot 3  ->  Generate enrollment token
-
-Paste it below, then press Enter.
-MSG
-  "$BIN" enroll -assertion -config "$CFG" || die "enrollment failed (expired token? generate a fresh one and re-run)"
-fi
-
-# ── 5. where you get paid ────────────────────────────────────────────────────
-say "Where you get paid"
+# ── 4. connect ────────────────────────────────────────────────────────────────
+# Registers with the search platform (storing the key it mints — nothing to
+# paste), asks the mining question at a terminal when one is present (the
+# config above already answered it otherwise), and creates or takes a wallet.
+# Prints the claim URL and waits a few minutes for it; if nobody has claimed
+# by then it says so and exits 0 — the claim still works whenever it happens,
+# picked up automatically by your first real search. TOKENDROP_WALLET_DIR is
+# exported so a wallet connect creates lands beside the rest of this
+# installation, not the default OS config directory.
+say "Connecting"
 WALLET_DIR="$HOME_DIR/wallet"
-if [ -f "$WALLET_DIR/wallet.key" ]; then
-  PAYOUT=$("$BIN" wallet address -dir "$WALLET_DIR")
-  PAYOUT_SOURCE=wallet
-  echo "Using the wallet already in $WALLET_DIR: $PAYOUT"
-  "$BIN" wallet register -dir "$WALLET_DIR" -config "$CFG"
-else
-  cat <<'MSG'
-This machine can hold your rewards for you, or they can go to a wallet you
-already run (Keplr, say).
+export TOKENDROP_WALLET_DIR="$WALLET_DIR"
+"$BIN" connect -mining -config "$CFG" || die "connect failed"
 
-  [1] Make a wallet here          — nothing to copy, nothing to mistype.
-                                    Prints a 24-word recovery phrase ONCE:
-                                    have paper ready.
-  [2] Paste an address I own      — twilight1…
-
-MSG
-  printf 'Choose [1/2]: '
-  read -r CHOICE || die "stdin ended before you chose. Re-run — enrollment is already done and will be skipped."
-  case "$CHOICE" in
-    1|"")
-      "$BIN" wallet init -dir "$WALLET_DIR" || die "wallet init failed (run this in a real terminal — the recovery phrase must not go into a log)"
-      PAYOUT=$("$BIN" wallet address -dir "$WALLET_DIR")
-      PAYOUT_SOURCE=wallet
-      printf '\nWrite the 24 words down NOW if you have not. Press Enter when they are on paper: '
-      read -r _ || true
-      "$BIN" wallet register -dir "$WALLET_DIR" -config "$CFG"
-      ;;
-    2)
-      printf 'Your twilight1… address: '
-      read -r PAYOUT || PAYOUT=""
-      [ -n "$PAYOUT" ] || die "no address given. Re-run — enrollment is already done and will be skipped."
-      case "$PAYOUT" in twilight1*) ;; *) die "that does not look like a twilight1… address" ;; esac
-      PAYOUT_SOURCE=pasted
-      "$BIN" payout set "$PAYOUT" -config "$CFG"
-      ;;
-    *) die "answer 1 or 2" ;;
-  esac
-fi
-
-# ── 6. join, so the first hour counts ────────────────────────────────────────
-say "Joining the current target epoch"
-"$BIN" join -config "$CFG" || echo "(join did not succeed now; every flush retries it)"
-
-# ── 6b. your API key ─────────────────────────────────────────────────────────
-# The key never goes on a command line: it is handed to `login` through an
-# environment variable that lives only for that one process.
-say "Your API key"
-if [ -f "$HOME_DIR/credentials.json" ]; then
-  echo "A key is already stored in $HOME_DIR/credentials.json — leaving it."
-  echo "  to replace it: $BIN login -config $CFG"
-elif [ ! -t 0 ]; then
-  echo "Not an interactive shell — store the key later with: $BIN login -config $CFG"
-else
-  cat <<'MSG'
-Searches are metered against your sr-… key from platform.nyks.dev → Keys.
-Use a key from the SAME account you enrolled with; another account's key
-returns a clean 200 and earns nothing. It is checked against the router
-without spending and stored owner-only next to your other files.
-
-MSG
-  printf 'Paste your sr- key (Enter to skip): '
-  stty -echo 2>/dev/null || true
-  read -r KEY || KEY=""
-  stty echo 2>/dev/null || true
-  echo
-  if [ -n "$KEY" ]; then
-    DROPIN_SETUP_KEY="$KEY" "$BIN" login -key-env DROPIN_SETUP_KEY -config "$CFG" \
-      || echo "(not stored; when you have a good key: $BIN login -config $CFG)"
-  else
-    echo "Skipped. When you have a key: $BIN login -config $CFG"
-  fi
-  unset KEY
-fi
-
-# ── 7. shell profile ─────────────────────────────────────────────────────────
+# ── 5. shell profile ─────────────────────────────────────────────────────────
 BIN_DIR=$(cd "$(dirname "$BIN")" && pwd)
 START='# >>> dropin-miner >>>'
 END='# <<< dropin-miner <<<'
@@ -307,7 +290,7 @@ case "$ANSWER" in
   *) say "Left your shell profile alone" ;;
 esac
 
-# ── 8. coding agents ─────────────────────────────────────────────────────────
+# ── 6. coding agents ─────────────────────────────────────────────────────────
 say "Coding agents"
 if [ ! -t 0 ]; then
   echo "Not an interactive shell — not touching any agent. When you are ready:"
@@ -328,29 +311,22 @@ MSG
   esac
 fi
 
-# ── 9. a first flush ─────────────────────────────────────────────────────────
-say "First flush"
-"$BIN" flush -config "$CFG" || true
-
 if [ -n "$PROFILE" ]; then CMD="dropin-miner "; CFG_HINT=""; else CMD="$BIN "; CFG_HINT=" -config $CFG"; fi
 cat <<MSG
 ──────────────────────────────────────────────────────────────────────────────
 Setup complete.
 
-1. Your key: "${CMD}login -show$CFG_HINT" says which one a search would use.
-   If you skipped it above:  ${CMD}login$CFG_HINT   (pasted, never typed on a
-   command line). Use a key from the SAME account you enrolled with; another
-   account's key returns a clean 200 and earns nothing.
+1. If a claim URL was printed above and nobody has visited it yet, do that
+   whenever you're ready — nothing else here depends on timing it. Once
+   claimed, mining (if you said yes) enrolls and declares a payout on its
+   own, from the next search.
 
-2. Your payout address: $PAYOUT
-   It is in force NOW — "${CMD}payout show$CFG_HINT" says ACTIVE. Changing it
-   later needs a Slot operator to approve; you keep being paid at the old
-   address until they do.
-
-3. Restart any coding agent that is already open, then search as usual. To
+2. Restart any coding agent that is already open, then search as usual. To
    try it by hand:
      ${CMD}search$CFG_HINT -format model "what is proof of authority consensus"
-   Then: ${CMD}flush$CFG_HINT  and  ${CMD}doctor$CFG_HINT
+
+3. Check in any time:
+     ${CMD}status$CFG_HINT   ${CMD}doctor$CFG_HINT   ${CMD}payout show$CFG_HINT
 
 Notes
   * Nothing runs between searches. Each search records itself and starts a

@@ -17,11 +17,30 @@ subjects wouldn't make obvious on its own.
   proceed unattended. Enabling mining is one question, asked once, at whichever
   terminal is present — `connect`'s first run or, later, `mining enable` — and
   the answer is a decision the client honors from then on, not a default it
-  recomputes. **This does not change what a fresh install does yet**:
-  `setup.sh`/`install.ps1` still drive the existing manual enrollment-token
-  flow; wiring the installer to this instead is a separate, later change.
+  recomputes. **`setup.sh` and `install.ps1` now drive this path** — see the
+  installer bullet below; the manual enrollment-token flow they used to run
+  is still in the binary, for the portal's older path, just no longer what a
+  fresh install runs.
   Full design: `tokendrop-auth-server-design`'s
   `docs/implementation/search-platform-agent-onboarding-design.md`.
+
+- **The installers register instead of enrolling.** `setup.sh` and
+  `install.ps1` no longer generate an enrollment token, prompt for an sr- key,
+  or run `join`: they write the config and run `connect -mining`, which
+  registers with the search platform (storing the key it mints), asks the
+  mining question at whichever terminal is present, creates or takes a
+  wallet, and prints a claim link — search works before that link is ever
+  visited. `[mining] enabled = true` is no longer written unconditionally;
+  a terminal's answer is the decision, and a genuinely non-interactive run
+  (`TOKENDROP_MINING=1`, no terminal present) writes it instead, exactly
+  matching `connect`'s own scripted-install path. A fresh install is
+  therefore never left with no mining decision on file at all — which is
+  also why an absent decision file now reads as **stopped**, not active:
+  that default existed only for these installers' old shape, and the last
+  installation still running it will be reinstalled, not migrated.
+  `enroll -assertion`, `login`, `join`, `wallet register` and `payout set`
+  keep working for the portal's older, manual path; they are simply not
+  what either installer runs anymore.
 
 - **`[platform]` is now two URLs, not one — fixes a real live-test failure,
   not a hypothetical.** `connect`/`mining enable` assumed the search platform's

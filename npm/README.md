@@ -17,13 +17,15 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex
 ```
 
-The installer fetches a checksummed release, then asks its questions in
-order: enrollment token, where to be paid (a wallet it makes here, or an
-address you paste), the first join, your sr- API key (typed with echo off,
-checked against the router, stored owner-only in
-`~/.tokendrop/credentials.json`), your shell profile, and which coding agents
-to set up. The key never goes into a command line or an agent's config;
-`TOKENDROP_API_KEY` in the environment overrides the stored one.
+The installer fetches a checksummed release, writes the config, then hands
+off to `connect`: it registers with the search platform, stores the key it
+mints (nothing to copy, nothing to paste), asks whether to enable mining at
+whichever terminal is present, creates or takes a wallet, and prints a claim
+link. Then it asks about your shell profile and which coding agents to set
+up. Search itself works before you ever visit that link — the claim only
+gates the reward, once you say yes to mining. The key never goes into a
+command line or an agent's config; `TOKENDROP_API_KEY` in the environment
+overrides the stored one.
 
 ## How it works
 
@@ -31,7 +33,7 @@ Everything happens at four moments the agent already has.
 
 | moment | who runs it | what happens |
 |---|---|---|
-| install | you, once | enroll, payout address, first join, skill and hooks written per agent |
+| install | you, once | connect registers and stores the key, mining question, wallet or address, skill and hooks written per agent, claim link printed |
 | session start | a hook | seed the context-window counter, start a flush |
 | tool call | the agent | `dropin-miner search` posts to the router with your key and the trace envelope, prints results, records the served request id, starts a flush |
 | session end | a hook | start a flush |
@@ -77,12 +79,15 @@ dropin-miner mining enable | disable
 ```
 
 `connect` and `mining enable` are the search platform's agent-onboarding path —
-register, get claimed at a printed URL, then mine unattended. `mining disable`
-stops mining for this installation's agent — a best-effort self-service
-revocation at the AS, distinct from the platform's own granted scope, which
-only a human at the console can revoke; `status` says so plainly whenever this
-state holds. `setup.sh` and `install.ps1` don't use any of these yet; they're
-available to run directly.
+register, get claimed at a printed URL, then mine unattended. `setup.sh` and
+`install.ps1` both run `connect` themselves now; run it directly yourself for
+a second agent, a re-run, or a scripted install (see Config below). `mining
+disable` stops mining for this installation's agent — a best-effort
+self-service revocation at the AS, distinct from the platform's own granted
+scope, which only a human at the console can revoke; `status` says so plainly
+whenever this state holds. `enroll`, `login`, `join`, `wallet register` and
+`payout set` are the portal's older, manual path — still work, coexist with
+`connect`, and are not part of what the installers run.
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
 falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
