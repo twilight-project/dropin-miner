@@ -126,8 +126,14 @@ cannot rewrite a command, so its hooks maintain the lineage file and the
 search reads it. The shell hook also allows our command, so Cursor never
 prompts for it.
 
-**Codex** gets a skill. Its sandbox runs shell commands with no network by
-default; allow network for `dropin-miner search` or searches fail silently.
+**Codex** gets a skill, and — when mining is configured — a small marked block
+in `~/.codex/config.toml` that widens its sandbox just enough for a search to
+run: network on, plus your tokendrop home as a writable root so the mining
+observation can be recorded. Without it, Codex's default `workspace-write`
+sandbox lets the search return results but silently blocks the observation
+write, so searches earn nothing. If you already keep your own
+`[sandbox_workspace_write]` table, install leaves it alone and prints the two
+settings to add by hand.
 
 **opencode** gets an in-process plugin that threads the search, plus a line to
 paste into `AGENTS.md`.
