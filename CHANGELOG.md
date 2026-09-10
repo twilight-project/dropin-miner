@@ -117,6 +117,16 @@ subjects wouldn't make obvious on its own.
   obtained. It can no longer name a specific epoch, because nothing
   durable does. `SaveEnrollment`/`LoadEnrollment` are deleted.
 
+- **`doctor`'s "enrolled" fix pointed at the legacy `enroll` command, even
+  on a `connect`-based install.** An installation that ran `connect` has
+  no enrollment token to redeem by hand, so `dropin-miner enroll -config
+  <file>` did nothing useful when printed as the remediation. The fix
+  text now depends on whether this installation ever registered with the
+  search platform: the legacy command for one that never did, and
+  connect-appropriate guidance otherwise — claim the printed URL and run
+  `connect` again for no authorization at all, `mining disable` then
+  `mining enable` for a stored authorization the AS rejected.
+
 - **Logged, not fixed:** `RemoveProviderCredential` (unbinding an
   OpenRouter provider credential at the AS) has no caller — `provider`
   can register a key and has no way to unregister one, mining disable or
