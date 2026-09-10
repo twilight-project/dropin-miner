@@ -88,7 +88,16 @@ func runSetupSh(t *testing.T, bin, home string, extraEnv map[string]string) (cod
 	t.Helper()
 	cmd := exec.Command("sh", setupShPath(t)) // #nosec G204 -- this repo's own scripts/setup.sh, a fixed relative path
 	env := append([]string{}, os.Environ()...)
-	env = append(env, "TOKENDROP_BIN="+bin, "TOKENDROP_HOME="+home)
+	// setup.sh embeds $HOME_DIR straight into TOML string values
+	// (state_dir = "$HOME_DIR/state", etc.) with no escaping of its own —
+	// correct for its real target (macOS/Linux, where $HOME never
+	// contains a backslash), but on Windows CI (this test runs setup.sh
+	// under Git Bash's sh.exe, which understands forward slashes exactly
+	// like backslashes) t.TempDir()'s native C:\Users\... form produces
+	// invalid TOML: \U is parsed as a truncated Unicode escape. Slash the
+	// path only in the value handed to the subprocess — every Go-side
+	// file operation below still uses `home` in its native OS form.
+	env = append(env, "TOKENDROP_BIN="+bin, "TOKENDROP_HOME="+filepath.ToSlash(home))
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)
 	}
