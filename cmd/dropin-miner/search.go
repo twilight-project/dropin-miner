@@ -29,8 +29,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"strconv"
@@ -49,6 +51,14 @@ const (
 	renderSnippetCap  = 400
 	renderCitationCap = 8
 )
+
+// intakeWriteBlocked reports whether an intake write failed because the
+// directory is not writable from inside an agent's sandbox — EACCES on
+// Linux (Landlock), EROFS on macOS (Seatbelt). The EROFS case is matched by
+// string so the check stays correct on every GOOS without a syscall import.
+func intakeWriteBlocked(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || strings.Contains(err.Error(), "read-only file system")
+}
 
 type searchOps struct {
 	getppid  func() int
@@ -223,7 +233,15 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 				rec.ChosenProvider = c.Provider
 			}
 			if _, err := writeIntake(cfg.Miner.IntakeDir, rec); err != nil {
-				fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
+				if intakeWriteBlocked(err) {
+					fmt.Fprintf(stderr, "dropin-miner: the search worked, but its mining observation could NOT be\n"+
+						"  recorded — %s is not writable from inside this agent's sandbox, so\n"+
+						"  searches run here earn nothing. Let the agent write to that directory.\n"+
+						"  For Codex, re-run `dropin-miner agents install`, which now configures it.\n",
+						minerRoot(cfg.Miner))
+				} else {
+					fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
+				}
 			} else if !*noFlush && ops.spawnFlush != nil {
 				_ = ops.spawnFlush(*cfgPath) // best effort; the next search or session flushes it
 			}
