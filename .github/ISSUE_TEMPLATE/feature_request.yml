@@ -1,0 +1,84 @@
+name: Feature request
+description: Propose an enhancement or new capability for dropin-miner
+labels: ["enhancement", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for non-security feature requests.
+
+        **Do not describe security vulnerabilities here.** If the request involves credentials, wallet keys, participant custody, or the AS/platform wire contract, contact the maintainer privately rather than filing a public issue.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Why is it needed?
+      placeholder: Describe the limitation, missing capability, or operational pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen?
+      placeholder: Describe the proposed behavior, CLI command, config key, or documentation update.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - search / hook
+        - flush / mining plane
+        - connect / mining enable / mining disable
+        - pkg/platform (agent onboarding)
+        - pkg/auth (AS wire contract)
+        - wallet / payout
+        - config / install
+        - agents (coding-agent integration)
+        - tooling / docs / CI
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: wire-impact
+    attributes:
+      label: Wire contract / participant-state impact
+      description: Does this change the AS wire contract, the search-platform contract, or what a participant's state directory holds?
+      options:
+        - no wire or state-directory impact
+        - changes CLI behavior only
+        - changes config keys / install flow
+        - changes the AS wire contract (owned by tokendrop-auth-server-design — needs an upstream spec change first)
+        - changes the search-platform contract (owned by search-router — needs an upstream spec change first)
+        - requires further analysis
+    validations:
+      required: true
+
+  - type: textarea
+    id: state-impact
+    attributes:
+      label: State-directory / config impact
+      description: Note any expected change to an existing state directory, a new required config key, or a breaking change to an existing one.
+      placeholder: |
+        - New state file, or a change to an existing one?
+        - New/changed config key?
+        - Breaking for an existing installation, or does it default safely?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches were considered, and why are they less suitable?
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add links, examples, or related issues.
