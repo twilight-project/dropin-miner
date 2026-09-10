@@ -807,8 +807,8 @@ func (r *rawConfig) finishMiner(upstream *url.URL, mining Mining) (Miner, error)
 	if m.IntakeDir == "" || m.SessionsDir == "" {
 		return Miner{}, errors.New("miner: intake_dir and sessions_dir are required when no mining.state_dir can be derived")
 	}
-	if !mining.Enabled {
-		return Miner{}, errors.New("miner.enabled = true needs a [mining] block: the miner is that participant without the daemon")
+	if mining.ASBaseURL == "" {
+		return Miner{}, errors.New("miner.enabled = true needs a [mining] block naming an AS: the miner is that participant without the daemon")
 	}
 	return m, nil
 }
