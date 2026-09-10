@@ -92,6 +92,46 @@ func TestRegistrationHintFromAnInteractiveAnswer(t *testing.T) {
 	})
 }
 
+// A "yes" already on the store with no address yet — a crash between
+// the two writes on a first run, or an adopted state dir — must NOT be
+// read back whole: that would register with the mining hint and never
+// ask for an address at all. decideRegistrationOutcome must ask, but
+// only the missing half (finishMiningEnabled, not askMiningQuestion):
+// the terminal here would answer "n" to an enable question it should
+// never see, so a fresh "no" would prove the bug, not fix it.
+func TestDecideRegistrationOutcomeFillsInAMissingAddressWithoutReaskingEnable(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.LoadPayoutAddress(); ok {
+		t.Fatal("test fixture bug: an address is already on file")
+	}
+
+	const addr = "twilight1k5stzqa2sgvfgx9u04cv93pek3gcmm9h5t9hkn"
+	stdin := bytes.NewBufferString(addr + "\n") // ONE line: the address question, and nothing else
+	br := bufio.NewReader(stdin)
+	outcome, code := decideRegistrationOutcome(stdin, br, &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true)
+	if code != exitOK || !outcome.enabled || outcome.payoutAddress != addr {
+		t.Fatalf("decideRegistrationOutcome: got %+v code=%d, want enabled with %q", outcome, code, addr)
+	}
+	if got, ok, err := store.LoadPayoutAddress(); err != nil || !ok || got != addr {
+		t.Fatalf("address not persisted: %q ok=%v err=%v", got, ok, err)
+	}
+	if got := registrationHint(outcome); len(got) != 1 || got[0] != "mining" {
+		t.Fatalf("registrationHint(%+v) = %v, want [mining]", outcome, got)
+	}
+}
+
 // The scripted (non-interactive) shape of the same reorder, driven
 // through cmdConnect itself: [mining] enabled = true means the answer is
 // "yes" before register ever runs, and register must actually receive

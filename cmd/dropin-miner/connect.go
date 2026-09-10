@@ -208,34 +208,13 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	if !existed {
 		// Ask before registering: requested_scopes is the hint the claim
 		// page pre-ticks its mining grant from, and the terminal answer
-		// (or, non-interactively, [mining].enabled — see
-		// askMiningQuestion) is the only source for it now that there is
-		// no -mining flag. participantHasOtherAgent is always false here
-		// — this registration doesn't exist yet, so there is nothing to
-		// compare against.
-		//
-		// A decision already on the store here (ok==true) means a PRIOR
-		// connect got as far as asking — and, if the answer was yes,
-		// creating or naming a wallet — but never reached Register: most
-		// plausibly this exact register call failing last time. Read the
-		// decision back instead of asking again: askMiningQuestion's own
-		// wallet-exists guard would stop a second wallet either way, but
-		// re-asking an already-answered question at a terminal on every
-		// failed retry is its own kind of unsafe, and non-interactively
-		// it would just silently repeat the same config read — this
-		// makes that explicit rather than incidental.
-		var outcome miningEnableOutcome
-		if enabled, ok, lerr := store.LoadMiningEnabled(); lerr == nil && ok {
-			outcome.enabled = enabled
-			if enabled {
-				outcome.payoutAddress, _, _ = store.LoadPayoutAddress()
-			}
-		} else {
-			var code int
-			outcome, code = askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout), false)
-			if code != exitOK {
-				return code
-			}
+		// (or, non-interactively, [mining].enabled) is the only source
+		// for it now that there is no -mining flag. participantHasOtherAgent
+		// is always false here — this registration doesn't exist yet, so
+		// there is nothing to compare against.
+		outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout))
+		if code != exitOK {
+			return code
 		}
 		fresh, err := client.Register(ctx, *name, registrationHint(outcome))
 		if err != nil {
@@ -384,6 +363,41 @@ func miningActive(store *auth.Store) bool {
 		return false
 	}
 	return enabled
+}
+
+// decideRegistrationOutcome is cmdConnect's first-run "ask before
+// registering" step (interactive forced by the caller so a test can
+// drive it without a real terminal — see isInteractive's own
+// constraints). A decision already on the store here means a PRIOR
+// connect got as far as asking but never reached Register: most
+// plausibly this exact register call failing last time.
+//
+//   - A prior "no" is read back outright — re-asking an already-declined
+//     question on every failed retry is its own kind of unsafe, and
+//     there is nothing else to fill in.
+//   - A prior "yes" WITH an address already on file is read back too.
+//   - A prior "yes" with NO address on file yet (a crash between the two
+//     writes on a first run, or an adopted state dir carrying a decision
+//     but no address) is NOT read back whole — that would register with
+//     the mining hint and silently never ask for an address at all, in
+//     violation of design rule 5 ("ask before registering," not "ask
+//     once, ever"). finishMiningEnabled asks only the missing half: the
+//     address, not the enable question again.
+//
+// No decision on file at all falls through to askMiningQuestion, exactly
+// as a genuinely first-ever connect always has.
+func decideRegistrationOutcome(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
+	enabled, ok, err := store.LoadMiningEnabled()
+	if err != nil || !ok {
+		return askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, interactive, false)
+	}
+	if !enabled {
+		return miningEnableOutcome{}, exitOK
+	}
+	if address, ok, err := store.LoadPayoutAddress(); err == nil && ok {
+		return miningEnableOutcome{enabled: true, payoutAddress: address}, exitOK
+	}
+	return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, interactive)
 }
 
 // registrationHint turns the mining question's outcome into register's
