@@ -185,7 +185,7 @@ type nodeConfig struct {
 	deliverCode   uint32
 	appearAfter   int // /tx returns "not found" this many times first
 
-	// REL-17 confirmation-predicate knobs: each forces one way the
+	// Confirmation-predicate knobs: each forces one way the
 	// node's response can fail to prove it is evidence about THIS
 	// transaction, so the confirmation predicate has something real to
 	// refuse.
@@ -267,7 +267,7 @@ func newFakeNode(t *testing.T, cfg nodeConfig) *fakeNode {
 		if strings.HasPrefix(raw, "0x") {
 			if b, err := hex.DecodeString(raw[2:]); err == nil {
 				f.lastTx = string(b)
-				// REL-17: broadcast only counts as evidence about THIS
+				// broadcast only counts as evidence about THIS
 				// transaction when the reported hash matches what the
 				// client computed itself — a fake that echoed a fixed
 				// hash would pass its own tests while never proving the

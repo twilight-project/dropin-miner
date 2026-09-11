@@ -83,11 +83,18 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// this will certainly refuse. createOrRecoverWallet's own check,
 	// taken under wallet.lock, is what actually decides — a wallet
 	// created by a racing caller between this check and the call below
-	// is still caught there.
+	// is still caught there. A key with no VALID sidecar is not "a
+	// wallet that already exists" in the sense this refusal is about —
+	// it is exactly the broken state createOrRecoverWallet's repair
+	// path exists to fix, so this fast path only refuses when a
+	// sidecar is present too, and lets a bare or broken key fall
+	// through to the passphrase prompt and the locked call below.
 	if _, err := os.Lstat(filepath.Join(resolved, walletKeyFile)); err == nil {
-		fmt.Fprintf(stderr, "dropin-miner: a wallet already exists in %s; refusing to overwrite it.\n"+
-			"If this address is registered as a payout destination, its key is the only way to spend what it receives.\n", resolved)
-		return exitTransport
+		if sc, _, serr := loadSidecar(resolved, getenv); serr == nil && sc != nil {
+			fmt.Fprintf(stderr, "dropin-miner: a wallet already exists in %s; refusing to overwrite it.\n"+
+				"If this address is registered as a payout destination, its key is the only way to spend what it receives.\n", resolved)
+			return exitTransport
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
@@ -111,12 +118,24 @@ func walletInit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
-	// wallet init refuses to overwrite (a documented, unchanged fact):
-	// reuse/repair inside createOrRecoverWallet only happens as a race
-	// with a concurrent creator, and init's own answer to that race is
-	// the SAME refusal the pre-lock check above gives the common case —
-	// never a silent success reporting someone else's address.
-	if outcome != walletCreated {
+	// wallet init refuses to overwrite a wallet that already has a
+	// valid sidecar (a documented, unchanged fact): walletReused only
+	// happens as a race with a concurrent creator or caller who already
+	// finished, and init's own answer to that race is the SAME refusal
+	// the pre-lock check above gives the common case — never a silent
+	// success reporting someone else's address.
+	//
+	// walletRepaired is a different outcome, not this one: the key was
+	// already on disk with a missing or broken sidecar, and this call
+	// just fixed it. That is a real success this command performed,
+	// not an overwrite refused — report it as one, with no mnemonic
+	// (there is none: the key was not generated in this call).
+	switch outcome {
+	case walletRepaired:
+		fmt.Fprintln(stdout, "a wallet key was already present in "+resolved+"; its sidecar was missing or unreadable and has been repaired.")
+		fmt.Fprintln(stdout, "address: "+address)
+		return exitOK
+	case walletReused:
 		fmt.Fprintf(stderr, "dropin-miner: a wallet already exists in %s; refusing to overwrite it.\n"+
 			"If this address is registered as a payout destination, its key is the only way to spend what it receives.\n", resolved)
 		return exitTransport
@@ -151,9 +170,19 @@ var errWalletRepairNeedsPassphrase = errors.New("wallet key present, sidecar mis
 // exactly that window without a real crash. The default does nothing.
 var afterWalletKeyWritten = func() error { return nil }
 
-// createOrRecoverWallet is the ONE wallet-creation path after this PR
-// (REL-13): wallet init and mining enable's address question both call
-// this rather than writing a key directly. It takes wallet.lock for its
+// beforeJournalingANewPayment is walletSend's own test seam, the same
+// shape as afterWalletKeyWritten: called exactly once, immediately
+// before the journal write that commits THIS invocation to a brand new
+// payment (as opposed to resolving an existing one). A concurrency test
+// counts calls to this rather than counting broadcasts — resolving a
+// pending journal can legitimately re-broadcast, so broadcast count
+// alone cannot distinguish "one payment, re-sent" from "two payments."
+// The default does nothing.
+var beforeJournalingANewPayment = func() {}
+
+// createOrRecoverWallet is the ONE wallet-creation path: wallet init
+// and mining enable's address question both call this rather than
+// writing a key directly. It takes wallet.lock for its
 // entire critical section — the check, the crypto, and every write —
 // so two concurrent callers for the same directory can never both
 // generate: exactly one does, and every other caller discovers that
@@ -590,7 +619,7 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitUsage
 	}
 
-	// REL-17: the expected chain id comes from configuration, never
+	// The expected chain id comes from configuration, never
 	// from the node being dialed — a node is now evidence to check
 	// AGAINST an expectation, not the source of the expectation itself.
 	expectedChainID := resolveChainID(*cfgPath, *chainIDFlag, getenv)
@@ -611,6 +640,28 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	ctx, cancel := signalContext()
 	defer cancel()
 	c := newRPCClient(nodeURL)
+
+	// Two concurrent `wallet send` invocations must never both journal:
+	// the pending-journal check and everything through the durable write
+	// of a new journal happen under the same cross-process lock
+	// `createOrRecoverWallet` uses for creation, so a second sender
+	// blocked here re-checks the journal AFTER the first one's write has
+	// landed and finds it, rather than racing past the same stale "no
+	// journal yet" answer. Released right after the journal write
+	// succeeds — everything after that (broadcast, the confirmation
+	// wait) needs no more exclusivity, because the journal's own
+	// existence on disk is what stops a second sender, not the lock.
+	release, err := lockWalletDir(resolved, walletLockTimeout)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	locked := true
+	defer func() {
+		if locked {
+			release()
+		}
+	}()
 
 	// No new payment is ever constructed while a journal is pending
 	// (§4.3): resolve it first, before touching the node for anything
@@ -706,10 +757,11 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitTransport
 	}
 
-	// REL-15: journaled BEFORE broadcast. A lost response after this
+	// Journaled BEFORE broadcast. A lost response after this
 	// point is resolvable on the next invocation; a lost response
 	// before it would mean the chain never saw this transaction at all,
 	// which needs no journal to recover from.
+	beforeJournalingANewPayment()
 	hash := txHash(txRaw)
 	if err := writePendingTx(resolved, pendingTx{
 		Hash:      hash,
@@ -724,10 +776,12 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintln(stderr, "dropin-miner: could not journal this transaction before sending it:", err)
 		return exitTransport
 	}
+	release()
+	locked = false
 
 	res, err := c.broadcast(ctx, txRaw)
 	if err != nil {
-		// REL-17: broadcast returning an error here means the response
+		// broadcast returning an error here means the response
 		// did not prove the chain's answer was about THIS transaction —
 		// including errBroadcastOutcomeUnknown, a mismatched/missing
 		// hash. The journal stays; nothing is known.
@@ -749,7 +803,7 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// difference between reporting a transfer and reporting an attempt.
 	// Either way the journal's fate is decided here: confirmed (either
 	// direction) removes it, a transport failure while waiting keeps it
-	// — REL-15's "outcome unknown, resolve on the next invocation."
+	// — "outcome unknown, resolve on the next invocation."
 	waitCtx, waitCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer waitCancel()
 	tx, err := c.waitForTx(waitCtx, res.Hash, 2*time.Second)
@@ -809,7 +863,7 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// resolveChainID applies REL-17's chain-id source rule: a loaded
+// resolveChainID applies the chain-id source rule: a loaded
 // config's [mining] chain_id when a config is present, else the
 // -chain-id flag. Empty means neither was available. A command that
 // signs (wallet send) refuses on that rather than guessing; a
@@ -826,8 +880,8 @@ func resolveChainID(cfgPath, chainIDFlag string, getenv func(string) string) str
 	return chainIDFlag
 }
 
-// validateNodeURL enforces the RPC endpoint's transport trust rule
-// (REL-17): https, or http on a loopback host, or an operator who typed
+// validateNodeURL enforces the RPC endpoint's transport trust rule:
+// https, or http on a loopback host, or an operator who typed
 // -insecure-node and accepted the warning. A plain http default is
 // never permitted — every row in config.DefaultWalletNodes is https,
 // enforced separately by TestDefaultsAreTestnet — this is what closes

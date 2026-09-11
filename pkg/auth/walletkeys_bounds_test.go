@@ -1,6 +1,6 @@
 package auth
 
-// REL-14: OpenWalletKey validates every field before any crypto touches
+// OpenWalletKey validates every field before any crypto touches
 // it. Before this file's guard existed, a wrong-length nonce panicked
 // inside gcm.Open and an out-of-range Iterations spun the KDF with no
 // ceiling — this table proves both are now bounded errors, in bounded

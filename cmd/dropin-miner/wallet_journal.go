@@ -1,6 +1,6 @@
 package main
 
-// The send journal (REL-15): a transaction is written to disk before it
+// The send journal: a transaction is written to disk before it
 // is broadcast, so a lost response is resolvable — the next `wallet
 // send` or `wallet balance` can ask the node whether it actually landed
 // — rather than the only recovery being "sign again and hope the
@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -136,7 +137,23 @@ func resolvePendingTx(ctx context.Context, c *rpcClient, dir string, stdout, std
 		}
 		return pendingResolved
 	}
-	_ = found // the node not knowing the hash and a transport "not found" both mean re-broadcast
+	if found && res != nil && strings.EqualFold(res.Hash, p.Hash) {
+		// The node has a response ABOUT THIS HASH, but it falls short
+		// of the strict positive-proof predicate (a missing height, a
+		// missing code) — that is not the same fact as "the node has
+		// never heard of this transaction," and only the latter is
+		// safe to treat as "go ahead and re-send it": a node that is
+		// still processing what it already has should not be handed a
+		// second, redundant broadcast of the same bytes. The explicit
+		// hash check matters here and is not redundant with `found`:
+		// `found` alone is also true when the node answered about a
+		// DIFFERENT, unrelated hash (stale data, or no hash at all in
+		// the reply) — that carries no evidence about this journal at
+		// all, and is exactly the "not found, in effect" case that
+		// still needs a re-broadcast below.
+		fmt.Fprintf(stdout, "a previous send (%s) is still unresolved; the node's response does not yet prove inclusion\n", p.Hash)
+		return pendingUnresolved
+	}
 
 	txRaw, err := p.txRaw()
 	if err != nil {
@@ -144,12 +161,25 @@ func resolvePendingTx(ctx context.Context, c *rpcClient, dir string, stdout, std
 		return pendingCheckFailed
 	}
 	// Never a fresh signature: these are the exact bytes signed the
-	// first time. broadcast's own hash-match check (REL-17) still runs
-	// against them, so a node reporting anything but agreement on this
-	// same hash leaves the journal in place rather than being trusted.
-	if _, err := c.broadcast(ctx, txRaw); err != nil {
+	// first time. broadcast's own hash-match check still runs against
+	// them, so a node reporting anything but agreement on this same
+	// hash leaves the journal in place rather than being trusted.
+	bres, err := c.broadcast(ctx, txRaw)
+	if err != nil {
 		fmt.Fprintf(stdout, "a previous send (%s) is still unresolved; re-sent the same signed transaction, outcome still unknown\n", p.Hash)
 		return pendingUnresolved
+	}
+	if bres.Code != 0 {
+		// The node has now explicitly rejected these exact bytes —
+		// the same fact walletSend's own first-broadcast rejection
+		// reports, reached this time on a re-send rather than the
+		// original attempt. Nothing moved; the journal's job is done.
+		if rerr := removePendingTx(dir); rerr != nil {
+			fmt.Fprintln(stderr, "dropin-miner: could not clear the resolved pending transaction:", rerr)
+			return pendingCheckFailed
+		}
+		fmt.Fprintf(stdout, "a previous send (%s) is now known: rejected on re-broadcast (code %d): %s\n", p.Hash, bres.Code, bres.Log)
+		return pendingResolved
 	}
 	fmt.Fprintf(stdout, "a previous send (%s) is still unresolved; re-sent the same signed transaction, now accepted — check again to confirm\n", p.Hash)
 	return pendingUnresolved

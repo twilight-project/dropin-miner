@@ -471,9 +471,9 @@ func SealWalletKey(w *WalletKey, passphrase string) (*WalletKeyfile, error) {
 	}, nil
 }
 
-// REL-14's bounds. gcmNonceSize/gcmTagSize are AES-GCM's own fixed
-// sizes under the standard construction cipher.NewGCM(block) always
-// uses here — stated as constants rather than derived from a live gcm
+// The keyfile field bounds below. gcmNonceSize/gcmTagSize are AES-GCM's
+// own fixed sizes under the standard construction cipher.NewGCM(block)
+// always uses here — stated as constants rather than derived from a live gcm
 // value so the nonce length can be checked BEFORE gcm.Open ever runs,
 // which is the whole point: a wrong-length nonce panics inside Open,
 // and the check has to happen earlier than that to matter.
@@ -499,7 +499,7 @@ const (
 // FILE is honored so a future floor raise still opens old files;
 // SealWalletKey always writes the current constant.
 //
-// Every field is bounds-checked before any crypto touches it (REL-14):
+// Every field is bounds-checked before any crypto touches it:
 // a wrong-length nonce panics inside gcm.Open, and an unbounded
 // Iterations lets a tampered file spin the KDF indefinitely — both are
 // refused here, by name, in bounded time, rather than reached.

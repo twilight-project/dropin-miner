@@ -65,6 +65,58 @@ func TestWalletInitCreatesAWalletAndRefusesToOverwriteIt(t *testing.T) {
 	}
 }
 
+// TestWalletInitRepairsAMissingSidecarThroughTheCLI is the CLI-level
+// counterpart to TestWalletCreationRepairsAMissingSidecar: a key with no
+// sidecar is not "a wallet that already exists" as far as init's own
+// pre-lock refusal is concerned, so a second `wallet init` against that
+// directory must reach createOrRecoverWallet's repair path rather than
+// refusing on sight — and once it does, the CLI must report the repair
+// as the success it is, not as a refused overwrite, and must never print
+// a mnemonic for a key it did not generate.
+func TestWalletInitRepairsAMissingSidecarThroughTheCLI(t *testing.T) {
+	dir := walletScratchDir(t)
+	env := envOf(map[string]string{walletPassphraseEnv: "test-passphrase"})
+
+	var out, errOut bytes.Buffer
+	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"},
+		strings.NewReader(""), &out, &errOut, env); code != 0 {
+		t.Fatalf("first init: exit %d, stderr: %s", code, errOut.String())
+	}
+	addrLine := ""
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "address: ") {
+			addrLine = line
+		}
+	}
+	if addrLine == "" {
+		t.Fatalf("first init printed no address: %s", out.String())
+	}
+
+	if err := os.Remove(filepath.Join(dir, walletSidecarFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"},
+		strings.NewReader(""), &out, &errOut, env)
+	if code != 0 {
+		t.Fatalf("repair init: exit %d, stderr: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), addrLine) {
+		t.Fatalf("repair did not report the original address %q: %s", addrLine, out.String())
+	}
+	if !strings.Contains(out.String(), "repaired") {
+		t.Fatalf("repair output does not say it repaired anything: %s", out.String())
+	}
+	if strings.Contains(out.String(), "shown ONCE") {
+		t.Fatal("a repair printed a mnemonic — nothing was generated")
+	}
+	if _, err := os.Stat(filepath.Join(dir, walletSidecarFile)); err != nil {
+		t.Fatalf("repair did not recreate the sidecar: %v", err)
+	}
+}
+
 // The mnemonic exists on the console and nowhere else: after init, no
 // window of consecutive mnemonic words may appear in any file the wallet
 // wrote.

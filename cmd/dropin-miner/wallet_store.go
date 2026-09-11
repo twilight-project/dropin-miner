@@ -28,7 +28,7 @@ const (
 	walletDirEnv = "TOKENDROP_WALLET_DIR"
 
 	// walletLockFile is the sibling wallet.key/wallet.pub creation locks
-	// on (REL-13) — never a lock on wallet.key itself, for the same
+	// on — never a lock on wallet.key itself, for the same
 	// reason refresh.token.lock is never taken on refresh.token: a lock
 	// on the data file stays attached to whatever inode held it at lock
 	// time, and a writer that replaces that file via rename leaves a

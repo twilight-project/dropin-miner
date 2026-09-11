@@ -1,13 +1,15 @@
 package main
 
-// §7: the send journal and confirmation predicate (REL-15, REL-17),
-// against a loopback httptest node that scripts each response.
+// The send journal and confirmation predicate, against a loopback
+// httptest node that scripts each response.
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -235,6 +237,197 @@ func TestAbandonPendingRemovesTheJournalAndPrintsItsHash(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, pendingTxFile)); !os.IsNotExist(err) {
 		t.Fatal("journal should be gone")
+	}
+}
+
+// TestRerunWithInsufficientEvidenceDoesNotRebroadcast: the node HAS a
+// response about this hash (found=true — not the "not found" case
+// TestRerunWhenNodeDoesNotKnowTheHashRebroadcastsSameBytes covers), but
+// it falls short of the confirmation predicate (here: no tx_result.code
+// at all). That is not the same fact as "the node has never heard of
+// this," and must not be treated as license to re-send: the journal
+// stays, nothing is rebroadcast, and the report says the evidence is
+// incomplete rather than claiming either outcome.
+func TestRerunWithInsufficientEvidenceDoesNotRebroadcast(t *testing.T) {
+	node := newFakeNode(t, nodeConfig{
+		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
+		appearAfter: 0, omitDeliverCode: true,
+	})
+	dir := walletScratchDir(t)
+	env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
+	var out, errOut bytes.Buffer
+	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &out, &errOut, env); code != 0 {
+		t.Fatalf("init: %s", errOut.String())
+	}
+
+	txRaw := []byte("fixed-test-tx-bytes-partial-evidence")
+	hash := txHash(txRaw)
+	if err := writePendingTx(dir, pendingTx{
+		Hash: hash, TxRawB64: b64(txRaw), To: "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh",
+		Amount: "1000", Denom: "utwlt", ChainID: "twilight-devnet-2", CreatedAt: nowRFC3339(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	node.lastTx = string(txRaw) // the node has SEEN it — /tx will answer, just not with a code
+	node.mu.Unlock()
+
+	out.Reset()
+	errOut.Reset()
+	code := cmdWallet([]string{"balance", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2"},
+		strings.NewReader(""), &out, &errOut, env)
+	if code != exitOK {
+		t.Fatalf("balance exit %d: %s", code, errOut.String())
+	}
+	node.mu.Lock()
+	bc := node.broadcastCount
+	node.mu.Unlock()
+	if bc != 0 {
+		t.Fatalf("insufficient evidence must not trigger a rebroadcast; broadcastCount=%d", bc)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pendingTxFile)); err != nil {
+		t.Fatal("journal should remain — still unresolved")
+	}
+	if !strings.Contains(out.String(), "does not yet prove inclusion") {
+		t.Errorf("output should say the evidence is incomplete, not claim an outcome: %q", out.String())
+	}
+}
+
+// TestRerunRebroadcastRejectionResolvesTheJournal: the node has never
+// heard of the hash (found=false), so a re-broadcast of the same bytes
+// is attempted, exactly as
+// TestRerunWhenNodeDoesNotKnowTheHashRebroadcastsSameBytes — but this
+// time the node's own response to THAT re-broadcast is an explicit
+// rejection (code != 0). That is proof, not silence: the journal is
+// resolved (removed) and the code and log are reported, the same fact
+// walletSend's own first-broadcast rejection reports, reached this time
+// on a re-send.
+func TestRerunRebroadcastRejectionResolvesTheJournal(t *testing.T) {
+	node := newFakeNode(t, nodeConfig{
+		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
+		broadcastCode: 7, broadcastLog: "insufficient funds on re-check",
+	})
+	dir := walletScratchDir(t)
+	env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
+	var out, errOut bytes.Buffer
+	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &out, &errOut, env); code != 0 {
+		t.Fatalf("init: %s", errOut.String())
+	}
+
+	txRaw := []byte("fixed-test-tx-bytes-rejected-on-rebroadcast")
+	hash := txHash(txRaw)
+	if err := writePendingTx(dir, pendingTx{
+		Hash: hash, TxRawB64: b64(txRaw), To: "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh",
+		Amount: "1000", Denom: "utwlt", ChainID: "twilight-devnet-2", CreatedAt: nowRFC3339(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// node has NOT seen this tx: /tx answers "not found" until the
+	// re-broadcast below sets lastTx, so resolvePendingTx takes the
+	// found=false branch and re-sends.
+
+	out.Reset()
+	errOut.Reset()
+	code := cmdWallet([]string{"balance", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2"},
+		strings.NewReader(""), &out, &errOut, env)
+	if code != exitOK {
+		t.Fatalf("balance exit %d: %s", code, errOut.String())
+	}
+	node.mu.Lock()
+	bc := node.broadcastCount
+	node.mu.Unlock()
+	if bc != 1 {
+		t.Fatalf("expected exactly one re-broadcast, got %d", bc)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pendingTxFile)); !os.IsNotExist(err) {
+		t.Fatal("journal should be removed once the re-broadcast is explicitly rejected")
+	}
+	if !strings.Contains(out.String(), "rejected on re-broadcast") || !strings.Contains(out.String(), "7") ||
+		!strings.Contains(out.String(), "insufficient funds on re-check") {
+		t.Errorf("output should report the rejection code and log: %q", out.String())
+	}
+}
+
+// TestConcurrentSendsJournalExactlyOnePayment is the send-side analog
+// of TestWalletCreationIsExclusiveAcrossConcurrentCallers
+// (wallet_lock_test.go): wallet.lock now serializes wallet send's
+// pending-check-through-journal-write span (wallet.go), so two sends
+// racing for the same wallet directory must never both commit to
+// constructing a brand new payment. Lock ordering makes this
+// deterministic, not merely probable: whichever call acquires the lock
+// second cannot observe "no journal yet," because the first call's
+// journal write strictly happens-before its own lock release, which
+// strictly happens-before the second call's acquire — so the second
+// call is guaranteed to find the first's journal and resolve or wait on
+// it, never build its own.
+//
+// Counted via beforeJournalingANewPayment rather than broadcastCount:
+// resolving a pending journal can legitimately re-broadcast the SAME
+// bytes (TestRerunWhenNodeDoesNotKnowTheHashRebroadcastsSameBytes), and
+// that must not be mistaken for a second, independent payment. Because
+// only one payment is ever journaled, there is only one journal for
+// EITHER call to act on — whatever the second call's own resolution
+// attempt does with it (confirm it, find it still unresolved, even see
+// it rejected on re-broadcast) is an outcome for that ONE journal, never
+// a stray removal of some other, second one, because a second one never
+// existed.
+func TestConcurrentSendsJournalExactlyOnePayment(t *testing.T) {
+	// emptyHash blanks only the broadcast_tx_sync RESPONSE's hash, not
+	// what the fake node actually learned — so appearAfter must ALSO
+	// stay high, or a resolver's own /tx query genuinely confirms the
+	// winner's transaction (the node really did see it) and removes the
+	// journal, legitimately opening the door for the next contender to
+	// build its own fresh payment. Both together keep the journal
+	// unresolved for the whole test: no contender, whenever it actually
+	// gets its turn at the lock, can ever mistake an empty journal
+	// directory for "go ahead, build a new payment."
+	node := newFakeNode(t, nodeConfig{
+		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
+		emptyHash: true, appearAfter: 1000,
+	})
+	dir := walletScratchDir(t)
+	env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
+	var out, errOut bytes.Buffer
+	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &out, &errOut, env); code != 0 {
+		t.Fatalf("init: %s", errOut.String())
+	}
+
+	var newPayments int32
+	orig := beforeJournalingANewPayment
+	beforeJournalingANewPayment = func() { atomic.AddInt32(&newPayments, 1) }
+	t.Cleanup(func() { beforeJournalingANewPayment = orig })
+
+	const n = 4
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var o, e bytes.Buffer
+			codes[i] = cmdWallet(sendArgs(dir, node.srv.URL), strings.NewReader(""), &o, &e, env)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&newPayments); got != 1 {
+		t.Fatalf("exactly one send should have journaled a NEW payment, got %d", got)
+	}
+	for i, code := range codes {
+		if code != exitOK && code != exitOutcomeUnknown {
+			t.Errorf("call %d exited %d, want exitOK or exitOutcomeUnknown", i, code)
+		}
+	}
+	// Whatever state the journal ends in (resolved and gone, or still
+	// present because nothing yet proved an outcome), it must still be
+	// coherent — not partially written, not corrupt from two callers
+	// racing a write.
+	if _, err := loadPendingTx(dir); err != nil {
+		t.Fatalf("journal, if present, must still be readable and well-formed: %v", err)
 	}
 }
 

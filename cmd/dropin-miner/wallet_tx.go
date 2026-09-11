@@ -387,7 +387,7 @@ func (c *rpcClient) balance(ctx context.Context, address, denom string) (string,
 
 // txHash is what CometBFT reports as a transaction's hash: SHA-256 of
 // the raw TxRaw bytes, upper-hex. Computed locally, before broadcast,
-// so the journal (REL-15) and the confirmation predicate below (REL-17)
+// so the journal and the confirmation predicate below
 // both have something authoritative to compare a node's answer against
 // — the wallet's own arithmetic, not whatever a node claims.
 func txHash(txRaw []byte) string {
@@ -397,8 +397,8 @@ func txHash(txRaw []byte) string {
 // broadcastResult is what broadcast_tx_sync reports: acceptance into the
 // mempool, not inclusion in a block. CodeSet distinguishes an absent
 // `code` field from an explicit 0 — Go's zero value for uint32 cannot,
-// and REL-17 requires the field to be genuinely present, not merely
-// absent-and-defaulted.
+// and the confirmation predicate requires the field to be genuinely
+// present, not merely absent-and-defaulted.
 type broadcastResult struct {
 	Code    uint32 `json:"code"`
 	CodeSet bool   `json:"-"`
@@ -435,7 +435,7 @@ func (c *rpcClient) broadcast(ctx context.Context, txRaw []byte) (*broadcastResu
 	}
 	_ = json.Unmarshal(raw, &presence)
 	res.CodeSet = presence.Code != nil
-	// REL-17: the response is evidence about THIS transaction only when
+	// The response is evidence about THIS transaction only when
 	// its hash matches what was actually sent. A rejection (code != 0)
 	// still needs to match — a node that rejects a DIFFERENT stale
 	// transaction under the same connection is not reporting on this
@@ -461,7 +461,7 @@ type txResult struct {
 	} `json:"tx_result"`
 }
 
-// confirmed reports whether res is REL-17's positive proof of
+// confirmed reports whether res is positive proof of
 // inclusion: the matching hash, a positive integer height, and an
 // explicit tx_result.code. Anything short of all three is "not yet",
 // never inferred as a failure.
@@ -476,7 +476,7 @@ func (tr *txResult) confirmed(wantHash string) bool {
 	return err == nil && h > 0
 }
 
-// queryTxOnce is a single /tx lookup, confirmed=true only under REL-17's
+// queryTxOnce is a single /tx lookup, confirmed=true only under the
 // full predicate (matching hash, positive height, explicit code); found
 // distinguishes a genuine "not found yet" from a real transport error,
 // so a caller resolving a pending journal (one check, no polling) and

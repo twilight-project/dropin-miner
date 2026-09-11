@@ -450,7 +450,7 @@ func finishMiningEnabled(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Wr
 		// WP2-adversarial-review finding 2, still true: an empty answer
 		// means "handle the wallet for me," not "create one
 		// unconditionally" — an existing wallet already answers that.
-		// REL-13: both this path and wallet init now go through
+		// Both this path and wallet init now go through
 		// createOrRecoverWallet, which takes wallet.lock for its whole
 		// critical section, so this and a concurrent `wallet init` (or a
 		// second connect session) can never both generate a key here.
