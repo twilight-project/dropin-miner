@@ -205,45 +205,60 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 		if requestID == "" {
 			requestID = parsed.RequestID
 		}
-		// [miner] enabled says only that router intake is configured; it
-		// never overrides the mining decision (miningActive) — checked
-		// only once intake is otherwise going to happen, so a search-only
-		// participant with no [miner] block never pays for a state-dir
-		// open it has no other reason to trigger (shouldResume's own
-		// comment makes the same trade-off, same reason). A store that
-		// fails to open is treated as active, same as miningActive treats
-		// an absent decision file, so a mining-side hiccup here can never
-		// turn into a client-visible search failure (invariant 1) or
-		// silently stop capturing evidence it should not.
-		active := true
+		// [miner] enabled says intake is configured; the persisted decision
+		// is the only runtime authority. An undecided participant is silent.
+		// An unreadable state is fail-closed for mining but visible as a
+		// concise diagnostic; neither state-store nor health failures may
+		// replace a successful router answer.
 		if cfg.Miner.Enabled && requestID != "" {
-			if mstore, serr := auth.OpenStore(cfg.Mining.StateDir); serr == nil {
-				active = miningActive(mstore)
-			}
-		}
-		if cfg.Miner.Enabled && active && requestID != "" {
-			rec := intakeRecord{
-				RequestID:  requestID,
-				Host:       cfg.Miner.RouterURL.Host,
-				StatusCode: resp.StatusCode,
-				StartedAt:  started,
-				FinishedAt: finished,
-			}
-			if c := parsed.chosen(); c != nil {
-				rec.ChosenProvider = c.Provider
-			}
-			if _, err := writeIntake(cfg.Miner.IntakeDir, rec); err != nil {
-				if intakeWriteBlocked(err) {
-					fmt.Fprintf(stderr, "dropin-miner: the search worked, but its mining observation could NOT be\n"+
-						"  recorded — %s is not writable from inside this agent's sandbox, so\n"+
-						"  searches run here earn nothing. Let the agent write to that directory.\n"+
-						"  For Codex, re-run `dropin-miner agents install`, which now configures it.\n",
-						minerRoot(cfg.Miner))
-				} else {
-					fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
+			decision, mstore := inspectMiningState(cfg.Mining.StateDir)
+			if decision.State == auth.MiningDegraded {
+				detail := miningDecisionDetail(decision)
+				if mstore != nil {
+					_ = mstore.MarkHealth(auth.HealthDecision, auth.HealthDecisionUnreadable, detail)
 				}
-			} else if !*noFlush && ops.spawnFlush != nil {
-				_ = ops.spawnFlush(*cfgPath) // best effort; the next search or session flushes it
+				fmt.Fprintf(stderr, "dropin-miner: the search succeeded, but mining capture is unavailable because local mining state cannot be safely trusted%s\n",
+					detail)
+			}
+			if decision.State == auth.MiningEnabled {
+				rec := intakeRecord{
+					RequestID:  requestID,
+					Host:       cfg.Miner.RouterURL.Host,
+					StatusCode: resp.StatusCode,
+					StartedAt:  started,
+					FinishedAt: finished,
+				}
+				if c := parsed.chosen(); c != nil {
+					rec.ChosenProvider = c.Provider
+				}
+				if _, err := writeIntake(cfg.Miner.IntakeDir, rec); err != nil {
+					reason := auth.HealthIntakeUnwritable
+					if intakeWriteBlocked(err) {
+						reason = auth.HealthSandboxRestricted
+						fmt.Fprintf(stderr, "dropin-miner: the search worked, but its mining observation could NOT be\n"+
+							"  recorded — %s is not writable from inside this agent's sandbox, so\n"+
+							"  searches run here earn nothing. Let the agent write to that directory.\n"+
+							"  For Codex, re-run `dropin-miner agents install`, which now configures it.\n",
+							minerRoot(cfg.Miner))
+					} else {
+						fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
+					}
+					if mstore != nil {
+						_ = mstore.MarkHealth(auth.HealthCapture, reason, err.Error())
+					}
+				} else {
+					if mstore != nil {
+						_ = mstore.ClearHealth(auth.HealthCapture)
+					}
+					if !*noFlush && ops.spawnFlush != nil {
+						if err := ops.spawnFlush(*cfgPath); err != nil {
+							if mstore != nil {
+								_ = mstore.MarkHealth(auth.HealthFlush, auth.HealthFlushSpawnFailed, err.Error())
+							}
+							fmt.Fprintln(stderr, "dropin-miner search: could not start mining flush:", err)
+						}
+					}
+				}
 			}
 		}
 	}

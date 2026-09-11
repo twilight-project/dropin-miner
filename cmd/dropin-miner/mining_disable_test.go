@@ -13,12 +13,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 // fullyEnrolledInstall builds an installation all the way through a real
@@ -128,6 +130,100 @@ func TestMiningDisableActsOnARefreshTokenWithNoAgentRegistration(t *testing.T) {
 	}
 }
 
+func TestMiningDisablePersistsOffForRegisteredUnclaimedAgent(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-1", Status: "unclaimed", ClaimURL: "https://platform.example/claim",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := runMiningDisable(t, cfgPath)
+	if code != exitOK {
+		t.Fatalf("disable exited %d: stdout=%q stderr=%q", code, out, errOut)
+	}
+	decision := store.ReadMiningDecision()
+	if decision.State != auth.MiningDisabled {
+		t.Fatalf("registered unclaimed disable decision = %+v, want OFF", decision)
+	}
+	if !strings.Contains(out, "mining is not enabled here") && !strings.Contains(out, "nothing to disable") {
+		t.Fatalf("registered unclaimed disable did not report the local no-op: %q", out)
+	}
+}
+
+func TestMiningDisablePersistsOffDespiteCorruptRegistration(t *testing.T) {
+	cfgPath, stateDir := setupSHShapeConfig(t, "https://as.example.invalid")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runMiningDisable(t, cfgPath)
+	if code != exitOK {
+		t.Fatalf("disable exited %d: stdout=%q stderr=%q", code, out, errOut)
+	}
+	if got := store.ReadMiningDecision(); got.State != auth.MiningDisabled {
+		t.Fatalf("decision with corrupt registration = %+v, want OFF", got)
+	}
+	if !strings.Contains(errOut, "registration on file could not be read") {
+		t.Fatalf("corrupt registration was not reported separately: %q", errOut)
+	}
+}
+
+func TestMiningDisableRetainsHealthAndReportsItBelowOff(t *testing.T) {
+	cfgPath, stateDir := setupSHShapeConfig(t, "https://as.example.invalid")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthCapture, auth.HealthIntakeUnwritable, "capture was broken"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, "flush was broken"); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runMiningDisable(t, cfgPath); code != exitOK {
+		t.Fatalf("disable exited %d: stdout=%q stderr=%q", code, out, errOut)
+	}
+	if got := store.ReadMiningDecision(); got.State != auth.MiningDisabled {
+		t.Fatalf("disable decision = %+v, want OFF", got)
+	}
+	if records, err := store.HealthRecords(); err != nil || len(records) != 2 {
+		t.Fatalf("disable changed health records: %+v err=%v", records, err)
+	}
+
+	var statusOut, statusErr bytes.Buffer
+	_ = printAgentIdentityStatus([]string{"-config", cfgPath}, &statusOut, &statusErr, noEnv)
+	if !strings.Contains(statusOut.String(), "mining:  OFF") ||
+		!strings.Contains(statusOut.String(), "health (previous unresolved):") ||
+		!strings.Contains(statusOut.String(), string(auth.HealthSubmissionFailed)) {
+		t.Fatalf("status did not render retained health below OFF: %q", statusOut.String())
+	}
+
+	facts := gatherDoctorFacts(context.Background(), &stubAS{docErr: errASDown}, config.Mining{
+		ASBaseURL: "https://as.example.invalid", ChainID: "twilight-1", SlotID: 7,
+		StateDir: stateDir, SpoolDir: filepath.Join(filepath.Dir(stateDir), "spool"),
+	})
+	facts.ASConfigured, facts.ASConfigKnown = true, true
+	var doctorOut bytes.Buffer
+	printDoctor(&doctorOut, assembleDoctor(facts), facts)
+	if !strings.Contains(doctorOut.String(), "OFF") ||
+		!strings.Contains(doctorOut.String(), "health (previous unresolved)") ||
+		!strings.Contains(doctorOut.String(), string(auth.HealthIntakeUnwritable)) {
+		t.Fatalf("doctor did not render retained health below OFF: %q", doctorOut.String())
+	}
+}
+
 // The brick, closed: disable stops mining, and enable — the existing
 // command, no new path — mints a fresh family under the same
 // installation. LastEnrollmentSlot being empty must not be
@@ -230,7 +326,7 @@ func TestMiningDisableIsIdempotentWhenNothingIsEnrolled(t *testing.T) {
 	t.Run("claimed but never enrolled, no AS configured", func(t *testing.T) {
 		withShortConnectTimings(t)
 		platform := newStubPlatform(t)
-		cfgPath, _ := connectConfig(t, platform.srv.URL, "")
+		cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
 		if code, _, _ := runConnect(t, cfgPath, nil); code != exitOK {
 			t.Fatal("first connect failed")
 		}
@@ -244,6 +340,13 @@ func TestMiningDisableIsIdempotentWhenNothingIsEnrolled(t *testing.T) {
 		}
 		if !strings.Contains(out, "mining is not enabled here") {
 			t.Fatalf("got %q", out)
+		}
+		store, err := auth.OpenStoreExisting(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := store.ReadMiningDecision(); got.State != auth.MiningDisabled {
+			t.Fatalf("claimed-not-enrolled decision = %+v, want OFF", got)
 		}
 	})
 
@@ -324,6 +427,74 @@ func TestMiningDisableWithASUnreachableStopsLocallyAndRetriesOnResume(t *testing
 	}
 	if got := as.revokeCallCount(); got != 2 {
 		t.Fatalf("revoke calls = %d, want 2 (the failed disable attempt + the resume's retry)", got)
+	}
+}
+
+func TestDisablePersistsOffBeforeFailedRevokeAndSearchStaysUnmined(t *testing.T) {
+	cfgPath, stateDir, _, as := fullyEnrolledInstall(t)
+	as.setRevokeFails(true)
+	if code, out, errOut := runMiningDisable(t, cfgPath); code != exitOK {
+		t.Fatalf("disable exited %d: stdout=%q stderr=%q", code, out, errOut)
+	}
+	store, err := auth.OpenStoreExisting(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.ReadMiningDecision(); got.State != auth.MiningDisabled {
+		t.Fatalf("decision after failed revoke = %+v, want durable OFF", got)
+	}
+	if pending, err := store.LoadRevokePending(); err != nil || !pending {
+		t.Fatalf("pending revoke after failed AS call = %t err=%v", pending, err)
+	}
+
+	router, _, _ := newFakeRouter(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-Id", "post-disable-request")
+		_, _ = w.Write([]byte(routerBody))
+	})
+	raw, err := os.ReadFile(cfgPath) // #nosec G304 -- cfgPath is this test's writeTOML output
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw) + fmt.Sprintf("\n[miner]\nenabled = true\nrouter_url = %q\n", router.srv.URL)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil { // #nosec G703 -- cfgPath is test-owned
+		t.Fatal(err)
+	}
+	h := fixedSearchOps(filepath.Dir(stateDir))
+	code, out, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfgPath, "q")
+	if code != exitOK || out != routerBody || errOut != "" {
+		t.Fatalf("post-disable search = exit %d out=%q stderr=%q", code, out, errOut)
+	}
+	if recs, _, err := readIntake(filepath.Join(filepath.Dir(stateDir), "intake")); err != nil || len(recs) != 0 {
+		t.Fatalf("post-disable search captured mining intake: records=%v err=%v", recs, err)
+	}
+	if len(h.flushes) != 0 {
+		t.Fatalf("post-disable search spawned mining flush: %v", h.flushes)
+	}
+}
+
+func TestDisableDoesNotRevokeWhenOffCannotBePersisted(t *testing.T) {
+	cfgPath, stateDir, _, as := fullyEnrolledInstall(t)
+	decisionPath := filepath.Join(stateDir, "mining_decision.json")
+	if err := os.Remove(decisionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(decisionPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	revokesBefore := as.revokeCallCount()
+	code, out, errOut := runMiningDisable(t, cfgPath)
+	if code == exitOK {
+		t.Fatalf("disable reported success when OFF could not persist: stdout=%q stderr=%q", out, errOut)
+	}
+	if got := as.revokeCallCount(); got != revokesBefore {
+		t.Fatalf("revoke occurred despite failed OFF persistence: %d -> %d", revokesBefore, got)
+	}
+	store, err := auth.OpenStoreExisting(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LoadRefreshToken(); err != nil || !ok {
+		t.Fatalf("refresh authorization changed despite failed OFF write: ok=%t err=%v", ok, err)
 	}
 }
 

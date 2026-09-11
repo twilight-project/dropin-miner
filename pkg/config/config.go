@@ -99,9 +99,10 @@ func (o Observe) RingCount() int {
 }
 
 // Mining is the AS-facing mining-plane configuration (contract §18–§19).
-// Disabled by default: a proxy without a [mining] block behaves exactly
-// as it did before the mining integration existed, and every mining
-// failure mode is invisible to inference by construction.
+// Enabled is only the scripted first answer consumed by onboarding; the
+// persisted mining decision is runtime authority, while a non-empty ASBaseURL
+// says AS work is configured. A proxy without a [mining] block behaves exactly
+// as it did before mining integration existed.
 type Mining struct {
 	Enabled     bool
 	ASBaseURL   string

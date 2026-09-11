@@ -189,6 +189,14 @@ func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(strin
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
 	}
+	// The participant's explicit stop is state-independent. Persist it before
+	// looking at registration, enrollment, or the network so an empty or
+	// damaged onboarding lifecycle cannot turn a successful opt-out into a
+	// no-op.
+	if err := store.SaveMiningEnabled(false); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
 
 	reg, regOK, err := store.LoadAgentRegistration()
 	if err != nil {
@@ -220,17 +228,6 @@ func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(strin
 		return exitOK
 	}
 
-	// The stop. Decision file first, then the enrollment record: a crash
-	// between the two must land on the safe side, and only writing the
-	// decision first guarantees that. Writing the record first and
-	// crashing before the decision lands would leave LastEnrollmentSlot
-	// cleared while mining_decision.json still said "on" — the exact
-	// shape pollOnce's "not yet enrolled, decision is on" branch reads as
-	// an invitation to enroll again, silently undoing this disable.
-	if err := store.SaveMiningEnabled(false); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", err)
-		return exitTransport
-	}
 	// Only clear an agent-onboarding record that actually exists — a
 	// setup.sh-shape installation has none, and writing a fresh all-zero
 	// agent.json where there was never one would invent a registration
@@ -250,11 +247,15 @@ func cmdMiningDisable(args []string, stdout, stderr io.Writer, getenv func(strin
 	// already happened and never depended on the network.
 	ctx, cancel := operatorContext(30 * time.Second)
 	defer cancel()
-	revoked := cfg.Mining.ASBaseURL == "" // nothing to revoke: never enrolled at the AS at all
+	revoked := !hasRefresh
 	if !revoked {
-		oauthClient, _, berr := buildMiningClient(ctx, cfg.Mining)
-		if berr == nil && oauthClient.Revoke(ctx) == nil {
-			revoked = true
+		if !miningASConfigured(cfg.Mining) {
+			fmt.Fprintln(stdout, "no authorization server configured; local mining is stopped and the stored authorization was not revoked")
+		} else {
+			oauthClient, _, berr := buildMiningClient(ctx, cfg.Mining)
+			if berr == nil && oauthClient.Revoke(ctx) == nil {
+				revoked = true
+			}
 		}
 	}
 	if revoked {

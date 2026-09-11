@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"strings"
@@ -52,13 +53,13 @@ func miningClients(ctx context.Context, args []string, cmd string) (*auth.OAuthC
 		return nil, nil, config.Mining{}, 1
 	}
 	m := cfg.Mining
-	if !m.Enabled {
-		// Which of the two failures this is matters: a config that exists
-		// and has no [mining] block is a different fix from no config at
-		// all, and the old wording ("in this config") described the first
-		// while usually meaning the second.
+	if !miningASConfigured(m) {
+		// AS presence is independent of the participant's persisted mining
+		// decision. A config can explicitly say OFF and still name the AS;
+		// it must remain inspectable and must not be mistaken for absent
+		// configuration.
 		if src := describeConfigSource(*cfgPath, os.Getenv); src != "" {
-			fmt.Fprintf(os.Stderr, "dropin-miner: no [mining] block in %s; there is nothing to enroll\n", src)
+			fmt.Fprintf(os.Stderr, "dropin-miner: no authorization server configured in %s; there is nothing to enroll\n", src)
 		} else {
 			fmt.Fprintln(os.Stderr, "dropin-miner: no config file found — looked at $TOKENDROP_CONFIG and ./tokendrop.toml.")
 			fmt.Fprintln(os.Stderr, "  Pass -config <file>, or set TOKENDROP_CONFIG.")
@@ -342,11 +343,22 @@ func cmdProvider(args []string) int {
 func cmdStatus(args []string) int {
 	ctx, cancel := operatorContext(time.Minute)
 	defer cancel()
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	cfgPath := fs.String("config", "", "path to TOML config file")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	cfg, src, err := loadConfig(*cfgPath, os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dropin-miner: config (%s): %v\n", orDefaults(src), err)
+		return exitTransport
+	}
 
 	// WP2-adversarial-review finding 16: an unclaimed or search-only
-	// agent (no [mining] block, by design) is an ordinary state, not a
-	// failure — miningClients below requires [mining] to be configured
-	// and would otherwise make `status` exit 1 for the two most common
+	// agent (no AS configuration, by design) is an ordinary state, not a
+	// failure — authenticated AS checks require mining.as_url and existing
+	// auth material and would otherwise make `status` fail for the two most common
 	// states an agent-onboarding participant is actually in. needsMining
 	// is false for exactly those two; the AS-facing report below is
 	// skipped entirely rather than attempted and its failure suppressed,
@@ -357,10 +369,12 @@ func cmdStatus(args []string) int {
 		return 0
 	}
 
-	_, mining, m, code := miningClients(ctx, args, "status")
-	if code != 0 {
-		return code
+	mining, err := readOnlyMiningClient(ctx, cfg.Mining)
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "auth:    local authorization setup is incomplete (%v); authenticated AS checks skipped\n", redact.Error(err))
+		return exitOK
 	}
+	m := cfg.Mining
 
 	fmt.Fprintf(os.Stdout, "as:     %s\nchain:  %s\nslot:   %d\n",
 		m.ASBaseURL, m.ChainID, m.SlotID)
@@ -394,6 +408,27 @@ func cmdStatus(args []string) int {
 	return 0
 }
 
+func readOnlyMiningClient(ctx context.Context, m config.Mining) (*auth.MiningClient, error) {
+	if !miningASConfigured(m) {
+		return nil, errors.New("no authorization server configured")
+	}
+	store, err := auth.OpenStoreExisting(m.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	disc, err := auth.NewDiscoverer(auth.DiscoveryConfig{
+		BaseURL: m.ASBaseURL, ChainID: m.ChainID, SlotID: m.SlotID, TTL: m.MetadataTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	oauthClient, err := auth.NewReadOnlyOAuthClient(ctx, disc, store)
+	if err != nil {
+		return nil, err
+	}
+	return auth.NewMiningClient(disc, oauthClient, store), nil
+}
+
 // printAgentIdentityStatus reports the agent-onboarding identity this
 // installation has, if any (agent onboarding design §5.5: "status —
 // unclaimed | claimed (scopes) | enrolled (slot, payout address)").
@@ -407,7 +442,7 @@ func cmdStatus(args []string) int {
 // The returned bool tells cmdStatus whether the AS-facing report below
 // is worth attempting at all (WP2-adversarial-review finding 16):
 // false for an unclaimed/expired registration, or a claimed one with no
-// mining scope — miningClients requires [mining] to be configured, which
+// mining scope — authenticated AS checks require an AS to be configured, which
 // none of those three ordinary states has any reason to have, and
 // `status` used to exit 1 for all three purely because of that. true
 // when there is a real mining story (scope granted, whether or not
@@ -415,27 +450,48 @@ func cmdStatus(args []string) int {
 // all — a legacy, pre-connect installation, where the AS-facing report
 // is the WHOLE of what `status` has ever done and must run unchanged.
 func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv func(string) string) bool {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	cfgPath := fs.String("config", "", "path to TOML config file")
-	if err := fs.Parse(args); err != nil {
+	flags := flag.NewFlagSet("status", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	cfgPath := flags.String("config", "", "path to TOML config file")
+	if err := flags.Parse(args); err != nil {
 		return true // the real parse, in miningClients below, reports the usage error
 	}
 	cfg, _, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
 		return true // ditto: miningClients below reports this config error
 	}
-	store, err := auth.OpenStore(cfg.Mining.StateDir)
+	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
 	if err != nil {
-		return true
+		if errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintln(stdout, "mining: NOT DECIDED")
+			printMiningASConfiguration(stdout, cfg.Mining)
+			return false
+		}
+		fmt.Fprintf(stdout, "mining: DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(auth.MiningDecision{State: auth.MiningDegraded, Err: err}))
+		printMiningASConfiguration(stdout, cfg.Mining)
+		return false
 	}
-	// miningActive treats an unreadable decision the same as an explicit
-	// "off" (a corrupt file is a lost decision, not an absent one — its
-	// only two writers are askMiningQuestion and `mining disable`), but
-	// that must never be silent: named here so "why does this report
-	// mining as stopped" has an answer other than guessing.
-	if _, _, derr := store.LoadMiningEnabled(); derr != nil {
-		fmt.Fprintf(stdout, "mining:  the stored decision could not be read (%v); treating mining as stopped until this is fixed\n", derr)
+	decision := store.ReadMiningDecision()
+	if decision.State == auth.MiningDegraded {
+		fmt.Fprintf(stdout, "mining:  DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(decision))
+	} else {
+		fmt.Fprintf(stdout, "mining:  %s%s\n", miningDecisionText(decision), miningDecisionDetail(decision))
+	}
+	printMiningASConfiguration(stdout, cfg.Mining)
+	records, herr := store.HealthRecords()
+	for _, record := range records {
+		prefix := "health:"
+		if decision.State == auth.MiningDisabled {
+			prefix = "health (previous unresolved):"
+		}
+		if record.Detail == "" {
+			fmt.Fprintf(stdout, "%-26s %s/%s\n", prefix, record.Component, record.Reason)
+		} else {
+			fmt.Fprintf(stdout, "%-26s %s/%s — %s\n", prefix, record.Component, record.Reason, record.Detail)
+		}
+	}
+	if herr != nil {
+		fmt.Fprintf(stderr, "health: could not read persistent component health: %v\n", redact.Error(herr))
 	}
 	reg, ok, err := store.LoadAgentRegistration()
 	if err != nil {
@@ -444,7 +500,7 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 		// "never ran connect" — status is exactly where a participant
 		// would go looking to understand why connect started refusing.
 		fmt.Fprintf(stderr, "agent:  registration on file could not be read: %v\n", err)
-		return true
+		return false
 	}
 	if !ok {
 		return true // never ran connect: nothing to report here, legacy report proceeds
@@ -459,7 +515,7 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	case "claimed":
 		fmt.Fprintf(stdout, "agent:  claimed (scopes: %s)\n", strings.Join(reg.Scopes, ", "))
 		if hasScope(reg.Scopes, "mining") {
-			needsMining = true
+			needsMining = decision.State == auth.MiningEnabled && miningASConfigured(cfg.Mining)
 		}
 		if reg.LastEnrollmentSlot != "" {
 			address, hasAddr, aerr := store.LoadPayoutAddress()
@@ -470,21 +526,25 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 				fmt.Fprintf(stdout, "        enrolled on %s, no payout address on file yet\n", reg.LastEnrollmentSlot)
 			}
 		} else if hasScope(reg.Scopes, "mining") {
-			if !miningActive(store) {
+			switch decision.State {
+			case auth.MiningDisabled:
 				printMiningStoppedPair(stdout)
-			} else if reg.SlotRefusal != "" {
-				// finding 15: name the refusal explicitly rather than let
-				// a participant discover it only from a resume's silent
-				// no-op.
-				fmt.Fprintln(stdout, "        mining scope granted, but not enrolled: "+reg.SlotRefusal)
-			} else if cfg.Mining.ASBaseURL == "" {
-				fmt.Fprintln(stdout, "        mining scope granted, but this installation's [mining] block names no "+
-					"authorization server yet — set mining.as_url/chain_id/slot_id, then run `dropin-miner mining enable`")
-			} else if _, hasAddr, _ := store.LoadPayoutAddress(); !hasAddr {
-				fmt.Fprintln(stdout, "        mining enabled, no wallet yet (no terminal was available at setup) — "+
-					"run `dropin-miner mining enable` at a terminal, or set mining.payout_address")
-			} else {
-				fmt.Fprintln(stdout, "        mining scope granted; enrollment pending the next `search` or `connect`")
+			case auth.MiningUndecided:
+				fmt.Fprintln(stdout, "        mining is not decided here")
+			case auth.MiningDegraded:
+				fmt.Fprintln(stdout, "        mining is stopped for safety until the local decision can be trusted")
+			case auth.MiningEnabled:
+				if reg.SlotRefusal != "" {
+					// finding 15: name the refusal explicitly rather than let
+					// a participant discover it only from a resume's silent
+					// no-op.
+					fmt.Fprintln(stdout, "        mining scope granted, but not enrolled: "+reg.SlotRefusal)
+				} else if _, hasAddr, _ := store.LoadPayoutAddress(); !hasAddr {
+					fmt.Fprintln(stdout, "        mining enabled, no wallet yet (no terminal was available at setup) — "+
+						"run `dropin-miner mining enable` at a terminal, or set mining.payout_address")
+				} else {
+					fmt.Fprintln(stdout, "        mining scope granted; enrollment pending the next `search` or `connect`")
+				}
 			}
 		}
 	default:
@@ -514,6 +574,14 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 	return needsMining
 }
 
+func printMiningASConfiguration(w io.Writer, m config.Mining) {
+	if miningASConfigured(m) {
+		fmt.Fprintln(w, "as:      configured")
+		return
+	}
+	fmt.Fprintln(w, "as:      no authorization server configured")
+}
+
 // printQueue reports the local backlog.
 //
 // Everything above this line asks the AS. This asks the disk, and it is the
@@ -526,7 +594,7 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 // quarantines records it cannot parse, and this command must not move files
 // belonging to a running daemon.
 func printQueue(m config.Mining) {
-	sp, err := spool.Open(m.SpoolDir)
+	sp, err := spool.OpenExisting(m.SpoolDir)
 	if err != nil {
 		fmt.Fprintf(os.Stdout, "queued: unknown (%v)\n", redact.Error(err))
 		return

@@ -183,7 +183,7 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// AS round trip when there is actually a marker and an AS to ask —
 	// a search-only agent with no [mining] block would otherwise fail
 	// this and print nothing useful about it.
-	if pending, perr := store.LoadRevokePending(); perr == nil && pending && cfg.Mining.ASBaseURL != "" {
+	if pending, perr := store.LoadRevokePending(); perr == nil && pending && miningASConfigured(cfg.Mining) {
 		if oauthClient, _, berr := buildMiningClient(ctx, cfg.Mining); berr == nil {
 			retryPendingRevoke(ctx, store, oauthClient)
 		}
@@ -316,51 +316,6 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 }
 
-// miningActive is the one function search intake, the flush, connect,
-// the resume and status all call to decide whether mining is active
-// here — mining_decision.json (auth.Store.SaveMiningEnabled) is now the
-// ONLY thing any of them reads for that question. It replaces three
-// flags that used to each gate a different slice of this on their own:
-// [miner] enabled (search intake and the flush), [mining] enabled (the
-// AS path), and mining_decision.json itself (connect and the resume,
-// but only as a fallback in front of the config check). [miner] enabled
-// still matters — it says whether router intake is configured at all —
-// but it is a plumbing flag now, never a mining on/off decision, and
-// never overrides this one.
-//
-// mining_decision.json is written by askMiningQuestion on every path
-// (connect's first run, `mining enable`, interactive or scripted)
-// before this is ever consulted, so a fresh install is never in a "no
-// decision" state — setup.sh and install.ps1 now run `connect`
-// themselves instead of enrolling on their own, so every install this
-// runs against has already been asked. There is no config fallback —
-// config.Mining.Enabled is never consulted here.
-//
-// ok=false (no decision file at all) used to default to active, for the
-// legacy installers that enrolled without ever running connect and so
-// never wrote one. Now that both installers run connect, an absent file
-// means only one thing: a state directory nothing has ever decided
-// anything about, which is not active until something says so — return
-// false, the same as an unreadable one.
-//
-// err != nil is NOT the same as never having decided, though the answer
-// is the same: the only two writers of this file are askMiningQuestion
-// and `mining disable`, so a file that exists but cannot be read or
-// parsed is a decision that was made and then lost — most plausibly a
-// disable's "off" — not a decision never made. Defaulting a corrupt
-// file to active would resume mining a participant tried to stop; false
-// is the side that costs nothing worse than an extra `mining enable`.
-// printAgentIdentityStatus names the file when THIS is why mining reads
-// as stopped (a bare absent file needs no such note — there is nothing
-// to explain beyond "never decided").
-func miningActive(store *auth.Store) bool {
-	enabled, _, err := store.LoadMiningEnabled()
-	if err != nil {
-		return false
-	}
-	return enabled
-}
-
 // decideRegistrationOutcome is cmdConnect's first-run "ask before
 // registering" step (interactive forced by the caller so a test can
 // drive it without a real terminal — see isInteractive's own
@@ -489,9 +444,8 @@ func pollOnce(ctx context.Context, stdout, stderr io.Writer, client *platform.Cl
 		if !miningActive(store) {
 			return true, exitOK // local opt-out or disable (design decision 3)
 		}
-		if cfg.Mining.ASBaseURL == "" {
-			fmt.Fprintln(stdout, "the mining scope was granted, but this installation's [mining] block "+
-				"names no authorization server yet — set mining.as_url/chain_id/slot_id, "+
+		if !miningASConfigured(cfg.Mining) {
+			fmt.Fprintln(stdout, "the mining scope was granted, but no authorization server is configured — set mining.as_url/chain_id/slot_id, "+
 				"then run `dropin-miner connect` or `dropin-miner mining enable` again")
 			return true, exitOK
 		}
@@ -778,7 +732,7 @@ func shouldResume(cfg *config.Config) bool {
 			if !miningActive(store) || reg.SlotRefusal != "" {
 				return false // opted out/disabled, a multi-slot refusal on file, or nothing configured — either way, permanent until reconfigured
 			}
-			if cfg.Mining.ASBaseURL == "" {
+			if !miningASConfigured(cfg.Mining) {
 				return false
 			}
 			return true

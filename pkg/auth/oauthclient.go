@@ -9,6 +9,7 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -177,6 +178,21 @@ func NewOAuthClient(_ context.Context, d *Discoverer, store *Store) (*OAuthClien
 	if err != nil {
 		return nil, err
 	}
+	return newOAuthClient(d, store, key)
+}
+
+// NewReadOnlyOAuthClient is the inspection counterpart to NewOAuthClient.
+// It may read an existing DPoP key, but never creates one; authenticated
+// calls can still rotate an existing refresh token under the normal lock.
+func NewReadOnlyOAuthClient(_ context.Context, d *Discoverer, store *Store) (*OAuthClient, error) {
+	key, err := store.DPoPKeyExisting()
+	if err != nil {
+		return nil, err
+	}
+	return newOAuthClient(d, store, key)
+}
+
+func newOAuthClient(d *Discoverer, store *Store, key *ecdsa.PrivateKey) (*OAuthClient, error) {
 	proofer, err := NewProofer(key)
 	if err != nil {
 		return nil, err

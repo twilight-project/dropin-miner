@@ -44,6 +44,18 @@ import (
 
 const flushDefaultTimeout = 90 * time.Second
 
+func markFlushHealthFromConfig(cfgPath string, getenv func(string) string, reason auth.HealthReason, detail string) {
+	cfg, _, err := loadConfig(cfgPath, getenv)
+	if err != nil {
+		return
+	}
+	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
+	if err != nil {
+		return
+	}
+	_ = store.MarkHealth(auth.HealthFlush, reason, detail)
+}
+
 // flushReport is what one pass did, for the summary line and for tests.
 type flushReport struct {
 	Epoch      uint64
@@ -65,6 +77,7 @@ func cmdFlush(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	}
 	if *detach {
 		if err := startFlush(*cfgPath); err != nil {
+			markFlushHealthFromConfig(*cfgPath, getenv, auth.HealthFlushSpawnFailed, err.Error())
 			fmt.Fprintln(stderr, "dropin-miner flush: could not start:", err)
 			return exitTransport
 		}
@@ -123,33 +136,47 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	}
 	defer func() { _ = unlockFile(lock) }()
 
-	// The mining plane, built the way the operator commands build it: key
-	// store, discovery, OAuth, mining client. miningClients prints its
-	// own diagnosis when something is missing.
-	oauthClient, mining, _, code := miningClients(ctx, []string{"-config", cfgPath}, "flush")
-	if code != 0 {
-		return rep, code
-	}
-
-	store, err := auth.OpenStore(m.StateDir)
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner flush: key store:", err)
+	// Read the persisted authority before constructing any OAuth/DPoP client.
+	// OFF, undecided, and degraded states must not create mining credentials or
+	// promote intake. A missing directory is a normal undecided first-run
+	// state; unsafe inspection is degraded and remains fail-closed.
+	decision, store := inspectMiningState(m.StateDir)
+	if store == nil && decision.State == auth.MiningDegraded {
+		fmt.Fprintf(stderr, "dropin-miner flush: mining state cannot be safely trusted%s\n", miningDecisionDetail(decision))
 		return rep, exitTransport
 	}
-
-	// [miner] enabled (checked above, in cmdFlush) says intake is
-	// configured; it is not the mining decision. mining_decision.json
-	// (miningActive) is, and this is one of the five places design item
-	// 1 names it must gate: a disabled installation's flush retries a
-	// pending AS-side revocation (item 2.3) if there is one, and
-	// otherwise does none of the join/promote/submit work below — there
-	// is nothing to join or declare for a family this installation chose
-	// to stop, and "not enrolled; run enroll" below would be actively
-	// misleading for one that used to be.
-	if !miningActive(store) {
-		retryPendingRevoke(ctx, store, oauthClient)
-		fmt.Fprintln(stdout, "flush: mining is stopped here; nothing to do")
+	if decision.State == auth.MiningDegraded {
+		_ = store.MarkHealth(auth.HealthDecision, auth.HealthDecisionUnreadable, miningDecisionDetail(decision))
+		fmt.Fprintf(stderr, "dropin-miner flush: mining state cannot be safely trusted%s\n", miningDecisionDetail(decision))
 		return rep, exitOK
+	}
+	if decision.State != auth.MiningEnabled {
+		if decision.State == auth.MiningDisabled {
+			if pending, perr := store.LoadRevokePending(); perr == nil && pending && miningASConfigured(m) {
+				if oauthClient, _, berr := buildMiningClient(ctx, m); berr == nil {
+					retryPendingRevoke(ctx, store, oauthClient)
+				} else {
+					_ = store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, berr.Error())
+				}
+			}
+			if !miningASConfigured(m) {
+				fmt.Fprintln(stdout, "flush: no authorization server configured; mining is stopped here; nothing to do")
+				return rep, exitOK
+			}
+			fmt.Fprintln(stdout, "flush: mining is stopped here; nothing to do")
+		} else {
+			fmt.Fprintln(stdout, "flush: mining is not decided here; nothing to do")
+		}
+		return rep, exitOK
+	}
+
+	// The mining plane, built only after persisted ON is proven. This is the
+	// operator path's established constructor; missing auth material is a
+	// flush failure, never a reason to infer consent.
+	_, mining, _, code := miningClients(ctx, []string{"-config", cfgPath}, "flush")
+	if code != 0 {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, "mining authorization state is unavailable")
+		return rep, code
 	}
 
 	enrolled := func() bool {
@@ -157,6 +184,7 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		return err == nil && ok
 	}
 	if !enrolled() {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, "no refresh authorization is available")
 		fmt.Fprintln(stderr, "dropin-miner flush: this installation is not enrolled; run: dropin-miner enroll")
 		return rep, exitClientErr
 	}
@@ -183,7 +211,7 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 			// for an epoch we joined earlier.
 			stamp.LastFlush = now
 			_ = writeFlushStamp(stampPath, stamp)
-			return rep, deliverOnly(ctx, cfg, mining, caps, &rep, stderr)
+			return rep, deliverOnly(ctx, cfg, mining, caps, store, &rep, stderr)
 		}
 		epoch = e
 		driver.joinIfNeeded(ctx, epoch)
@@ -206,12 +234,14 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	// 2. promote intake into the spool.
 	sp, err := spool.Open(m.SpoolDir)
 	if err != nil {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, err.Error())
 		fmt.Fprintln(stderr, "dropin-miner flush: spool:", err)
 		return rep, exitTransport
 	}
 	writer := &collector.SpoolWriter{Spool: sp}
 	promoted, unreadable, err := promoteIntake(mn.IntakeDir, writer, m.SlotID, epoch)
 	rep.Promoted, rep.Unreadable = promoted, unreadable
+	promotionErr := err
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner flush: intake:", err)
 	}
@@ -229,10 +259,47 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	if before > after {
 		rep.Delivered = before - after
 	}
-	if h := coll.Health(); h.ConsecutiveFailures > 0 && h.LastFailureNote != "" {
-		fmt.Fprintln(stderr, "flush: delivery:", h.LastFailureNote)
+	updateFlushDeliveryHealth(store, coll.Health(), before, after, rep.Delivered, stderr)
+	if promotionErr != nil {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, promotionErr.Error())
 	}
 	return rep, exitOK
+}
+
+func updateFlushDeliveryHealth(store *auth.Store, health collector.Health, before, after, delivered int, stderr io.Writer) {
+	if health.ConsecutiveFailures > 0 {
+		detail := health.LastFailureNote
+		if detail == "" {
+			detail = "the authorization server did not accept a queued observation"
+		}
+		reason := auth.HealthSubmissionFailed
+		if previous, ok, _ := store.LoadHealth(auth.HealthFlush); ok && after > 0 &&
+			(previous.Reason == auth.HealthSubmissionFailed || previous.Reason == auth.HealthSpoolBacklog) {
+			reason = auth.HealthSpoolBacklog
+			detail = fmt.Sprintf("%d queued observation(s) remain after failed delivery: %s", after, detail)
+		}
+		_ = store.MarkHealth(auth.HealthFlush, reason, detail)
+		fmt.Fprintln(stderr, "flush: delivery:", detail)
+		return
+	}
+
+	// A fresh collector can legitimately skip records that are still under
+	// persisted backoff. That is not a new submission failure, but if a prior
+	// failed delivery is already on record and no queued item progressed, the
+	// unresolved condition is now accurately described as spool backlog.
+	if before > 0 && after == before {
+		if previous, ok, _ := store.LoadHealth(auth.HealthFlush); ok &&
+			(previous.Reason == auth.HealthSubmissionFailed || previous.Reason == auth.HealthSpoolBacklog) {
+			_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog,
+				fmt.Sprintf("%d queued observation(s) remain after failed progress", after))
+		}
+		return
+	}
+	if delivered > 0 {
+		// Only an actual accepted delivery proves that a previous flush
+		// problem has recovered. Empty queues and no-target runs do not.
+		_ = store.ClearHealth(auth.HealthFlush)
+	}
 }
 
 // dropConflictedObservationsPastTarget is WP4b's other half (design
@@ -309,9 +376,10 @@ func dropConflictedObservationsPastTarget(store *auth.Store, spoolDir string, sl
 
 // deliverOnly drains the spool when no target could be resolved this run:
 // records spooled under an epoch joined earlier can still land.
-func deliverOnly(ctx context.Context, cfg *config.Config, mining *auth.MiningClient, caps *auth.CapabilityClient, rep *flushReport, stderr io.Writer) int {
+func deliverOnly(ctx context.Context, cfg *config.Config, mining *auth.MiningClient, caps *auth.CapabilityClient, store *auth.Store, rep *flushReport, stderr io.Writer) int {
 	sp, err := spool.Open(cfg.Mining.SpoolDir)
 	if err != nil {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, err.Error())
 		fmt.Fprintln(stderr, "dropin-miner flush: spool:", err)
 		return exitTransport
 	}
@@ -323,6 +391,7 @@ func deliverOnly(ctx context.Context, cfg *config.Config, mining *auth.MiningCli
 	if before > after {
 		rep.Delivered = before - after
 	}
+	updateFlushDeliveryHealth(store, coll.Health(), before, after, rep.Delivered, stderr)
 	fmt.Fprintln(stderr, "flush: no target epoch this run; intake kept for the next flush")
 	return exitOK
 }

@@ -154,7 +154,25 @@ the mining on/off switch. That decision lives in one place: whatever
 persisted to the state directory and read by search intake, the flush,
 connect, its resume, and `status` alike. Editing `[mining] enabled` by hand
 after the fact does nothing on its own; run `mining enable`/`mining disable`
-instead.
+instead. The `[mining] enabled` key is only a scripted first answer for a
+headless onboarding run; `as_url` being non-empty is what says an
+authorization server is configured.
+
+Only a trusted persisted ON decision permits mining work. No decision is a
+normal inactive state; an unreadable or unsafe decision is DEGRADED and also
+stops mining for safety. Search still returns the router's successful answer
+when mining capture or flush startup fails. Those unresolved failures are
+kept as separate `decision`, `capture`, and `flush` health records, using the
+stable reasons `decision_unreadable`, `intake_unwritable`,
+`sandbox_restricted`, `flush_spawn_failed`, `auth_state_unavailable`,
+`submission_failed`, and `spool_backlog`. `status` and `doctor` show them;
+stopping mining retains earlier capture/flush diagnostics as previous
+unresolved degradation.
+
+`doctor` opens only existing state and spool paths. It does not create a
+state directory, DPoP key, wallet, enrollment, or repair mining state merely
+to diagnose it. When valid auth already exists, its authenticated AS checks
+may rotate the refresh token through the normal cross-process refresh lock.
 
 ## Building
 
