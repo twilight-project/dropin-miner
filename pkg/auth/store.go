@@ -8,6 +8,7 @@ package auth
 // inference (the boundary tests keep this package off the request path).
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,9 +19,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -31,7 +34,12 @@ const (
 	dpopKeyFile             = "dpop.key"
 	participationSecretFile = "participation.secret"
 	refreshTokenFile        = "refresh.token"
+	registrationPendingFile = "registration_pending.json"
 )
+
+// ErrAgentRegistrationCorrupt identifies an undecodable agent.json whose
+// contents may still represent a live platform identity.
+var ErrAgentRegistrationCorrupt = errors.New("auth: agent registration is corrupt")
 
 // Store is the per-installation secret directory.
 type Store struct {
@@ -385,9 +393,136 @@ func (s *Store) LoadAgentRegistration() (rec AgentRegistration, ok bool, err err
 		return AgentRegistration{}, false, err
 	}
 	if err := json.Unmarshal(raw, &rec); err != nil {
-		return AgentRegistration{}, false, fmt.Errorf("auth: decode agent registration: %w", err)
+		return AgentRegistration{}, false, fmt.Errorf("%w: %v", ErrAgentRegistrationCorrupt, err)
 	}
 	return rec, true, nil
+}
+
+// PreserveCorruptAgentRegistration moves an undecodable agent record aside
+// without deleting it. Callers use this only after deciding that a fresh
+// registration is permitted; an existing platform key must cause a refusal
+// instead, because the unreadable record may be the identity that key serves.
+func (s *Store) PreserveCorruptAgentRegistration() error {
+	path := filepath.Join(s.dir, "agent.json")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("auth: agent registration is not a regular file")
+	}
+	if posixModes && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("auth: agent registration is readable by others (%04o); refusing", info.Mode().Perm())
+	}
+	backup := filepath.Join(s.dir, "agent.json.corrupt")
+	if _, err := os.Lstat(backup); err == nil {
+		return errors.New("auth: corrupt agent registration evidence already exists")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(path, backup); err != nil {
+		return fmt.Errorf("auth: preserve corrupt agent registration: %w", err)
+	}
+	return nil
+}
+
+// PendingRegistration is the durable hand-off between a validated remote
+// Register response and the local publication of the platform key and agent
+// record. It is intentionally separate from AgentRegistration: the key is
+// secret material and this record only exists while local publication is
+// incomplete.
+type PendingRegistration struct {
+	V               int    `json:"v"`
+	AgentID         string `json:"agent_id"`
+	Key             string `json:"key"`
+	ClaimURL        string `json:"claim_url"`
+	ClaimCode       string `json:"claim_code"`
+	ClaimExpiresAt  string `json:"claim_expires_at"`
+	Status          string `json:"status"`
+	PollIntervalMS  int64  `json:"poll_interval_ms,omitempty"`
+	ReplaceExpired  bool   `json:"replace_expired,omitempty"`
+	PreviousAgentID string `json:"previous_agent_id,omitempty"`
+	PreviousKey     string `json:"previous_key,omitempty"`
+}
+
+const pendingRegistrationVersion = 1
+
+func (s *Store) SavePendingRegistration(rec PendingRegistration) error {
+	rec.V = pendingRegistrationVersion
+	if err := validatePendingRegistration(rec); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("auth: encode pending registration: %w", err)
+	}
+	return s.saveStateFile(registrationPendingFile, raw)
+}
+
+func (s *Store) LoadPendingRegistration() (rec PendingRegistration, ok bool, err error) {
+	raw, err := s.readSecret(registrationPendingFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return PendingRegistration{}, false, nil
+	}
+	if err != nil {
+		return PendingRegistration{}, false, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rec); err != nil {
+		return PendingRegistration{}, false, fmt.Errorf("auth: decode pending registration: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return PendingRegistration{}, false, errors.New("auth: decode pending registration: trailing data")
+		}
+		return PendingRegistration{}, false, fmt.Errorf("auth: decode pending registration: trailing data: %w", err)
+	}
+	if err := validatePendingRegistration(rec); err != nil {
+		return PendingRegistration{}, false, err
+	}
+	return rec, true, nil
+}
+
+// ClearPendingRegistration removes the transient journal only after both
+// local publication targets have been verified. Reuse readSecret first so a
+// symlink or unsafe journal is never removed as if it were our state file.
+func (s *Store) ClearPendingRegistration() error {
+	if _, err := s.readSecret(registrationPendingFile); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.Remove(filepath.Join(s.dir, registrationPendingFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("auth: clear pending registration: %w", err)
+	}
+	return nil
+}
+
+func validatePendingRegistration(rec PendingRegistration) error {
+	if rec.V != pendingRegistrationVersion {
+		return fmt.Errorf("auth: pending registration has unsupported version %d", rec.V)
+	}
+	if !boundedNonEmpty(rec.AgentID, 1, 512) || !boundedNonEmpty(rec.Key, 1, 4096) ||
+		!boundedNonEmpty(rec.ClaimURL, 1, 4096) || !bounded(rec.ClaimCode, 0, 512) ||
+		!bounded(rec.ClaimExpiresAt, 0, 128) || rec.Status != "unclaimed" ||
+		rec.PollIntervalMS < 0 || rec.PollIntervalMS > int64((24*time.Hour)/time.Millisecond) ||
+		(rec.ReplaceExpired && (!boundedNonEmpty(rec.PreviousAgentID, 1, 512) || !boundedNonEmpty(rec.PreviousKey, 1, 4096))) ||
+		(!rec.ReplaceExpired && (rec.PreviousAgentID != "" || rec.PreviousKey != "")) {
+		return errors.New("auth: pending registration fields are invalid")
+	}
+	return nil
+}
+
+func bounded(value string, min, max int) bool {
+	n := len(value)
+	return n >= min && n <= max
+}
+
+func boundedNonEmpty(value string, min, max int) bool {
+	return bounded(value, min, max)
 }
 
 // SavePayoutAddress persists the payout address decided at the terminal

@@ -58,6 +58,15 @@ Then it prints a claim link and waits a few minutes for you to visit it. Not
 required right there and then: search already works, and revisiting the link
 later (or just using an agent — it resumes on its own) finishes the rest.
 
+Registration is recoverable if the command is interrupted while it is saving
+the new platform identity. An unclaimed registration that expires is replaced
+by a foreground `dropin-miner connect`; the replacement changes only the
+platform agent and its key, preserving the wallet, payout choice, auth state
+and mining evidence. A detached `connect -resume` records the expiry but does
+not create a new identity. If local registration metadata is unreadable while
+a platform key exists, connect stops with a local-state conflict; use
+`dropin-miner connect -force` only when you mean to replace that credential.
+
 ## Then check
 
 ```bash

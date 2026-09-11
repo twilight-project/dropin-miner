@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,131 @@ func writeResumeStamp(path string, st resumeStamp) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+type registrationPublicationOptions struct {
+	force                bool
+	replacingExpired     bool
+	allowCorruptPreserve bool
+	previousAgentID      string
+	previousPlatformKey  string
+}
+
+func pendingRegistrationFromPlatform(reg *platform.Registration) auth.PendingRegistration {
+	return auth.PendingRegistration{
+		AgentID:        reg.AgentID,
+		Key:            reg.Key,
+		ClaimURL:       reg.ClaimURL,
+		ClaimCode:      reg.ClaimCode,
+		ClaimExpiresAt: reg.ClaimExpiresAt,
+		Status:         "unclaimed",
+		PollIntervalMS: reg.PollInterval.Milliseconds(),
+	}
+}
+
+func agentRegistrationFromPending(reg auth.PendingRegistration) auth.AgentRegistration {
+	return auth.AgentRegistration{
+		AgentID:        reg.AgentID,
+		ClaimURL:       reg.ClaimURL,
+		ClaimCode:      reg.ClaimCode,
+		Status:         reg.Status,
+		ClaimExpiresAt: reg.ClaimExpiresAt,
+	}
+}
+
+func sameAgentRegistration(a auth.AgentRegistration, p auth.PendingRegistration) bool {
+	return a.AgentID == p.AgentID && a.ClaimURL == p.ClaimURL && a.ClaimCode == p.ClaimCode &&
+		a.Status == p.Status && a.ClaimExpiresAt == p.ClaimExpiresAt
+}
+
+func credentialFileState(path string) (exists bool, key string, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, "", nil
+	}
+	if err != nil {
+		return true, "", err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return true, "", fmt.Errorf("credentials: %s is not a regular file", path)
+	}
+	creds, err := readCredentials(path)
+	if err != nil {
+		return true, "", err
+	}
+	return true, creds.APIKey, nil
+}
+
+func preflightFreshRegistration(m config.Miner, force bool) error {
+	exists, key, err := credentialFileState(credentialsPath(m))
+	if !exists {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("credentials.json exists but cannot be trusted; refusing before remote Register: %w", err)
+	}
+	if !force && looksLikePlatformKey(key) {
+		return errors.New("credentials.json already holds a platform key; refusing to mint another agent. Pass -force if you mean to switch this installation to a new registration")
+	}
+	if !force {
+		return errors.New("credentials.json already exists; refusing to overwrite it before remote Register. Pass -force if you mean to replace this installation's platform credential")
+	}
+	return nil
+}
+
+func publishPlatformCredential(path, key string, opts registrationPublicationOptions) error {
+	exists, current, err := credentialFileState(path)
+	if !exists {
+		return writeCredentials(path, credentials{APIKey: key})
+	}
+	if err != nil {
+		return fmt.Errorf("cannot publish platform credential: %w", err)
+	}
+	if current == key {
+		return nil
+	}
+	if opts.force || (opts.replacingExpired && opts.previousPlatformKey != "" && current == opts.previousPlatformKey) {
+		return writeCredentials(path, credentials{APIKey: key})
+	}
+	return errors.New("cannot publish platform credential: credentials.json contains a different platform key")
+}
+
+func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.PendingRegistration, opts registrationPublicationOptions) (auth.AgentRegistration, error) {
+	if err := publishPlatformCredential(credentialsPath(m), pending.Key, opts); err != nil {
+		return auth.AgentRegistration{}, err
+	}
+
+	reg, ok, err := store.LoadAgentRegistration()
+	if err != nil {
+		if !errors.Is(err, auth.ErrAgentRegistrationCorrupt) || !opts.allowCorruptPreserve {
+			return auth.AgentRegistration{}, fmt.Errorf("cannot publish agent registration: %w", err)
+		}
+		if err := store.PreserveCorruptAgentRegistration(); err != nil {
+			return auth.AgentRegistration{}, err
+		}
+		ok = false
+	}
+	if ok && !sameAgentRegistration(reg, pending) {
+		replacesExpectedExpired := opts.replacingExpired && reg.Status == "expired" && reg.AgentID == opts.previousAgentID
+		if !opts.force && !replacesExpectedExpired {
+			return auth.AgentRegistration{}, errors.New("cannot publish agent registration: agent.json contains a different identity")
+		}
+	}
+	if !ok || !sameAgentRegistration(reg, pending) {
+		if err := store.SaveAgentRegistration(agentRegistrationFromPending(pending)); err != nil {
+			return auth.AgentRegistration{}, err
+		}
+	}
+
+	verifiedCreds, err := readCredentials(credentialsPath(m))
+	if err != nil || verifiedCreds.APIKey != pending.Key {
+		return auth.AgentRegistration{}, errors.New("cannot verify published platform credential")
+	}
+	verifiedReg, ok, err := store.LoadAgentRegistration()
+	if err != nil || !ok || !sameAgentRegistration(verifiedReg, pending) {
+		return auth.AgentRegistration{}, errors.New("cannot verify published agent registration")
+	}
+	return verifiedReg, nil
 }
 
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -197,69 +323,188 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	client := platform.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
 	br := bufio.NewReader(stdin)
 
-	reg, existed, err := store.LoadAgentRegistration()
-	if err != nil {
-		// WP2-adversarial-review finding 17: an undecodable or empty
-		// agent.json used to wedge connect outright (a transport-error
-		// exit, every time, forever). Treated as absent instead — logged
-		// once so it is not silent, then re-registered as if this were a
-		// fresh connect. A corrupt local cache is not evidence the
-		// platform lost the agent; only ErrAgentNotFound from a live
-		// Status call means that.
-		fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be read (treating as absent, re-registering):", err)
-		reg, existed = auth.AgentRegistration{}, false
-	}
 	interval := resumePollInterval
-	if !existed {
-		// Ask before registering: requested_scopes is the hint the claim
-		// page pre-ticks its mining grant from, and the terminal answer
-		// (or, non-interactively, [mining].enabled) is the only source
-		// for it now that there is no -mining flag. participantHasOtherAgent
-		// is always false here — this registration doesn't exist yet, so
-		// there is nothing to compare against.
-		outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
-		if code != exitOK {
-			return code
-		}
-		fresh, err := client.Register(ctx, *name, registrationHint(outcome))
+	var reg auth.AgentRegistration
+	var existed bool
+	var key string
+
+	pending, hasPending, err := store.LoadPendingRegistration()
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	if hasPending {
+		reg, err = publishPendingRegistration(store, cfg.Miner, pending, registrationPublicationOptions{
+			allowCorruptPreserve: true,
+			replacingExpired:     pending.ReplaceExpired,
+			previousAgentID:      pending.PreviousAgentID,
+			previousPlatformKey:  pending.PreviousKey,
+		})
 		if err != nil {
-			fmt.Fprintln(stderr, "dropin-miner: register:", err)
+			fmt.Fprintln(stderr, "dropin-miner: pending registration recovery:", err)
 			return exitTransport
 		}
-		// WP2-adversarial-review finding 14: a credentials.json that
-		// already holds a working platform key (from an earlier `login`,
-		// or an earlier connect under a different agent identity) is not
-		// silently replaced with this fresh registration's key — that
-		// would disrupt an already-working search setup with no warning
-		// and no way back short of re-running login or connect again.
-		if existingCreds, cerr := readCredentials(credentialsPath(cfg.Miner)); cerr == nil && looksLikePlatformKey(existingCreds.APIKey) && !*force {
-			fmt.Fprintln(stderr, "dropin-miner: credentials.json already holds a platform key; refusing to overwrite it with "+
-				"this new agent's key. Pass -force if you mean to switch this installation to the new registration.")
+		if err := store.ClearPendingRegistration(); err != nil {
+			fmt.Fprintln(stderr, "dropin-miner: clear pending registration:", err)
 			return exitTransport
 		}
-		if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: fresh.Key}); err != nil {
-			fmt.Fprintln(stderr, "dropin-miner:", err)
-			return exitTransport
+		if pending.PollIntervalMS > 0 {
+			interval = time.Duration(pending.PollIntervalMS) * time.Millisecond
 		}
-		reg = auth.AgentRegistration{
-			AgentID:        fresh.AgentID,
-			ClaimURL:       fresh.ClaimURL,
-			ClaimCode:      fresh.ClaimCode,
-			Status:         "unclaimed",
-			ClaimExpiresAt: fresh.ClaimExpiresAt,
+	} else {
+		var loadErr error
+		reg, existed, loadErr = store.LoadAgentRegistration()
+		if loadErr != nil {
+			if !errors.Is(loadErr, auth.ErrAgentRegistrationCorrupt) {
+				fmt.Fprintln(stderr, "dropin-miner:", loadErr)
+				return exitTransport
+			}
+			// An unreadable registration may be recoverable only when no
+			// platform credential exists beside it. preflightFreshRegistration
+			// below enforces that rule before any new Register call.
+			fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be decoded; checking for a credential conflict:", loadErr)
+			reg, existed = auth.AgentRegistration{}, false
 		}
-		if err := store.SaveAgentRegistration(reg); err != nil {
-			fmt.Fprintln(stderr, "dropin-miner:", err)
-			return exitTransport
+		if existed && !*resume && reg.Status == "unclaimed" {
+			// A foreground connect must discover a live expiry before it
+			// prints or follows the old claim target. Detached resume keeps
+			// the ordinary one-poll behavior below and never replaces an
+			// identity in the background.
+			if statusKey, keyErr := platformKey(cfg.Miner); keyErr == nil {
+				if st, statusErr := client.Status(ctx, reg.AgentID, statusKey); statusErr == nil && st.Status == "expired" {
+					reg.Status = st.Status
+					reg.Scopes = st.Scopes
+					reg.ClaimExpiresAt = st.ClaimExpiresAt
+					if err := store.SaveAgentRegistration(reg); err != nil {
+						fmt.Fprintln(stderr, "dropin-miner:", err)
+						return exitTransport
+					}
+				}
+			}
 		}
-		if !*resume {
-			interval = fresh.PollInterval
+
+		if existed && reg.Status == "expired" {
+			if *resume {
+				fmt.Fprintln(stdout, "this registration expired before being claimed; run `dropin-miner connect` again for a new one")
+				return exitOK
+			}
+
+			oldReg := reg
+			oldKey, keyErr := platformKey(cfg.Miner)
+			replace := false
+			if keyErr == nil {
+				st, statusErr := client.Status(ctx, oldReg.AgentID, oldKey)
+				switch {
+				case statusErr == nil && st.Status == "expired":
+					replace = true
+				case statusErr == nil:
+					reg.Status = st.Status
+					reg.Scopes = st.Scopes
+					reg.ClaimExpiresAt = st.ClaimExpiresAt
+					if err := store.SaveAgentRegistration(reg); err != nil {
+						fmt.Fprintln(stderr, "dropin-miner:", err)
+						return exitTransport
+					}
+				case errors.Is(statusErr, platform.ErrAgentNotFound):
+					fmt.Fprintln(stderr, "dropin-miner: expired registration is no longer known to the platform; refusing automatic replacement")
+					return exitTransport
+				case *force:
+					replace = true
+				default:
+					fmt.Fprintln(stderr, "dropin-miner: could not verify the expired registration before replacement:", statusErr)
+					return exitTransport
+				}
+			} else if *force {
+				replace = true
+			} else {
+				fmt.Fprintln(stderr, "dropin-miner: expired registration has no verifiable platform credential; refusing replacement. Pass -force if you mean to replace this installation")
+				return exitTransport
+			}
+
+			if replace {
+				outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
+				if code != exitOK {
+					return code
+				}
+				fresh, registerErr := client.Register(ctx, *name, registrationHint(outcome))
+				if registerErr != nil {
+					fmt.Fprintln(stderr, "dropin-miner: register:", registerErr)
+					return exitTransport
+				}
+				pending = pendingRegistrationFromPlatform(fresh)
+				pending.ReplaceExpired = true
+				pending.PreviousAgentID = oldReg.AgentID
+				pending.PreviousKey = oldKey
+				if err := store.SavePendingRegistration(pending); err != nil {
+					fmt.Fprintln(stderr, "dropin-miner: persist pending registration:", err)
+					return exitTransport
+				}
+				reg, err = publishPendingRegistration(store, cfg.Miner, pending, registrationPublicationOptions{
+					force:                *force,
+					replacingExpired:     true,
+					allowCorruptPreserve: true,
+					previousAgentID:      oldReg.AgentID,
+					previousPlatformKey:  oldKey,
+				})
+				if err != nil {
+					fmt.Fprintln(stderr, "dropin-miner: publish replacement registration:", err)
+					return exitTransport
+				}
+				if err := store.ClearPendingRegistration(); err != nil {
+					fmt.Fprintln(stderr, "dropin-miner: clear pending registration:", err)
+					return exitTransport
+				}
+				existed = true
+				interval = fresh.PollInterval
+			}
+		}
+
+		if !existed {
+			if err := preflightFreshRegistration(cfg.Miner, *force); err != nil {
+				fmt.Fprintln(stderr, "dropin-miner:", err)
+				return exitTransport
+			}
+			// Ask before registering: requested_scopes is the hint the claim
+			// page pre-ticks its mining grant from, and the terminal answer
+			// (or, non-interactively, [mining].enabled) is the only source
+			// for it now that there is no -mining flag. participantHasOtherAgent
+			// is always false here — this registration doesn't exist yet, so
+			// there is nothing to compare against.
+			outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
+			if code != exitOK {
+				return code
+			}
+			fresh, err := client.Register(ctx, *name, registrationHint(outcome))
+			if err != nil {
+				fmt.Fprintln(stderr, "dropin-miner: register:", err)
+				return exitTransport
+			}
+			pending = pendingRegistrationFromPlatform(fresh)
+			if err := store.SavePendingRegistration(pending); err != nil {
+				fmt.Fprintln(stderr, "dropin-miner: persist pending registration:", err)
+				return exitTransport
+			}
+			reg, err = publishPendingRegistration(store, cfg.Miner, pending, registrationPublicationOptions{
+				force:                *force,
+				allowCorruptPreserve: true,
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, "dropin-miner: publish registration:", err)
+				return exitTransport
+			}
+			if err := store.ClearPendingRegistration(); err != nil {
+				fmt.Fprintln(stderr, "dropin-miner: clear pending registration:", err)
+				return exitTransport
+			}
+			if !*resume {
+				interval = fresh.PollInterval
+			}
 		}
 	}
 
 	// Platform calls use the stored agent credential; the search environment
 	// override does not apply to this installation's enrollment.
-	key, err := platformKey(cfg.Miner)
+	key, err = platformKey(cfg.Miner)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
