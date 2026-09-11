@@ -100,6 +100,20 @@ as `0600`. A search takes its key from `TOKENDROP_API_KEY` if set, else that
 file (refused if it is a symlink or readable by others). Otherwise, run
 `dropin-miner connect` or `dropin-miner login` to set up a search credential.
 
+`wallet send` journals the transaction (`wallet/pending_tx.json`) before it
+broadcasts, so a lost node response is resolvable rather than guessed at: a
+transport failure after broadcast prints **"outcome unknown"** and a
+non-zero, distinct exit code, and the next `wallet send` or `wallet balance`
+resolves it — asks the node whether it landed, and either reports the real
+outcome or re-sends the exact same signed bytes, never a fresh signature.
+`-abandon-pending` discards an unresolved record without resolving it.
+`-node`/`TOKENDROP_WALLET_NODE` override the default RPC node per chain
+(`pkg/config.DefaultWalletNodes`); the node must be https, or http only on
+loopback, unless `-insecure-node` is passed. The client trusts this node for
+confirmations and balances — no light-client verification. `wallet.lock` is
+held only while a wallet key is being generated or repaired, so two
+concurrent commands never both create one.
+
 `agents prefer off` makes the agent's own web search the default and keeps
 this one for when you name it; `on` makes this one the default again. Inside
 the agent, `/dropin-miner off` and `/dropin-miner on` do the same. The choice

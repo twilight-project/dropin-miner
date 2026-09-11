@@ -26,26 +26,9 @@ import (
 
 // Defaults per design_plan §5.7, §5.8, §6.1, §6.4 and §11.
 const (
-	DefaultListen      = "127.0.0.1:8787"
-	DefaultAdminListen = "127.0.0.1:8788"
-	defaultUpstream    = "https://openrouter.ai/api"
-	// defaultPlatformBaseURL is the search platform's human-facing portal
-	// and claim pages (agent onboarding design, search-platform-agent-
-	// onboarding-design.md §5): what a printed claim_url is checked
-	// against, invariant 12. It is NOT where connect/mining enable's own
-	// requests go — see defaultAgentsAPIURL for that, and the doc comment
-	// on Platform for why these are two separate values rather than one.
-	defaultPlatformBaseURL = "https://platform.nyks.dev"
-	// defaultAgentsAPIURL is where connect/mining enable actually send
-	// register/status/enroll (search-router's own naming: the "Agents"
-	// host, distinct from the "Platform" host above). Confirmed live: a
-	// register call against platform.nyks.dev 404s — that route only
-	// exists on this separate host — while the claim_url it returns
-	// correctly points back at platform.nyks.dev. One shared origin was
-	// this package's original assumption, matching the design doc's own
-	// wording; the real deployment splits it in two, and search-router's
-	// skill file is what corrected this.
-	defaultAgentsAPIURL        = "https://agents-v1.nyks.dev"
+	DefaultListen              = "127.0.0.1:8787"
+	DefaultAdminListen         = "127.0.0.1:8788"
+	defaultUpstream            = "https://openrouter.ai/api"
 	defaultProviderName        = "openrouter"
 	defaultShutdownGrace       = 5 * time.Second
 	defaultMaxRequestBodyBytes = 32 << 20
@@ -349,7 +332,7 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		providerTier:          "A",
 		upstream:              defaultUpstream,
 		logLevel:              "info",
-		platformBaseURL:       defaultPlatformBaseURL,
+		platformBaseURL:       DefaultPlatformBaseURL,
 		observe: Observe{
 			MemoryBudgetBytes:    defaultObservationBudget,
 			RingBytes:            defaultRingBytes,
@@ -691,8 +674,8 @@ func (r *rawConfig) finish() (*Config, error) {
 	agentsAPIRaw := r.agentsAPIURL
 	if agentsAPIRaw == "" {
 		switch platformBaseURL {
-		case defaultPlatformBaseURL:
-			agentsAPIRaw = defaultAgentsAPIURL
+		case DefaultPlatformBaseURL:
+			agentsAPIRaw = DefaultAgentsAPIURL
 		default:
 			pu, perr := url.Parse(platformBaseURL)
 			if perr != nil || !isLoopbackHost(pu.Hostname()) {

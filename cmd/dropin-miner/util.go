@@ -18,6 +18,12 @@ const (
 // exitChainRejected: the chain refused a wallet transaction (wallet send).
 const exitChainRejected = 3
 
+// exitOutcomeUnknown: a wallet send's broadcast or confirmation-wait
+// could not be proven either way — the journal was kept, and
+// the participant must NOT retry with a fresh signature: re-running
+// wallet send resolves the same journal instead of building a new one.
+const exitOutcomeUnknown = 5
+
 func orDefaults(cfgSource string) string {
 	if cfgSource == "" {
 		return "defaults/env, no config file found"

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 )
@@ -25,7 +26,70 @@ const (
 	// config dir, and without this every documented example would have to
 	// carry the path — or, worse, silently look in the wrong place.
 	walletDirEnv = "TOKENDROP_WALLET_DIR"
+
+	// walletLockFile is the sibling wallet.key/wallet.pub creation locks
+	// on — never a lock on wallet.key itself, for the same
+	// reason refresh.token.lock is never taken on refresh.token: a lock
+	// on the data file stays attached to whatever inode held it at lock
+	// time, and a writer that replaces that file via rename leaves a
+	// waiter holding a lock nobody else is honoring.
+	walletLockFile = "wallet.lock"
 )
+
+// walletLockTimeout bounds how long a caller waits for a concurrent
+// creator to finish. Unlike connect.lock/flush.lock's "busy, exit
+// quietly" shape, wallet creation is meant to WAIT: the whole point of
+// the lock is that two concurrent callers both succeed — one generates,
+// the other discovers the result and reuses it — so a caller that gave
+// up immediately would defeat it.
+const (
+	walletLockTimeout   = 10 * time.Second
+	walletLockFirstPoll = time.Millisecond
+	walletLockMaxPoll   = 50 * time.Millisecond
+)
+
+// errWalletLockBusy is returned when the wait expires with the lock
+// still held. Distinct from any other failure: nothing is wrong with
+// this wallet, another process is genuinely mid-creation, and the
+// caller should not have written anything.
+var errWalletLockBusy = errors.New("wallet: another process is creating or repairing this wallet")
+
+// onWalletLockContention is a deterministic test seam: journal tests use it
+// to prove that a competing wallet command has actually reached the held
+// cross-process lock, without depending on scheduler timing or sleeps.
+var onWalletLockContention = func() {}
+
+// lockWalletDir takes the cross-process creation lock for dir, the same
+// try-lock-then-bounded-poll shape pkg/auth's refresh-token lock uses,
+// built on this package's own tryLockFile/unlockFile (already
+// cross-platform and already used for flush.lock and connect.lock).
+func lockWalletDir(dir string, timeout time.Duration) (release func(), err error) {
+	path := filepath.Join(dir, walletLockFile)
+	deadline := time.Now().Add(timeout)
+	poll := walletLockFirstPoll
+	for {
+		f, held, err := tryLockFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("wallet: lock: %w", err)
+		}
+		if held {
+			return func() { _ = unlockFile(f) }, nil
+		}
+		onWalletLockContention()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("%w: gave up after %s waiting on %s", errWalletLockBusy, timeout, path)
+		}
+		wait := poll
+		if wait > remaining {
+			wait = remaining
+		}
+		time.Sleep(wait)
+		if poll < walletLockMaxPoll {
+			poll *= 2
+		}
+	}
+}
 
 // sidecar is the public half, stored in the clear so read-only commands
 // (address, register, balance) never need the passphrase.

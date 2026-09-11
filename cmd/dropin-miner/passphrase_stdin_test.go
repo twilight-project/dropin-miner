@@ -40,7 +40,7 @@ func TestSendAcceptsAPipedConfirmationThenPassphrase(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	stdin := strings.NewReader("yes\np-test-1\n")
-	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL,
+	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2",
 		"-to", "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh", "-amount", "1000"},
 		stdin, &out, &errOut, noEnv)
 	if code != exitOK {
@@ -68,7 +68,7 @@ func TestSendRejectsAWrongPipedPassphrase(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	stdin := strings.NewReader("yes\nwrong-passphrase\n")
-	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL,
+	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2",
 		"-to", "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh", "-amount", "1000"},
 		stdin, &out, &errOut, noEnv)
 	if code == exitOK {

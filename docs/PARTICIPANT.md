@@ -184,6 +184,33 @@ want to change *to*. Nobody needs your API key, your recovery phrase, or the
 contents of `~/.tokendrop/` to approve a payout address, and no operator will
 ask you for them.
 
+## Sending funds with `wallet send`
+
+`dropin-miner wallet send -to <address> -amount <n>` moves funds out of this
+wallet. Before it broadcasts anything it writes a small record —
+`wallet/pending_tx.json` — naming the transaction it is about to send; that
+record is what lets a lost network response be resolved instead of guessed
+at. If the node accepts the transaction but its reply never arrives, `send`
+reports **"outcome unknown"** rather than either "sent" or "failed" — the
+transaction may or may not have gone through, and it is not safe to just try
+again with a new one. Run `wallet send` (or `wallet balance`) again: it
+checks the node for that same transaction first, either reports what
+actually happened and clears the record, or re-sends the exact same signed
+bytes if the node still has not seen it — never a second, independently
+signed transaction. `wallet send -abandon-pending` discards an unresolved
+record without finding out what happened to it, if you are certain it never
+matters.
+
+The client trusts whichever RPC node it talks to (`-node`, or
+`TOKENDROP_WALLET_NODE`, or the one built-in default for the testnet) for
+balances and confirmations; it does not independently verify the chain the
+way a light client would. That node must be `https`, or plain `http` only on
+your own machine (loopback) — pass `-insecure-node` to override this and
+accept the risk if you really mean to point it at a plain-http node
+elsewhere. `wallet.lock` is a third small file this creates, held only for
+the moment a wallet key is generated or repaired, so two commands started at
+the same time can never both create one.
+
 ## Manual enrollment
 
 The portal's older path — `dropin-miner enroll -assertion`, `login`, `join`,

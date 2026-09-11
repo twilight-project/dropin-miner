@@ -168,7 +168,7 @@ var errNoASConfigured = errors.New("this invocation named an address directly an
 func cmdEarnings(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := newFlagSet("earnings", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
-	node := fs.String("node", "", "CometBFT RPC endpoint (default: "+walletNodeEnv+" or the devnet)")
+	node := fs.String("node", "", "CometBFT RPC endpoint (default: "+walletNodeEnv+", else the per-chain default)")
 	address := fs.String("address", "", "the address to read (default: the payout address the AS holds for you)")
 	denom := fs.String("denom", defaultWalletDenom, "denomination to report")
 	escrow := fs.String("escrow", "", "the chain account mining payments are released from "+
@@ -226,7 +226,23 @@ func cmdEarnings(args []string, stdout, stderr io.Writer, getenv func(string) st
 		return exitUsage
 	}
 
-	c := newRPCClient(walletNode(*node, getenv))
+	// Read-only, like wallet balance: falls back to the one well-known
+	// default chain rather than refusing when no config was found, since
+	// there is nothing to sign and so no wrong-chain guard to serve.
+	chainID := m.ChainID
+	if chainID == "" {
+		chainID = config.DefaultChainID
+	}
+	nodeURL, err := walletNode(*node, getenv, chainID)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitUsage
+	}
+	if err := validateNodeURL(nodeURL, false, stderr); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitUsage
+	}
+	c := newRPCClient(nodeURL)
 
 	escrowAddr, escrowErr := resolveEscrow(ctx, c, strings.TrimSpace(*escrow), getenv)
 

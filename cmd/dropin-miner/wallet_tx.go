@@ -35,20 +35,22 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 // Type URLs, frozen by the SDK's proto registration.
 const (
-	typeURLMsgSend       = "/cosmos.bank.v1beta1.MsgSend"
-	typeURLSecp256k1Pub  = "/cosmos.crypto.secp256k1.PubKey"
-	signModeDirect       = 1 // SIGN_MODE_DIRECT
-	queryAccountPath     = "/cosmos.auth.v1beta1.Query/Account"
-	queryBalancePath     = "/cosmos.bank.v1beta1.Query/Balance"
-	queryModuleAcctPath  = "/cosmos.auth.v1beta1.Query/ModuleAccountByName"
-	defaultWalletNodeURL = "http://54.179.101.3:26657"
-	defaultWalletDenom   = "utwlt"
-	defaultWalletGas     = 200000
-	defaultWalletFee     = 2000 // utwlt; devnet gas price is nominal
+	typeURLMsgSend      = "/cosmos.bank.v1beta1.MsgSend"
+	typeURLSecp256k1Pub = "/cosmos.crypto.secp256k1.PubKey"
+	signModeDirect      = 1 // SIGN_MODE_DIRECT
+	queryAccountPath    = "/cosmos.auth.v1beta1.Query/Account"
+	queryBalancePath    = "/cosmos.bank.v1beta1.Query/Balance"
+	queryModuleAcctPath = "/cosmos.auth.v1beta1.Query/ModuleAccountByName"
+	// defaultWalletDenom is config.DefaultWalletDenom under a short local
+	// name: every flag default in this file spells it out.
+	defaultWalletDenom = config.DefaultWalletDenom
+	defaultWalletGas   = 200000
+	defaultWalletFee   = 2000 // utwlt; testnet gas price is nominal
 )
 
 // ---- minimal protobuf writer ----
@@ -383,13 +385,34 @@ func (c *rpcClient) balance(ctx context.Context, address, denom string) (string,
 	return string(amount), nil
 }
 
-// broadcastResult is what broadcast_tx_sync reports: acceptance into the
-// mempool, not inclusion in a block.
-type broadcastResult struct {
-	Code uint32 `json:"code"`
-	Log  string `json:"log"`
-	Hash string `json:"hash"`
+// txHash is what CometBFT reports as a transaction's hash: SHA-256 of
+// the raw TxRaw bytes, upper-hex. Computed locally, before broadcast,
+// so the journal and the confirmation predicate below
+// both have something authoritative to compare a node's answer against
+// — the wallet's own arithmetic, not whatever a node claims.
+func txHash(txRaw []byte) string {
+	return strings.ToUpper(hex.EncodeToString(sha256Sum(txRaw)))
 }
+
+// broadcastResult is what broadcast_tx_sync reports: acceptance into the
+// mempool, not inclusion in a block. CodeSet distinguishes an absent
+// `code` field from an explicit 0 — Go's zero value for uint32 cannot,
+// and the confirmation predicate requires the field to be genuinely
+// present, not merely absent-and-defaulted.
+type broadcastResult struct {
+	Code    uint32 `json:"code"`
+	CodeSet bool   `json:"-"`
+	Log     string `json:"log"`
+	Hash    string `json:"hash"`
+}
+
+// errBroadcastOutcomeUnknown means the response did not prove the chain
+// accepted THIS transaction: a missing/mismatched hash, or an absent
+// code. Never proof of failure — proof of nothing, which is exactly
+// what a lost or malformed response looks like from here, and exactly
+// why the caller must keep the journal rather than retry with a fresh
+// signature.
+var errBroadcastOutcomeUnknown = errors.New("wallet: broadcast response did not confirm this transaction (no matching hash, or no code)")
 
 func (c *rpcClient) broadcast(ctx context.Context, txRaw []byte) (*broadcastResult, error) {
 	params := url.Values{}
@@ -399,20 +422,90 @@ func (c *rpcClient) broadcast(ctx context.Context, txRaw []byte) (*broadcastResu
 	// the tx decoder and rejected it there — proven by the broadcast hash
 	// matching SHA-256 of the base64 text rather than of the transaction.
 	params.Set("tx", "0x"+hex.EncodeToString(txRaw))
-	var res broadcastResult
-	if err := c.get(ctx, "/broadcast_tx_sync", params, &res); err != nil {
+	var raw json.RawMessage
+	if err := c.get(ctx, "/broadcast_tx_sync", params, &raw); err != nil {
 		return nil, err
+	}
+	var res broadcastResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, err
+	}
+	var presence struct {
+		Code *uint32 `json:"code"`
+	}
+	_ = json.Unmarshal(raw, &presence)
+	res.CodeSet = presence.Code != nil
+	// The response is evidence about THIS transaction only when
+	// its hash matches what was actually sent. A rejection (code != 0)
+	// still needs to match — a node that rejects a DIFFERENT stale
+	// transaction under the same connection is not reporting on this
+	// one, whatever code it sends.
+	want := txHash(txRaw)
+	if !res.CodeSet || !strings.EqualFold(res.Hash, want) {
+		return nil, errBroadcastOutcomeUnknown
 	}
 	return &res, nil
 }
 
-// txResult is the delivered outcome, once the transaction is in a block.
+// txResult is the delivered outcome, once the transaction is in a
+// block. Hash lets the confirmation predicate refuse a response that
+// answers a DIFFERENT query than the one just asked — the same
+// discipline broadcast's match applies, extended to polling.
 type txResult struct {
+	Hash     string `json:"hash"`
 	Height   string `json:"height"`
 	TxResult struct {
-		Code uint32 `json:"code"`
-		Log  string `json:"log"`
+		Code    uint32 `json:"code"`
+		CodeSet bool   `json:"-"`
+		Log     string `json:"log"`
 	} `json:"tx_result"`
+}
+
+// confirmed reports whether res is positive proof of
+// inclusion: the matching hash, a positive integer height, and an
+// explicit tx_result.code. Anything short of all three is "not yet",
+// never inferred as a failure.
+func (tr *txResult) confirmed(wantHash string) bool {
+	if tr == nil || !strings.EqualFold(tr.Hash, wantHash) {
+		return false
+	}
+	if !tr.TxResult.CodeSet {
+		return false
+	}
+	h, err := strconv.ParseInt(tr.Height, 10, 64)
+	return err == nil && h > 0
+}
+
+// queryTxOnce is a single /tx lookup, confirmed=true only under the
+// full predicate (matching hash, positive height, explicit code); found
+// distinguishes a genuine "not found yet" from a real transport error,
+// so a caller resolving a pending journal (one check, no polling) and
+// waitForTx (many checks, polling) can share the same read.
+func (c *rpcClient) queryTxOnce(ctx context.Context, hash string) (res *txResult, found, confirmed bool, err error) {
+	wantHash := strings.ToUpper(hash)
+	params := url.Values{}
+	params.Set("hash", "0x"+strings.TrimPrefix(wantHash, "0X"))
+	var raw json.RawMessage
+	if err := c.get(ctx, "/tx", params, &raw); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil, false, false, nil
+		}
+		return nil, false, false, err
+	}
+	var out txResult
+	if uerr := json.Unmarshal(raw, &out); uerr != nil {
+		return nil, false, false, uerr
+	}
+	var presence struct {
+		TxResult struct {
+			Code *uint32 `json:"code"`
+		} `json:"tx_result"`
+	}
+	_ = json.Unmarshal(raw, &presence)
+	out.TxResult.CodeSet = presence.TxResult.Code != nil
+	// Parsed fine but did not carry proof of THIS transaction: the same
+	// "not yet" as a literal not-found, not an error and not confirmed.
+	return &out, true, out.confirmed(wantHash), nil
 }
 
 // waitForTx polls until the transaction appears in a block or the
@@ -420,17 +513,13 @@ type txResult struct {
 // it; execution can still fail, and a wallet that stopped at "accepted"
 // would report a failed transfer as a success.
 func (c *rpcClient) waitForTx(ctx context.Context, hash string, interval time.Duration) (*txResult, error) {
-	params := url.Values{}
-	params.Set("hash", "0x"+strings.TrimPrefix(strings.ToUpper(hash), "0X"))
 	for {
-		var res txResult
-		err := c.get(ctx, "/tx", params, &res)
-		if err == nil {
-			return &res, nil
-		}
-		// "not found" is the normal answer until it lands.
-		if !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		res, _, confirmed, err := c.queryTxOnce(ctx, hash)
+		if err != nil {
 			return nil, err
+		}
+		if confirmed {
+			return res, nil
 		}
 		select {
 		case <-ctx.Done():
