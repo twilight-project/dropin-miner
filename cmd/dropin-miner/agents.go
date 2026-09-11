@@ -69,6 +69,28 @@ var opencodePluginJS string
 //go:embed pi_extension.ts
 var piExtensionTS string
 
+//go:embed agent_trace_common.js
+var agentTraceCommonJS string
+
+// traceCommonMarker is the line a JavaScript host's template carries where
+// the shared trace-preparation source belongs.
+const traceCommonMarker = "// {{TRACE_COMMON}}"
+
+// renderAgentScript is what actually gets installed for a JavaScript or
+// TypeScript host: that host's own template with the one shared
+// trace-preparation source (agent_trace_common.js) spliced in. The
+// installed file stays standalone — no import of ours to resolve at
+// runtime, no npm, no bundler — while the scrub, the byte accounting and
+// the two caps live in exactly one place in the repository. Rendering,
+// rather than each adapter carrying its own copy, is the point: the
+// adapter builds the bridge, so an adapter whose scrub had drifted would
+// put raw assistant text into a process argument before the binary ever
+// saw it. TestEveryJSHostRendersTheSharedTraceSource keeps the marker
+// honest in both templates.
+func renderAgentScript(template string) string {
+	return strings.Replace(template, traceCommonMarker, strings.TrimRight(agentTraceCommonJS, "\n"), 1)
+}
+
 const (
 	agentsName        = "dropin-miner"
 	agentsMarkerBegin = "# >>> dropin-miner agents install >>>"
@@ -613,14 +635,14 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 		case "opencode":
-			js := strings.ReplaceAll(opencodePluginJS, "{{BINARY}}", entry.command)
+			js := renderAgentScript(opencodePluginJS)
 			if !planWrite(ops, s.label, paths.opencodePlugin, []byte(js), 0o600, "lineage plugin", &p) {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 			p.notes = append(p.notes, s.label+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
 		case "pi":
 			changed := planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
-			if planWrite(ops, s.label, paths.piExtension, []byte(piExtensionTS), 0o600, "lineage extension", &p) {
+			if planWrite(ops, s.label, paths.piExtension, []byte(renderAgentScript(piExtensionTS)), 0o600, "lineage extension", &p) {
 				changed = true
 			}
 			if !changed {

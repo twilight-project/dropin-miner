@@ -12,18 +12,19 @@ import (
 	"testing"
 )
 
-// The Pi extension is TypeScript and cannot call isSearchCommand, so it carries
-// a copy of the recognizer's pattern. This guard fails if that copy ever drifts
-// from the Go searchCommandRe — the one recognizer the Hermes hook, the Cursor
-// hook and Claude Code all go through — so Pi can never fall back to a looser
-// (e.g. substring) match without CI noticing.
+// The JavaScript hosts cannot call isSearchCommand, so the shared trace
+// source carries a copy of the recognizer's pattern. This guard fails if that
+// copy ever drifts from the Go searchCommandRe — the one recognizer the Hermes
+// hook, the Cursor hook and Claude Code all go through — so no adapter can fall
+// back to a looser (e.g. substring) match without CI noticing. It is checked on
+// the shared source because that is now the only place the pattern exists.
 func TestPiExtensionRegexMatchesTheCanonicalRecognizer(t *testing.T) {
-	m := regexp.MustCompile(`SEARCH_RE\s*=\s*/(.*?)/;`).FindStringSubmatch(piExtensionTS)
+	m := regexp.MustCompile(`SEARCH_RE\s*=\s*/(.*?)/\n`).FindStringSubmatch(agentTraceCommonJS)
 	if m == nil {
-		t.Fatal("could not find the SEARCH_RE literal in pi_extension.ts")
+		t.Fatal("could not find the SEARCH_RE literal in agent_trace_common.js")
 	}
 	if got := m[1]; got != searchCommandRe.String() {
-		t.Errorf("Pi extension regex drifted from searchCommandRe:\n  ts: %s\n  go: %s", got, searchCommandRe.String())
+		t.Errorf("the shared JS recognizer drifted from searchCommandRe:\n  js: %s\n  go: %s", got, searchCommandRe.String())
 	}
 }
 
@@ -70,7 +71,7 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 	ext, ok := m.files[piExtensionPath]
 	if !ok {
 		t.Errorf("Pi lineage extension not written: %s", piExtensionPath)
-	} else if s := string(ext); !strings.Contains(s, `harness: "pi"`) || !strings.Contains(s, "tokendrop-trace-v1|") || !strings.Contains(s, "TOKENDROP_TRACE_BRIDGE=") {
+	} else if s := string(ext); !strings.Contains(s, `harness: "pi"`) || !strings.Contains(s, "tokendrop-trace-v1|") || !strings.Contains(s, "TOKENDROP_TRACE_BRIDGE") {
 		t.Errorf("Pi extension is not the lineage bridge:\n%s", s)
 	}
 
