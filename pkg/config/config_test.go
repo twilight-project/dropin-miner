@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -297,34 +298,50 @@ func TestMiningDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestMiningEnabledDemandsIdentity(t *testing.T) {
-	base := "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n"
-	cfg := load(t, []string{"-config", writeTOML(t, base)}, noEnv)
-	m := cfg.Mining
-	if !m.Enabled || m.ASBaseURL != "https://as.example.com" || m.ChainID != "twilight-1" || m.SlotID != 7 {
-		t.Fatalf("mining block misparsed: %+v", m)
+func TestMiningASConfigurationValidationIsIndependentOfDecision(t *testing.T) {
+	valid := func(enabled string, slot string) string {
+		return fmt.Sprintf("[mining]\n%sas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\n%smetadata_ttl = \"2m\"\ncollector_interval = \"3s\"\ncollector_base_backoff = \"1s\"\ncollector_max_backoff = \"10s\"\ncollector_max_attempts = 4\n", enabled, slot)
 	}
-	if m.TargetEpoch == nil || *m.TargetEpoch != 42 {
-		t.Fatalf("target_epoch pin misparsed: %+v", m.TargetEpoch)
-	}
-	if m.MetadataTTL != 15*time.Minute {
-		t.Fatalf("metadata_ttl default wrong: %v", m.MetadataTTL)
+
+	for _, tc := range []struct {
+		name         string
+		body         string
+		wantEnabled  bool
+		wantSlot     uint64
+		wantExplicit bool
+	}{
+		{name: "enabled false still validates AS", body: valid("enabled = false\n", "slot_id = 7\n"), wantSlot: 7, wantExplicit: true},
+		{name: "absent enabled still validates AS", body: valid("", "slot_id = 7\n"), wantSlot: 7},
+		{name: "explicit slot zero succeeds", body: valid("enabled = false\n", "slot_id = 0\n"), wantSlot: 0, wantExplicit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := load(t, []string{"-config", writeTOML(t, tc.body)}, noEnv)
+			if cfg.Mining.Enabled != tc.wantEnabled || cfg.Mining.SlotID != tc.wantSlot || cfg.MiningEnabledExplicit != tc.wantExplicit {
+				t.Fatalf("resolved config = %+v explicit=%v", cfg.Mining, cfg.MiningEnabledExplicit)
+			}
+			if cfg.Mining.ASBaseURL == "" || cfg.Mining.ChainID != "twilight-1" || cfg.Mining.MetadataTTL != 2*time.Minute ||
+				cfg.Mining.CollectorInterval != 3*time.Second || cfg.Mining.CollectorBaseBackoff != time.Second ||
+				cfg.Mining.CollectorMaxBackoff != 10*time.Second || cfg.Mining.CollectorMaxAttempts != 4 {
+				t.Fatalf("AS configuration was not fully resolved: %+v", cfg.Mining)
+			}
+		})
 	}
 
 	for name, body := range map[string]string{
-		"missing as_url":   "[mining]\nenabled = true\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n",
-		"missing chain_id": "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nslot_id = 7\ntarget_epoch = 42\n",
-		"missing slot_id":  "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\ntarget_epoch = 42\n",
-		"relative as_url":  "[mining]\nenabled = true\nas_url = \"as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\ntarget_epoch = 42\n",
+		"omitted slot_id":  valid("enabled = false\n", ""),
+		"missing chain_id": "[mining]\nenabled = false\nas_url = \"https://as.example.com\"\nslot_id = 7\n",
+		"relative as_url":  "[mining]\nenabled = false\nas_url = \"as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 7\n",
 	} {
 		if err := loadErr(t, []string{"-config", writeTOML(t, body)}, noEnv); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
 	}
-	// slot_id = 0 is a valid Core Slot, distinct from absent.
-	zero := "[mining]\nenabled = true\nas_url = \"https://as.example.com\"\nchain_id = \"twilight-1\"\nslot_id = 0\ntarget_epoch = 42\n"
-	if cfg := load(t, []string{"-config", writeTOML(t, zero)}, noEnv); cfg.Mining.SlotID != 0 {
-		t.Fatalf("slot 0 mishandled: %+v", cfg.Mining)
+
+	// Mining.Enabled is only a first-decision answer. It is representable
+	// without an AS and must not fail merely because AS work is absent.
+	local := load(t, []string{"-config", writeTOML(t, "[mining]\nenabled = true\n")}, noEnv)
+	if !local.Mining.Enabled || local.Mining.ASBaseURL != "" {
+		t.Fatalf("enabled local mining config was rejected or changed: %+v", local.Mining)
 	}
 }
 

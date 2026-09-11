@@ -13,10 +13,12 @@ import (
 	"bufio"
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 func TestRegistrationHint(t *testing.T) {
@@ -129,6 +131,63 @@ func TestDecideRegistrationOutcomeFillsInAMissingAddressWithoutReaskingEnable(t 
 	}
 	if got := registrationHint(outcome); len(got) != 1 || got[0] != "mining" {
 		t.Fatalf("registrationHint(%+v) = %v, want [mining]", outcome, got)
+	}
+}
+
+func TestDecideRegistrationOutcomeFailsClosedForDegradedDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(t *testing.T, path string)
+	}{
+		{name: "malformed", make: func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unsupported", make: func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`{"version":99,"enabled":true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unreadable", make: func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, enabled := range []bool{false, true} {
+				t.Run(map[bool]string{false: "config-false", true: "config-true"}[enabled], func(t *testing.T) {
+					for _, interactive := range []bool{false, true} {
+						t.Run(map[bool]string{false: "noninteractive", true: "interactive"}[interactive], func(t *testing.T) {
+							stateDir := filepath.Join(t.TempDir(), "state")
+							if err := os.Mkdir(stateDir, 0o700); err != nil {
+								t.Fatal(err)
+							}
+							decisionPath := filepath.Join(stateDir, "mining_decision.json")
+							tc.make(t, decisionPath)
+							store, err := auth.OpenStore(stateDir)
+							if err != nil {
+								t.Fatal(err)
+							}
+							cfg := &config.Config{Mining: config.Mining{Enabled: enabled}}
+							var stderr bytes.Buffer
+							outcome, code := decideRegistrationOutcome(bytes.NewBufferString("yes\n"), bufio.NewReader(bytes.NewBufferString("yes\n")), &bytes.Buffer{}, &stderr, noEnv, cfg, store, interactive)
+							if code != exitTransport || outcome.enabled {
+								t.Fatalf("degraded decision outcome=%+v code=%d, want fail-closed transport error", outcome, code)
+							}
+							if !strings.Contains(stderr.String(), "mining decision is degraded") ||
+								!strings.Contains(stderr.String(), "mining enable") || !strings.Contains(stderr.String(), "mining disable") {
+								t.Fatalf("repair guidance missing: %q", stderr.String())
+							}
+							if got := store.ReadMiningDecision(); got.State != auth.MiningDegraded {
+								t.Fatalf("degraded decision was repaired implicitly: %+v", got)
+							}
+						})
+					}
+				})
+			}
+		})
 	}
 }
 

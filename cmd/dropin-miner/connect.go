@@ -47,6 +47,11 @@ import (
 	"github.com/twilight-project/dropin-miner/pkg/platform"
 )
 
+// connectInteractive is the terminal-detection seam for cmdConnect. The
+// production value is the real terminal check; tests may force the same
+// interactive branch while still driving cmdConnect end to end.
+var connectInteractive = isInteractive
+
 // connectPollBudget and resumePollInterval are vars, not consts, solely
 // so a test can shrink them (save, override, t.Cleanup restore) instead
 // of waiting out a real 3-minute bound — the production default is what
@@ -212,7 +217,7 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		// for it now that there is no -mining flag. participantHasOtherAgent
 		// is always false here — this registration doesn't exist yet, so
 		// there is nothing to compare against.
-		outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, isInteractive(stdin, stdout))
+		outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
 		if code != exitOK {
 			return code
 		}
@@ -335,20 +340,29 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 //     once, ever"). finishMiningEnabled asks only the missing half: the
 //     address, not the enable question again.
 //
-// No decision on file at all falls through to askMiningQuestion, exactly
-// as a genuinely first-ever connect always has.
+// Only an absent decision (UNDECIDED) falls through to askMiningQuestion.
+// A present but unreadable decision is DEGRADED and must be repaired
+// explicitly; treating it as a first decision would let configuration or a
+// new terminal answer overwrite the local runtime authority.
 func decideRegistrationOutcome(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writer, getenv func(string) string, cfg *config.Config, store *auth.Store, interactive bool) (miningEnableOutcome, int) {
-	enabled, ok, err := store.LoadMiningEnabled()
-	if err != nil || !ok {
+	decision := store.ReadMiningDecision()
+	switch decision.State {
+	case auth.MiningUndecided:
 		return askMiningQuestion(stdin, br, stdout, stderr, getenv, cfg, store, interactive, false)
-	}
-	if !enabled {
+	case auth.MiningDisabled:
 		return miningEnableOutcome{}, exitOK
+	case auth.MiningDegraded:
+		fmt.Fprintln(stderr, "dropin-miner: mining decision is degraded; run `mining enable` or `mining disable` to repair it explicitly")
+		return miningEnableOutcome{}, exitTransport
+	case auth.MiningEnabled:
+		if address, ok, err := store.LoadPayoutAddress(); err == nil && ok {
+			return miningEnableOutcome{enabled: true, payoutAddress: address}, exitOK
+		}
+		return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, interactive)
+	default:
+		fmt.Fprintln(stderr, "dropin-miner: mining decision has an unknown state; run `mining enable` or `mining disable` to repair it explicitly")
+		return miningEnableOutcome{}, exitTransport
 	}
-	if address, ok, err := store.LoadPayoutAddress(); err == nil && ok {
-		return miningEnableOutcome{enabled: true, payoutAddress: address}, exitOK
-	}
-	return finishMiningEnabled(stdin, br, stdout, stderr, getenv, cfg, store, interactive)
 }
 
 // registrationHint turns the mining question's outcome into register's

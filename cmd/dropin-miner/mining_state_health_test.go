@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -296,23 +296,20 @@ func TestInteractiveConnectDecisionAuthorizesSearchAndFlushWithoutConfigEnabled(
 		t.Fatal(err)
 	}
 
-	cfg, _, err := loadConfig(cfgPath, noEnv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := auth.OpenStore(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	previousInteractive := connectInteractive
+	connectInteractive = func(io.Reader, io.Writer) bool { return true }
+	t.Cleanup(func() { connectInteractive = previousInteractive })
 	addr := "twilight1k5stzqa2sgvfgx9u04cv93pek3gcmm9h5t9hkn"
-	stdin := bytes.NewBufferString("yes\n" + addr + "\n")
-	outcome, code := decideRegistrationOutcome(stdin, bufio.NewReader(stdin), &bytes.Buffer{}, &bytes.Buffer{}, noEnv, cfg, store, true)
-	if code != exitOK || !outcome.enabled || outcome.payoutAddress != addr {
-		t.Fatalf("interactive connect decision = %+v code=%d", outcome, code)
+	if code, out, errOut := runConnect(t, cfgPath, bytes.NewBufferString("yes\n"+addr+"\n")); code != exitOK {
+		t.Fatalf("interactive register connect exited %d: stdout=%q stderr=%q", code, out, errOut)
+	}
+	store, err := auth.OpenStoreExisting(stateDir)
+	if err != nil {
+		t.Fatal(err)
 	}
 	decision := store.ReadMiningDecision()
 	if decision.State != auth.MiningEnabled {
-		t.Fatalf("interactive decision = %+v, want ON", decision)
+		t.Fatalf("cmdConnect interactive decision = %+v, want ON", decision)
 	}
 
 	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
