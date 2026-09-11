@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,18 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
+)
+
+const maxSubmissionAckBytes = 1 << 20
+
+var (
+	ErrAckBodyTooLarge           = errors.New("auth: acknowledgement body too large")
+	ErrAckMalformedJSON          = errors.New("auth: malformed acknowledgement JSON")
+	ErrAckTrailingData           = errors.New("auth: acknowledgement has trailing data")
+	ErrAckClientRecordIDMismatch = errors.New("auth: acknowledgement client_record_id mismatch")
+	ErrAckMissingClientRecordID  = errors.New("auth: acknowledgement missing client_record_id")
+	ErrAckMissingObservationID   = errors.New("auth: acknowledgement missing observation_id")
+	ErrAckUnexpectedStatus       = errors.New("auth: unexpected acknowledgement status")
 )
 
 // Submitter delivers spooled records to the AS.
@@ -34,11 +47,68 @@ type submissionAck struct {
 	ObservationID        string `json:"observation_id"`
 	ClientRecordID       string `json:"client_record_id"`
 	ReconciliationStatus string `json:"reconciliation_status"`
+	Reason               string `json:"reason"`
 }
 
-// Submit delivers one record. It returns satisfied=true only for
-// ACCEPTED / ALREADY_ACCEPTED — the only answers that may remove the
-// durable copy (§58).
+// classifySubmissionAck validates the identity binding before classifying an
+// acknowledgement. DUPLICATE/EVIDENCE_ALREADY_CONSUMED is intentionally a
+// future-compatible local classifier case: today's submission endpoint
+// normally returns ACCEPTED/PENDING, and the client does not poll status.
+func classifySubmissionAck(ack submissionAck, expectedID string) (bool, error) {
+	if ack.ClientRecordID == "" {
+		return false, ErrAckMissingClientRecordID
+	}
+	if ack.ClientRecordID != expectedID {
+		return false, fmt.Errorf("%w: got %q, want %q", ErrAckClientRecordIDMismatch, ack.ClientRecordID, expectedID)
+	}
+	if ack.ObservationID == "" {
+		return false, ErrAckMissingObservationID
+	}
+	if (ack.ReconciliationStatus == "DUPLICATE" && ack.Reason == "EVIDENCE_ALREADY_CONSUMED") ||
+		ack.SubmissionStatus == "ACCEPTED" || ack.SubmissionStatus == "ALREADY_ACCEPTED" {
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: %q", ErrAckUnexpectedStatus, ack.SubmissionStatus)
+}
+
+func readSubmissionBody(body io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxSubmissionAckBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("auth: read submission response: %w", err)
+	}
+	if len(raw) > maxSubmissionAckBytes {
+		return nil, ErrAckBodyTooLarge
+	}
+	return raw, nil
+}
+
+func parseSubmissionAck(raw []byte) (submissionAck, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var ack submissionAck
+	if err := dec.Decode(&ack); err != nil {
+		return submissionAck{}, fmt.Errorf("%w: %v", ErrAckMalformedJSON, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return submissionAck{}, ErrAckTrailingData
+		}
+		return submissionAck{}, fmt.Errorf("%w: %v", ErrAckTrailingData, err)
+	}
+	return ack, nil
+}
+
+func readSubmissionAck(body io.Reader) (submissionAck, error) {
+	raw, err := readSubmissionBody(body)
+	if err != nil {
+		return submissionAck{}, err
+	}
+	return parseSubmissionAck(raw)
+}
+
+// Submit delivers one record. It returns satisfied=true only for a validated
+// ACCEPTED/ALREADY_ACCEPTED acknowledgement, or the synthetic future-
+// compatible DUPLICATE/EVIDENCE_ALREADY_CONSUMED classifier case.
 func (s *Submitter) Submit(ctx context.Context, rec *spool.Record) (bool, bool, time.Duration, error) {
 	doc, err := s.mining.discoverer.Document(ctx)
 	if err != nil {
@@ -67,22 +137,20 @@ func (s *Submitter) Submit(ctx context.Context, rec *spool.Record) (bool, bool, 
 		// Network failure: retryable, nothing is lost.
 		return false, false, 0, fmt.Errorf("auth: submission transport failed")
 	}
-	defer drainAndClose(resp.Body)
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	defer resp.Body.Close()
+	raw, err := readSubmissionBody(resp.Body)
 	if err != nil {
-		return false, false, 0, fmt.Errorf("auth: read submission response: %w", err)
+		return false, false, 0, err
 	}
 
 	switch resp.StatusCode {
 	case http.StatusCreated, http.StatusOK:
-		var ack submissionAck
-		if err := json.Unmarshal(raw, &ack); err != nil {
-			return false, false, 0, fmt.Errorf("auth: parse acknowledgement: %w", err)
+		ack, err := parseSubmissionAck(raw)
+		if err != nil {
+			return false, false, 0, err
 		}
-		if ack.SubmissionStatus != "ACCEPTED" && ack.SubmissionStatus != "ALREADY_ACCEPTED" {
-			return false, false, 0, fmt.Errorf("auth: unexpected submission status %q", ack.SubmissionStatus)
-		}
-		return true, false, 0, nil
+		satisfied, err := classifySubmissionAck(ack, rec.ClientRecordID)
+		return satisfied, false, 0, err
 
 	case http.StatusConflict:
 		// §59: same transport identity, different evidence identity.
