@@ -55,6 +55,8 @@ func TestHealthCountsAFailingASWithoutLosingTheWork(t *testing.T) {
 // rather than the lifetime total.
 func TestASuccessResetsTheFailureRun(t *testing.T) {
 	sp, sub, c := testEnv(t)
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.opts.Now = func() time.Time { return now }
 	id := enqueue(t, sp, c, 12)
 	sub.answers[id] = func(attempt int) (bool, bool, time.Duration, error) {
 		if attempt == 1 {
@@ -68,7 +70,7 @@ func TestASuccessResetsTheFailureRun(t *testing.T) {
 		t.Fatal("first drain recorded no failure; the fixture is not exercising the path")
 	}
 
-	time.Sleep(5 * time.Millisecond) // let the backoff expire
+	now = now.Add(time.Hour)
 	c.Drain(context.Background())
 
 	h := c.Health()

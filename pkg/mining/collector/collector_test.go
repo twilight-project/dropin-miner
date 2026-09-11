@@ -129,6 +129,8 @@ func TestPermanentRefusalQuarantines(t *testing.T) {
 // failing is eventually quarantined so it cannot block the queue.
 func TestBackoffAndAttemptExhaustion(t *testing.T) {
 	sp, sub, c := testEnv(t)
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.opts.Now = func() time.Time { return now }
 	id := enqueue(t, sp, c, 1042)
 	sub.answers[id] = func(int) (bool, bool, time.Duration, error) {
 		return false, false, 0, errors.New("temporary")
@@ -141,15 +143,11 @@ func TestBackoffAndAttemptExhaustion(t *testing.T) {
 	}
 	// After the (tiny) backoff elapses, attempts resume and eventually
 	// exhaust into quarantine.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		pending, _ := sp.Pending()
-		if len(pending) == 0 {
-			break
-		}
-		time.Sleep(3 * time.Millisecond)
+	for range 3 {
+		now = now.Add(time.Hour)
 		c.Drain(context.Background())
 	}
+
 	if pending, _ := sp.Pending(); len(pending) != 0 {
 		t.Fatalf("record never exhausted: %+v", pending)
 	}
@@ -166,7 +164,7 @@ func TestRetryAfterHonored(t *testing.T) {
 		return false, false, time.Hour, errors.New("busy")
 	}
 	c.Drain(context.Background())
-	time.Sleep(10 * time.Millisecond)
+	// An immediate fresh drain must still respect the persisted hour.
 	c.Drain(context.Background())
 	if n := sub.count(id); n != 1 {
 		t.Fatalf("Retry-After ignored: %d attempts", n)

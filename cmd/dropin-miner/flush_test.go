@@ -385,7 +385,7 @@ func seedSpoolRecord(t *testing.T, spoolDir string, slotID, epoch uint64) {
 		t.Fatal(err)
 	}
 	rec := &spool.Record{ClientRecordID: id, SlotID: slotID, TargetEpoch: epoch, Observation: []byte(`{"client_record_id":"` + id + `"}`)}
-	if err := sp.Write(rec); err != nil {
+	if err := sp.Enqueue(rec); err != nil {
 		t.Fatal(err)
 	}
 }

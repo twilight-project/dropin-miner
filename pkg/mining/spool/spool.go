@@ -15,6 +15,7 @@
 package spool
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -24,11 +25,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
 )
 
 // Record is one spooled observation plus the delivery context needed to
@@ -39,9 +42,11 @@ type Record struct {
 	TargetEpoch    uint64          `json:"target_epoch"`
 	Observation    json.RawMessage `json:"observation"`
 	SpooledAt      time.Time       `json:"spooled_at"`
-	// Attempts is advisory: backoff state survives restarts so a
-	// permanently failing record does not hot-loop after every reboot.
-	Attempts int `json:"attempts"`
+	// Attempts and NextAttemptAt are the durable retry authority.
+	Attempts       int       `json:"attempts"`
+	NextAttemptAt  time.Time `json:"next_attempt_at,omitempty"`
+	TerminalReason string    `json:"terminal_reason,omitempty"`
+	RemovalPending bool      `json:"removal_pending,omitempty"`
 }
 
 // Spool is a directory of durable records.
@@ -49,7 +54,12 @@ type Spool struct {
 	dir        string
 	quarantine string
 
-	mu sync.Mutex
+	mu                sync.Mutex
+	locations         map[string]string
+	quarantineUnknown int
+	move              func(string, string) error
+	remove            func(string) error
+	write             func(string, string, []byte, fs.FileMode) error
 }
 
 // Open prepares the spool directories (0700: records carry no secrets,
@@ -64,7 +74,11 @@ func Open(dir string) (*Spool, error) {
 			return nil, fmt.Errorf("spool: create %s: %w", d, err)
 		}
 	}
-	return &Spool{dir: dir, quarantine: quarantine}, nil
+	s := &Spool{dir: dir, quarantine: quarantine, locations: make(map[string]string), move: fsx.MoveFileDurable, remove: fsx.RemoveFileDurable, write: fsx.WriteFileAtomic}
+	if err := s.reconstruct(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // OpenExisting opens a spool for non-mutating inspection. Unlike Open it
@@ -110,71 +124,183 @@ func (s *Spool) filename(rec *Record) string {
 	return fmt.Sprintf("%d-%d-%s.json", rec.SlotID, rec.TargetEpoch, rec.ClientRecordID)
 }
 
-// Write durably persists a record: temp file, fsync, atomic rename, and
-// an fsync of the directory so the rename itself survives power loss.
-// It returns only after the record is genuinely on disk (PX-15).
-func (s *Spool) Write(rec *Record) error {
-	if rec.ClientRecordID == "" {
-		return errors.New("spool: refusing to write a record without a client_record_id")
+// ErrEvidenceConflict means a stable identity has incompatible evidence or context.
+var ErrEvidenceConflict = errors.New("spool: evidence identity conflict")
+var ErrDuplicateIdentity = errors.New("spool: identity at multiple active locations")
+
+// reconstruct is the single startup index scan. Files remain authoritative.
+// This mutex/index is not a cross-process protocol; CLI flush owns its lock.
+func (s *Spool) reconstruct() error {
+	for _, dir := range []string{s.dir, s.quarantine} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".tmp-") || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			name := entry.Name()
+			if dir == s.quarantine {
+				name = filepath.Join("quarantine", name)
+			}
+			rec, err := s.read(name)
+			if err != nil {
+				if dir == s.quarantine {
+					s.quarantineUnknown++
+				}
+				continue
+			}
+			if _, exists := s.locations[rec.ClientRecordID]; exists {
+				return fmt.Errorf("%w: %s", ErrDuplicateIdentity, rec.ClientRecordID)
+			}
+			s.locations[rec.ClientRecordID] = name
+		}
+	}
+	return nil
+}
+
+func quarantined(name string) bool { return filepath.Dir(name) == "quarantine" }
+
+// State describes durable custody, including terminal active records and
+// quarantined evidence. It never moves files or creates state.
+type State struct {
+	RetryBacklog   int
+	Queued         int
+	Terminal       int
+	Quarantined    int
+	RemovalPending int
+}
+
+func (s *Spool) State() (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := State{Quarantined: s.quarantineUnknown}
+	for _, name := range s.locations {
+		if quarantined(name) {
+			state.Quarantined++
+			continue
+		}
+		rec, err := s.read(name)
+		if err != nil {
+			return state, err
+		}
+		state.Queued++
+		if rec.TerminalReason == "" && !rec.RemovalPending && (rec.Attempts > 0 || !rec.NextAttemptAt.IsZero()) {
+			state.RetryBacklog++
+		}
+		if rec.TerminalReason != "" {
+			state.Terminal++
+		}
+		if rec.RemovalPending {
+			state.RemovalPending++
+		}
+	}
+	return state, nil
+}
+
+func sameEvidence(a, b json.RawMessage) bool {
+	decode := func(raw json.RawMessage) (any, error) {
+		var v any
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.UseNumber()
+		if err := d.Decode(&v); err != nil {
+			return nil, err
+		}
+		if !json.Valid(raw) {
+			return nil, errors.New("invalid observation")
+		}
+		return v, nil
+	}
+	av, ae := decode(a)
+	bv, be := decode(b)
+	return ae == nil && be == nil && reflect.DeepEqual(av, bv)
+}
+
+// Enqueue publishes new evidence or recognizes an identical stable-ID replay.
+// A newly resolved target is delivery context, never an evidence conflict.
+func (s *Spool) Enqueue(rec *Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec.ClientRecordID == "" || strings.ContainsAny(rec.ClientRecordID, `/\\`) {
+		return fmt.Errorf("spool: invalid client_record_id: %w", fs.ErrInvalid)
+	}
+	if s.locations == nil {
+		return fmt.Errorf("spool: inspection-only handle: %w", fs.ErrPermission)
+	}
+	if name, ok := s.locations[rec.ClientRecordID]; ok {
+		existing, err := s.read(name)
+		if err != nil {
+			return err
+		}
+		if !sameEvidence(existing.Observation, rec.Observation) {
+			return ErrEvidenceConflict
+		}
+		// Retry a directory durability barrier after uncertain publication. Do
+		// not rewrite the original evidence, delivery context, or retry state.
+		if quarantined(name) {
+			// The quarantine file is already the durable authority. A replay
+			// confirms custody by identity and payload only; it must not try
+			// to move the record back to the active namespace.
+			return nil
+		}
+		return s.syncDir()
 	}
 	if rec.SpooledAt.IsZero() {
 		rec.SpooledAt = time.Now().UTC()
 	}
-	payload, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("spool: encode record: %w", err)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tmp, err := os.CreateTemp(s.dir, ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("spool: stage record: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("spool: chmod record: %w", err)
-	}
-	if _, err := tmp.Write(payload); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("spool: write record: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("spool: sync record: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("spool: close record: %w", err)
-	}
-	if err := os.Rename(tmpName, filepath.Join(s.dir, s.filename(rec))); err != nil {
-		return fmt.Errorf("spool: install record: %w", err)
-	}
-	return s.syncDir()
+	return s.persist(rec, s.filename(rec), true)
 }
 
-// syncDir makes the rename durable, not just the file contents.
-func (s *Spool) syncDir() error {
-	d, err := os.Open(s.dir)
+// Rewrite only replaces delivery state at the existing durable location.
+func (s *Spool) Rewrite(rec *Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name, ok := s.locations[rec.ClientRecordID]
+	if !ok {
+		return fmt.Errorf("spool: rewrite absent record: %w", fs.ErrNotExist)
+	}
+	previous, err := s.read(name)
 	if err != nil {
-		return fmt.Errorf("spool: open dir: %w", err)
+		return err
 	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		// Some filesystems refuse directory fsync; the rename is still
-		// atomic, so this is not fatal.
-		return nil //nolint:nilerr // best-effort durability of the rename
+	if quarantined(name) || (previous.TerminalReason != "" && rec.TerminalReason != previous.TerminalReason) || (previous.RemovalPending && !rec.RemovalPending) || (rec.TerminalReason != "" && rec.RemovalPending) || previous.SlotID != rec.SlotID || previous.TargetEpoch != rec.TargetEpoch || !sameEvidence(previous.Observation, rec.Observation) || !previous.SpooledAt.Equal(rec.SpooledAt) {
+		return ErrEvidenceConflict
 	}
-	return nil
+	return s.persist(rec, name, false)
+}
+
+func (s *Spool) persist(rec *Record, name string, exclusive bool) error {
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if exclusive {
+		err = fsx.WriteFileExclusive(s.dir, name, payload, 0o600)
+	} else {
+		err = s.write(s.dir, name, payload, 0o600)
+	}
+	var stage *fsx.StageError
+	if err == nil || (errors.As(err, &stage) && stage.Published) {
+		s.locations[rec.ClientRecordID] = name
+	}
+	return err
+}
+
+func (s *Spool) syncDir() error {
+	err := fsx.SyncDirectory(s.dir)
+	if errors.Is(err, fsx.ErrDirectorySyncUnsupported) {
+		return nil
+	} // Windows publication uses write-through.
+	return err
 }
 
 // Pending lists spooled records oldest-first (UUIDv7 sorts by time, and
 // the filename carries it). This IS the restart scan: it reads whatever
 // is on disk, with no in-memory state required.
 func (s *Spool) Pending() ([]*Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("spool: scan: %w", err)
@@ -194,7 +320,21 @@ func (s *Spool) Pending() ([]*Record, error) {
 		if err != nil {
 			// A corrupt record must not wedge the queue; quarantine it
 			// and keep going (it is evidence, not a crash).
-			_ = os.Rename(filepath.Join(s.dir, name), filepath.Join(s.quarantine, name))
+			destination := filepath.Join("quarantine", name)
+			moveErr := s.move(filepath.Join(s.dir, name), filepath.Join(s.dir, destination))
+			var stage *fsx.StageError
+			if moveErr == nil || (errors.As(moveErr, &stage) && stage.Published) {
+				s.quarantineUnknown++
+				for id, location := range s.locations {
+					if location == name {
+						s.locations[id] = destination
+						s.quarantineUnknown--
+					}
+				}
+			}
+			if moveErr != nil {
+				return nil, moveErr
+			}
 			continue
 		}
 		records = append(records, rec)
@@ -220,31 +360,71 @@ func (s *Spool) read(name string) (*Record, error) {
 // Remove deletes a delivered record. Called ONLY after ACCEPTED or
 // ALREADY_ACCEPTED (§58 spool rule).
 func (s *Spool) Remove(rec *Record) error {
-	err := os.Remove(filepath.Join(s.dir, s.filename(rec)))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("spool: remove record: %w", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name, ok := s.locations[rec.ClientRecordID]
+	if !ok {
+		return nil
 	}
-	return nil
+	if quarantined(name) {
+		return ErrEvidenceConflict
+	}
+	err := s.remove(filepath.Join(s.dir, name))
+	if err == nil {
+		delete(s.locations, rec.ClientRecordID)
+		return nil
+	}
+	var stage *fsx.StageError
+	if errors.As(err, &stage) && stage.Published {
+		// Restore the complete stable record after uncertain local removal. The
+		// ACK marker permits a fresh collector to retry cleanup without Submit.
+		payload, encodeErr := json.Marshal(rec)
+		if encodeErr != nil {
+			return errors.Join(err, encodeErr)
+		}
+		restoreErr := s.write(s.dir, name, payload, 0o600)
+		if _, statErr := os.Stat(filepath.Join(s.dir, name)); errors.Is(statErr, fs.ErrNotExist) {
+			delete(s.locations, rec.ClientRecordID)
+		}
+		return errors.Join(err, restoreErr)
+	}
+	return err
 }
 
-// Quarantine moves a record aside without deleting it: used for
-// permanent refusals (409 evidence conflict) where retrying can never
-// succeed but the evidence must remain inspectable.
+// Quarantine moves terminal evidence and keeps its identity indexed. A
+// published-but-unsynced move updates the visible index but returns an error.
 func (s *Spool) Quarantine(rec *Record, reason string) error {
-	name := s.filename(rec)
-	stamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
-	target := filepath.Join(s.quarantine, stamp+"-"+sanitize(reason)+"-"+name)
-	if err := os.Rename(filepath.Join(s.dir, name), target); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("spool: quarantine record: %w", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name, ok := s.locations[rec.ClientRecordID]
+	if !ok {
+		return fs.ErrNotExist
 	}
-	return nil
+	if quarantined(name) {
+		// Quarantined evidence is already terminal custody. A retrying
+		// collector only needs the stable-ID index to keep it out of the
+		// submission path.
+		return nil
+	}
+	target := filepath.Join("quarantine", sanitize(reason)+"-"+name)
+	err := s.move(filepath.Join(s.dir, name), filepath.Join(s.dir, target))
+	var stage *fsx.StageError
+	if err == nil || (errors.As(err, &stage) && stage.Published) {
+		s.locations[rec.ClientRecordID] = target
+	}
+	return err
 }
 
 // Touch rewrites a record with an incremented attempt count so backoff
 // state survives a restart.
 func (s *Spool) Touch(rec *Record) error {
-	rec.Attempts++
-	return s.Write(rec)
+	updated := *rec
+	updated.Attempts++
+	if err := s.Rewrite(&updated); err != nil {
+		return err
+	}
+	*rec = updated
+	return nil
 }
 
 // Len reports the queue depth (diagnostics).
