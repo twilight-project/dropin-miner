@@ -61,9 +61,21 @@ func TestHermesRefusesAnyPlausibleExistingHooksKey(t *testing.T) {
 		"two documents":      "database: x\n---\nother: y\n",
 		"document end":       "database: x\n...\n",
 		"bare scalar":        "just some text\n",
-		"key without space":  "database:x\n",
-		"escaped key":        "\"data\\u0062ase\": x\n",
-		"partial block":      agentsMarkerBegin + "\ntruncated\n",
+		// A root mapping written indented, consistently, throughout. Every
+		// line of it is indented, so a scan that reads only column zero
+		// sees an empty document and appends a column-zero `hooks:` —
+		// landing a second root key in a file whose root is elsewhere.
+		"root-indented hooks":     "  hooks:\n    post_tool_call:\n      - command: \"mine\"\n",
+		"root-indented mapping":   "  database:\n    journal_mode: wal\n",
+		"root-indented tab":       "\tdatabase: x\n",
+		"root-indented after doc": "---\n  database: x\n",
+		"root-indented directive": "%YAML 1.2\n---\n  database: x\n",
+		"root-indented comment":   "# a note\n  database: x\n",
+		"root-indented sequence":  "  - one\n  - two\n",
+		"indented then rooted":    "  database: x\ncache: y\n",
+		"key without space":       "database:x\n",
+		"escaped key":             "\"data\\u0062ase\": x\n",
+		"partial block":           agentsMarkerBegin + "\ntruncated\n",
 	}
 	for name, cfg := range refuse {
 		t.Run(name, func(t *testing.T) {
@@ -88,6 +100,11 @@ func TestHermesRefusesAnyPlausibleExistingHooksKey(t *testing.T) {
 		"indented text":      "prompt: |\n  hooks:\n    are not a key here\n",
 		"no final newline":   "database: x",
 		"blank lines":        "\n\ndatabase: x\n\n",
+		// Indentation under a column-zero key we have already read is the
+		// ordinary shape of every real config, and must keep installing.
+		"nested under a root key": "database:\n  journal_mode: wal\n  busy_timeout: 5000\nmodel: gpt\n",
+		"comment then root key":   "# a note\ndatabase:\n  journal_mode: wal\n",
+		"doc start then root key": "---\ndatabase:\n  journal_mode: wal\n",
 	}
 	for name, cfg := range accept {
 		t.Run(name, func(t *testing.T) {
@@ -116,6 +133,41 @@ func TestHermesRefusalLeavesTheConfigByteIdentical(t *testing.T) {
 	}
 	if got := string(m.files[hermesConfigPath]); got != foreign {
 		t.Errorf("the participant's own config was modified:\n%q", got)
+	}
+}
+
+// A root-indented config is refused through the real install path, and the
+// file comes back byte-identical — the same contract a foreign hooks:
+// section gets, for the same reason: we could not establish where this
+// document's root is, and appending anyway is the mistake that costs
+// somebody their configuration.
+func TestHermesRefusesRootIndentedConfigWithoutTouchingIt(t *testing.T) {
+	for name, cfg := range map[string]string{
+		"root-indented hooks":   "  hooks:\n    post_tool_call:\n      - command: \"mine\"\n",
+		"root-indented mapping": "  database:\n    journal_mode: wal\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesConfigPath] = []byte(cfg)
+
+			code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+			if code != exitTransport {
+				t.Fatalf("expected a refusal exit, got %d\n%s", code, out)
+			}
+			if !strings.Contains(out, "first column") {
+				t.Errorf("the refusal does not say why:\n%s", out)
+			}
+			if !strings.Contains(out, "pre_tool_call:") {
+				t.Errorf("a refusal must print the snippet to paste:\n%s", out)
+			}
+			if got := string(m.files[hermesConfigPath]); got != cfg {
+				t.Errorf("the participant's own config was modified:\n got %q\nwant %q", got, cfg)
+			}
+			// The skill still installs; only the config edit is refused.
+			if _, ok := m.files[hermesSkillPath]; !ok {
+				t.Error("the refusal also skipped the skill")
+			}
+		})
 	}
 }
 
@@ -286,6 +338,76 @@ func TestHermesHookYAMLIsTheCommandWeMeant(t *testing.T) {
 	argv := splitCommandLine(t, cmd, false)
 	if argv[0] != "/home/u/O'Neil/dropin-miner" {
 		t.Errorf("argv[0] = %q, want the exact binary path", argv[0])
+	}
+}
+
+// ── status recognizes what the installer actually wrote ─────────────────
+
+// The binary path does not survive into config.yaml unchanged — quoting is
+// the whole point of the layer above — so status cannot look for it as a
+// substring. A POSIX path with an apostrophe is written '…'\”…', and the
+// raw path never appears contiguously: install works perfectly and status
+// would report "skill only", which is the worst kind of wrong, because it
+// sends someone to debug an installation that is fine.
+func TestHermesStatusRecognizesOurHookForAnyBinaryPath(t *testing.T) {
+	for name, tc := range map[string]struct {
+		bin string
+		// broken says the raw path is NOT contiguous in the written file,
+		// i.e. this case is exactly the one a substring test fails on.
+		broken bool
+	}{
+		"ordinary":   {"/home/u/.tokendrop/bin/dropin-miner", false},
+		"apostrophe": {"/Users/O'Neil/bin/dropin-miner", true},
+		"spaces":     {"/home/u/My Tools/dropin-miner", false},
+		"non-ascii":  {"/home/ユーザー/bin/dropin-miner", false},
+		"backslash":  {`/home/u/odd\path/dropin-miner`, false},
+		"hash":       {"/home/u/#1/dropin-miner", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			ops.executable = func() (string, error) { return tc.bin, nil }
+
+			if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+				t.Fatalf("install: %d\n%s", code, out)
+			}
+			written := string(m.files[hermesConfigPath])
+			if !strings.Contains(written, "pre_tool_call:") {
+				t.Fatalf("the hook was not installed at all:\n%s", written)
+			}
+			if got := strings.Contains(written, tc.bin); got == tc.broken {
+				t.Fatalf("expected raw-path-contiguous = %v in the written config, got %v:\n%s", !tc.broken, got, written)
+			}
+			_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+			if !strings.Contains(out, "installed (skill+hook)") {
+				t.Errorf("status does not see the hook it just wrote:\n%s", out)
+			}
+		})
+	}
+}
+
+// Status answers "is the hook for THIS binary and THIS config here", not
+// "is some hook of ours here". A block left by another installation is not
+// this installation being complete.
+func TestHermesStatusDoesNotClaimAnotherInstallsHook(t *testing.T) {
+	for name, stale := range map[string]binEntry{
+		"another binary": {command: "/somewhere/else/bin/dropin-miner", cfg: testCfg},
+		"another config": {command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/somewhere/else/tokendrop.toml"},
+		"no config":      {command: "/home/u/.tokendrop/bin/dropin-miner"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesSkillPath] = []byte("skill")
+			body, ok := hermesHookYAML(stale)
+			if !ok {
+				t.Fatal("could not render the stale hook")
+			}
+			m.files[hermesConfigPath] = hermesAppendBlock(nil, body)
+
+			_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+			if !strings.Contains(out, "installed (skill only)") {
+				t.Errorf("a hook from another installation was reported as this one:\n%s", out)
+			}
+		})
 	}
 }
 

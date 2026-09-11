@@ -83,9 +83,26 @@ func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPl
 }
 
 // hermesHookInstalled reports whether OUR block is in this config and names
-// this binary — what `agents status` needs in order to tell a complete
-// install from a skill sitting there with no lineage behind it. Read-only.
-func hermesHookInstalled(ops agentOps, path, bin string) bool {
+// this binary and config — what `agents status` needs in order to tell a
+// complete install from a skill sitting there with no lineage behind it.
+// Read-only.
+//
+// It compares against the hook we WOULD write for this entry, rather than
+// looking for the binary path as a substring. The path does not survive
+// into the file unchanged: quoting splits an apostrophe into a
+// quote-escape-quote run, so a path like /Users/O'Neil/bin/dropin-miner
+// never appears contiguously in the YAML, and a substring test would report
+// a complete install as "skill only" — the installer having worked
+// perfectly, and somebody sent to debug an installation that is fine. Asking
+// the one serializer what this entry looks like also answers the question
+// status is really asking, which is not "is some hook of ours here" but
+// "is the hook for THIS binary and THIS config here": a block left behind
+// by a different install is not this installation being complete.
+func hermesHookInstalled(ops agentOps, path string, entry binEntry) bool {
+	body, ok := hermesHookYAML(entry)
+	if !ok {
+		return false
+	}
 	b, _, err := readWithMode(ops, path)
 	if err != nil || b == nil {
 		return false
@@ -98,7 +115,7 @@ func hermesHookInstalled(ops agentOps, path, bin string) bool {
 	if j < 0 {
 		return false
 	}
-	return bytes.Contains(b[i:i+j], []byte(bin))
+	return bytes.Contains(b[i:i+j], []byte(body))
 }
 
 // hermesConfigRefusal reports, in a phrase that completes "config.yaml …",
@@ -106,22 +123,37 @@ func hermesHookInstalled(ops agentOps, path, bin string) bool {
 // appending it is safe.
 //
 // Safe means one thing: the file is a single YAML document whose top level
-// is a block mapping, and none of its keys is `hooks`. We read only column
-// zero, because that is the only place a top-level key can begin, and we
-// accept only the forms we can recognize with certainty — a plain or quoted
-// key followed by a colon. Every other column-zero line is a structure we
-// did not expect (a top-level sequence, a flow mapping, an explicit key, a
-// second document, a plain scalar continuation), and an unexpected
-// structure is a refusal. Comments are skipped wherever they appear, so a
-// line merely MENTIONING hooks is not a hooks section; a `hooks` key is
-// matched whatever its spelling, including `hooks :`, `'hooks':` and
-// `"hooks":`, and case-insensitively, because a config strange enough to
-// carry `HOOKS:` is one a person should look at rather than a program.
+// is a block mapping written at column zero, and none of its keys is
+// `hooks`. We accept only the forms we can recognize with certainty — a
+// plain or quoted key followed by a colon. Every other column-zero line is
+// a structure we did not expect (a top-level sequence, a flow mapping, an
+// explicit key, a second document, a plain scalar continuation), and an
+// unexpected structure is a refusal. Comments are skipped wherever they
+// appear, so a line merely MENTIONING hooks is not a hooks section; a
+// `hooks` key is matched whatever its spelling, including `hooks :`,
+// `'hooks':` and `"hooks":`, and case-insensitively, because a config
+// strange enough to carry `HOOKS:` is one a person should look at rather
+// than a program.
+//
+// Column zero is not merely where we look for keys — it is a property the
+// file has to have before we may append anything. A YAML root mapping may
+// itself be written indented, every line of it, consistently: a config
+// whose first content line is two spaces and then `hooks:`, with its own
+// entries indented further under that. A scan that reads only column zero
+// sees no keys at all in such a file, calls it empty, and appends a
+// column-zero `hooks:` — landing a second root key in a document whose
+// root is somewhere else entirely, and taking the participant's hooks with
+// it. We cannot establish that file's indentation model without a parser,
+// and this is not the place to grow one, so content appearing before any
+// column-zero key is a refusal whatever it says. That costs us the odd
+// indented-but-ordinary config, which is the direction of error we chose.
+// (The refusal cases in hermes_install_test.go carry the literal shapes;
+// they are the readable version of this paragraph.)
 func hermesConfigRefusal(b []byte) string {
 	if bytes.Contains(b, []byte(agentsMarkerBegin)) || bytes.Contains(b, []byte(agentsMarkerEnd)) {
 		return "carries a partial dropin-miner block we cannot read back"
 	}
-	document, content := false, false
+	document, content, rooted := false, false, false
 	for _, raw := range strings.Split(string(b), "\n") {
 		line := strings.TrimRight(raw, " \t\r")
 		if line == "" {
@@ -131,7 +163,12 @@ func hermesConfigRefusal(b []byte) string {
 			continue // a comment, at any indent
 		}
 		if line[0] == ' ' || line[0] == '\t' {
-			content = true // indented: part of a top-level key we have already read
+			if !rooted {
+				// Indented content with no column-zero key above it: the
+				// root of this document is not where our block would go.
+				return "does not put its top-level keys in the first column, so we cannot tell where its root mapping is"
+			}
+			content = true // part of a top-level key we have already read
 			continue
 		}
 		if line[0] == '%' {
@@ -155,6 +192,7 @@ func hermesConfigRefusal(b []byte) string {
 		if strings.EqualFold(key, "hooks") {
 			return "already declares a top-level hooks: key"
 		}
+		rooted = true // a top-level key at column zero: this root is ours to extend
 	}
 	return ""
 }

@@ -1006,7 +1006,7 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected [
 				state = "installed (extension only)"
 			}
 		case "hermes":
-			hooked := hermesHookInstalled(ops, paths.hermesConfig, entry.command)
+			hooked := hermesHookInstalled(ops, paths.hermesConfig, entry)
 			switch {
 			case exists(paths.hermesSkill) && hooked:
 				state = "installed (skill+hook)"
