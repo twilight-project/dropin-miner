@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -183,6 +184,20 @@ type nodeConfig struct {
 	broadcastLog  string
 	deliverCode   uint32
 	appearAfter   int // /tx returns "not found" this many times first
+
+	// REL-17 confirmation-predicate knobs: each forces one way the
+	// node's response can fail to prove it is evidence about THIS
+	// transaction, so the confirmation predicate has something real to
+	// refuse.
+	emptyHash       bool // broadcast_tx_sync omits the hash
+	wrongHash       bool // broadcast_tx_sync returns a non-matching hash
+	omitCode        bool // broadcast_tx_sync omits code entirely
+	wrongTxHash     bool // /tx returns a non-matching hash
+	zeroHeight      bool // /tx reports height "0"
+	emptyHeight     bool // /tx reports an empty height
+	omitHash        bool // /tx omits hash entirely
+	omitHeight      bool // /tx omits height entirely
+	omitDeliverCode bool // /tx's tx_result omits code entirely
 }
 
 // fakeNode is a CometBFT JSON-RPC stand-in.
@@ -190,10 +205,18 @@ type fakeNode struct {
 	srv *httptest.Server
 	cfg nodeConfig
 
-	mu        sync.Mutex
-	lastTx    string // the DECODED transaction bytes
-	decodeErr string
-	txQueries int
+	mu             sync.Mutex
+	lastTx         string // the DECODED transaction bytes
+	decodeErr      string
+	txQueries      int
+	broadcastCount int
+	// journalExistedAtBroadcast records, the first time /broadcast_tx_sync
+	// is hit, whether the caller-supplied journalPath already existed —
+	// §7.1's ordering assertion (journal written before broadcast is
+	// observed by the node).
+	journalPath               string
+	journalExistedAtBroadcast bool
+	journalCheckDone          bool
 }
 
 func newFakeNode(t *testing.T, cfg nodeConfig) *fakeNode {
@@ -229,14 +252,27 @@ func newFakeNode(t *testing.T, cfg nodeConfig) *fakeNode {
 	})
 	mux.HandleFunc("/broadcast_tx_sync", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		f.broadcastCount++
+		if !f.journalCheckDone && f.journalPath != "" {
+			_, statErr := os.Stat(f.journalPath)
+			f.journalExistedAtBroadcast = statErr == nil
+			f.journalCheckDone = true
+		}
 		// Decoded the way CometBFT decodes it: 0x-prefixed hex. A fake
 		// that accepted any encoding is what let a quoted-base64 tx
 		// (which the real node reads as the literal base64 text) pass
 		// its tests and fail on the devnet.
 		raw := r.URL.Query().Get("tx")
+		var hash string
 		if strings.HasPrefix(raw, "0x") {
 			if b, err := hex.DecodeString(raw[2:]); err == nil {
 				f.lastTx = string(b)
+				// REL-17: broadcast only counts as evidence about THIS
+				// transaction when the reported hash matches what the
+				// client computed itself — a fake that echoed a fixed
+				// hash would pass its own tests while never proving the
+				// real node's behavior is exercised.
+				hash = txHash(b)
 			} else {
 				f.decodeErr = "tx is not valid hex"
 			}
@@ -244,15 +280,23 @@ func newFakeNode(t *testing.T, cfg nodeConfig) *fakeNode {
 			f.decodeErr = "tx was not 0x-prefixed hex; the node would read it literally"
 		}
 		f.mu.Unlock()
-		writeRPC(w, map[string]any{
-			"code": f.cfg.broadcastCode, "log": f.cfg.broadcastLog,
-			"hash": "ABCD1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD1234",
-		})
+		if f.cfg.emptyHash {
+			hash = ""
+		}
+		if f.cfg.wrongHash {
+			hash = "0000000000000000000000000000000000000000000000000000000000000000"
+		}
+		body := map[string]any{"log": f.cfg.broadcastLog, "hash": hash}
+		if !f.cfg.omitCode {
+			body["code"] = f.cfg.broadcastCode
+		}
+		writeRPC(w, body)
 	})
 	mux.HandleFunc("/tx", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.txQueries++
 		n := f.txQueries
+		lastTx := f.lastTx
 		f.mu.Unlock()
 		if n <= f.cfg.appearAfter {
 			w.Header().Set("Content-Type", "application/json")
@@ -261,10 +305,29 @@ func newFakeNode(t *testing.T, cfg nodeConfig) *fakeNode {
 			})
 			return
 		}
-		writeRPC(w, map[string]any{
-			"height":    "1234",
-			"tx_result": map[string]any{"code": f.cfg.deliverCode, "log": "delivered"},
-		})
+		hash := txHash([]byte(lastTx))
+		if f.cfg.wrongTxHash {
+			hash = "1111111111111111111111111111111111111111111111111111111111111111"
+		}
+		height := "1234"
+		if f.cfg.zeroHeight {
+			height = "0"
+		}
+		if f.cfg.emptyHeight {
+			height = ""
+		}
+		txResultBody := map[string]any{"log": "delivered"}
+		if !f.cfg.omitDeliverCode {
+			txResultBody["code"] = f.cfg.deliverCode
+		}
+		result := map[string]any{"tx_result": txResultBody}
+		if !f.cfg.omitHash {
+			result["hash"] = hash
+		}
+		if !f.cfg.omitHeight {
+			result["height"] = height
+		}
+		writeRPC(w, result)
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -314,7 +377,7 @@ func TestWalletSendBroadcastsAndWaitsForTheBlock(t *testing.T) {
 
 	out.Reset()
 	errOut.Reset()
-	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL,
+	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2",
 		"-to", "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh", "-amount", "1000", "-yes"},
 		strings.NewReader(""), &out, &errOut, env)
 	if code != 0 {
@@ -355,7 +418,7 @@ func TestWalletSendReportsAChainRejection(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL,
+	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2",
 		"-to", "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh", "-amount", "1000", "-yes"},
 		strings.NewReader(""), &out, &errOut, env)
 	if code != exitChainRejected {
@@ -417,7 +480,7 @@ func TestWalletSendWithoutConfirmationSendsNothing(t *testing.T) {
 		t.Fatalf("init: %s", errOut.String())
 	}
 	out.Reset()
-	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL,
+	code := cmdWallet([]string{"send", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2",
 		"-to", "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh", "-amount", "1000"},
 		strings.NewReader("no\n"), &out, &errOut, env)
 	if code != exitOK {

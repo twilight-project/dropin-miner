@@ -471,24 +471,66 @@ func SealWalletKey(w *WalletKey, passphrase string) (*WalletKeyfile, error) {
 	}, nil
 }
 
+// REL-14's bounds. gcmNonceSize/gcmTagSize are AES-GCM's own fixed
+// sizes under the standard construction cipher.NewGCM(block) always
+// uses here — stated as constants rather than derived from a live gcm
+// value so the nonce length can be checked BEFORE gcm.Open ever runs,
+// which is the whole point: a wrong-length nonce panics inside Open,
+// and the check has to happen earlier than that to matter.
+const (
+	gcmNonceSize = 12
+	gcmTagSize   = 16
+
+	keyfileSaltMin = 8
+	keyfileSaltMax = 64
+	// keyfileCiphertextMax bounds a 32-byte key plus the GCM tag with a
+	// generous margin — this format never legitimately holds more.
+	keyfileCiphertextMax = 1024
+	// keyfileIterationsFloor is WalletKeyfileIterations itself: the only
+	// value SealWalletKey has ever written, so it is also the lowest
+	// value a genuine file can legitimately carry. keyfileIterationsCeiling
+	// bounds the KDF's cost against a tampered file without foreclosing a
+	// future floor raise years out.
+	keyfileIterationsFloor   = WalletKeyfileIterations
+	keyfileIterationsCeiling = 5 * WalletKeyfileIterations
+)
+
 // OpenWalletKey decrypts a keyfile. The iteration count RECORDED IN THE
 // FILE is honored so a future floor raise still opens old files;
 // SealWalletKey always writes the current constant.
+//
+// Every field is bounds-checked before any crypto touches it (REL-14):
+// a wrong-length nonce panics inside gcm.Open, and an unbounded
+// Iterations lets a tampered file spin the KDF indefinitely — both are
+// refused here, by name, in bounded time, rather than reached.
 func OpenWalletKey(kf *WalletKeyfile, passphrase string) (*WalletKey, error) {
 	if kf.Version != 1 || kf.KDF != "pbkdf2-sha256" {
 		return nil, fmt.Errorf("wallet: unsupported keyfile version %d / kdf %q", kf.Version, kf.KDF)
+	}
+	if kf.Iterations < keyfileIterationsFloor || kf.Iterations > keyfileIterationsCeiling {
+		return nil, fmt.Errorf("wallet: keyfile iterations %d is outside the permitted range [%d, %d]",
+			kf.Iterations, keyfileIterationsFloor, keyfileIterationsCeiling)
 	}
 	salt, err := base64.StdEncoding.DecodeString(kf.Salt)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: keyfile salt: %w", err)
 	}
+	if len(salt) < keyfileSaltMin || len(salt) > keyfileSaltMax {
+		return nil, fmt.Errorf("wallet: keyfile salt is %d bytes, want [%d, %d]", len(salt), keyfileSaltMin, keyfileSaltMax)
+	}
 	nonce, err := base64.StdEncoding.DecodeString(kf.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: keyfile nonce: %w", err)
 	}
+	if len(nonce) != gcmNonceSize {
+		return nil, fmt.Errorf("wallet: keyfile nonce is %d bytes, want %d", len(nonce), gcmNonceSize)
+	}
 	ct, err := base64.StdEncoding.DecodeString(kf.Ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: keyfile ciphertext: %w", err)
+	}
+	if len(ct) < gcmTagSize || len(ct) > keyfileCiphertextMax {
+		return nil, fmt.Errorf("wallet: keyfile ciphertext is %d bytes, want [%d, %d]", len(ct), gcmTagSize, keyfileCiphertextMax)
 	}
 	block, err := aes.NewCipher(keyfileKDF(passphrase, salt, kf.Iterations))
 	if err != nil {

@@ -447,37 +447,71 @@ func finishMiningEnabled(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Wr
 			fmt.Fprintln(stderr, "dropin-miner:", err)
 			return miningEnableOutcome{}, exitTransport
 		}
-		// WP2-adversarial-review finding 2: an empty answer means "handle
-		// the wallet for me," not "create one unconditionally" — a wallet
-		// already at dir (from a prior `wallet init`, or a previous run of
-		// this very question) already answers that. createWallet has no
-		// existence check of its own by design (wallet.go: callers own
-		// every human-facing decision, including this one); a funded
-		// wallet silently overwritten in place is unrecoverable.
-		if _, err := os.Lstat(filepath.Join(dir, walletKeyFile)); err == nil {
-			sc, _, err := loadSidecar(dir, getenv)
-			if err != nil {
-				fmt.Fprintln(stderr, "dropin-miner: a wallet already exists in "+dir+" but its address could not be read:", err)
-				return miningEnableOutcome{}, exitTransport
-			}
-			fmt.Fprintln(stdout, "a wallet already exists at "+dir+"; reusing its address: "+sc.Address)
-			address = sc.Address
-		} else if !errors.Is(err, fs.ErrNotExist) {
+		// WP2-adversarial-review finding 2, still true: an empty answer
+		// means "handle the wallet for me," not "create one
+		// unconditionally" — an existing wallet already answers that.
+		// REL-13: both this path and wallet init now go through
+		// createOrRecoverWallet, which takes wallet.lock for its whole
+		// critical section, so this and a concurrent `wallet init` (or a
+		// second connect session) can never both generate a key here.
+		//
+		// The fast pre-check below decides only whether to prompt for a
+		// passphrase at all — unchanged UX for the common cases (an
+		// already-complete wallet needs no prompt; a missing one needs
+		// one up front to seal a NEW key with). createOrRecoverWallet's
+		// own post-lock check is what actually decides; if it turns out
+		// a concurrent caller already created one, the outcome below is
+		// walletReused/walletRepaired rather than walletCreated, and no
+		// mnemonic is printed for something this call did not generate.
+		havePassphrase := false
+		passphrase := ""
+		if _, err := os.Lstat(filepath.Join(dir, walletKeyFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintln(stderr, "dropin-miner:", err)
 			return miningEnableOutcome{}, exitTransport
-		} else {
+		} else if errors.Is(err, fs.ErrNotExist) {
 			passphrase, code := walletPassphrase(stdin, br, stderr, getenv, true)
 			if code != 0 {
 				return miningEnableOutcome{}, code
 			}
-			addr, mnemonic, err := createWallet(dir, passphrase)
-			if err != nil {
-				fmt.Fprintln(stderr, "dropin-miner:", err)
+			havePassphrase = true
+			addr, mnemonic, outcome, cerr := createOrRecoverWallet(dir, passphrase, havePassphrase)
+			if cerr != nil {
+				fmt.Fprintln(stderr, "dropin-miner:", cerr)
 				return miningEnableOutcome{}, exitTransport
 			}
-			printMnemonic(stdout, dir, addr, mnemonic)
-			fmt.Fprintln(stdout)
+			if outcome == walletCreated {
+				printMnemonic(stdout, dir, addr, mnemonic)
+				fmt.Fprintln(stdout)
+			} else {
+				fmt.Fprintln(stdout, "a wallet already exists at "+dir+"; reusing its address: "+addr)
+			}
 			address = addr
+		} else {
+			addr, _, outcome, cerr := createOrRecoverWallet(dir, passphrase, havePassphrase)
+			switch {
+			case cerr == nil:
+				if outcome == walletReused {
+					fmt.Fprintln(stdout, "a wallet already exists at "+dir+"; reusing its address: "+addr)
+				} else {
+					fmt.Fprintln(stdout, "repaired this wallet's sidecar at "+dir+"; address: "+addr)
+				}
+				address = addr
+			case errors.Is(cerr, errWalletRepairNeedsPassphrase):
+				passphrase, code := walletPassphrase(stdin, br, stderr, getenv, false)
+				if code != 0 {
+					return miningEnableOutcome{}, code
+				}
+				addr, _, _, cerr := createOrRecoverWallet(dir, passphrase, true)
+				if cerr != nil {
+					fmt.Fprintln(stderr, "dropin-miner:", cerr)
+					return miningEnableOutcome{}, exitTransport
+				}
+				fmt.Fprintln(stdout, "repaired this wallet's sidecar at "+dir+"; address: "+addr)
+				address = addr
+			default:
+				fmt.Fprintln(stderr, "dropin-miner:", cerr)
+				return miningEnableOutcome{}, exitTransport
+			}
 		}
 	}
 

@@ -7,6 +7,29 @@ the mechanical commit-by-commit record — what belongs here is the handful of t
 participant or operator should be told in plain language, that a list of commit
 subjects wouldn't make obvious on its own.
 
+## Unreleased
+
+- **Wallet custody hardening: exclusive/recoverable creation, a bounded keyfile
+  decoder, a send journal, and a stricter confirmation rule.** Wallet creation
+  (`wallet init` and `mining enable`'s address question) now goes through one
+  locked path, so two commands started at the same time can never both
+  generate a key — one generates, the other recovers the same result rather
+  than silently overwriting it. `wallet send` journals a transaction before
+  broadcasting it (`wallet/pending_tx.json`): a lost node response now reports
+  **"outcome unknown"** instead of silently retrying with a fresh signature,
+  and the next `send` or `balance` resolves it against the node first. A
+  transfer is now reported confirmed only when the node's response actually
+  matches the transaction sent, and `wallet send` refuses to sign if the
+  node's own chain id does not match what was configured. `-abandon-pending`
+  and `-insecure-node` are new flags; `wallet.lock` and `pending_tx.json` are
+  new files in the wallet directory. See `README.md`/`docs/PARTICIPANT.md`
+  for what "outcome unknown" means and what to do about it.
+- **Every network default the binary carries now lives in one place**
+  (`pkg/config.Default*`), including a per-chain table for the wallet's
+  default RPC node; the installers' own literals are checked against it by a
+  test. The RPC node default used to be a single plain-http devnet address —
+  it is now an https testnet endpoint, chosen from `[mining] chain_id`.
+
 ## v0.2.0 — 2026-09-10 (the release that makes `connect` the install path)
 
 A minor bump, not a patch: two new commands (`connect`, `mining disable`), a new
