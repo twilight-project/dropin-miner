@@ -3,7 +3,7 @@
 // Runs INSIDE opencode's own runtime (nothing extra to install). Before each
 // bash call that runs our search, it prefixes the command with
 // TOKENDROP_TRACE_BRIDGE=<envelope> carrying opencode's REAL session
-// identity — hashed with the same keyed sha256 as the Go binary, so the raw
+// identity — hashed with the same domain-separated SHA-256 as the Go binary, so the raw
 // id never leaves the machine — plus a compaction generation and the
 // assistant text before the call. The same shape the Claude Code hook
 // builds; `dropin-miner search` reads the variable and sends it as the
@@ -16,6 +16,39 @@ import { createHash } from "node:crypto"
 
 const PREFIX = "tokendrop-trace-v1|"
 const HISTORY_CAP = 32 * 1024
+const SOURCE_CAP = 256 * 1024
+const ENVELOPE_CAP = 48 * 1024
+
+// Mirror pkg/redact.TraceText for complete source entries before the bridge
+// is capped. The Go consumer applies its own preparation again.
+// Start URL/email scans at token boundaries to avoid rescanning long words.
+const scrub = (text) => text
+  .replace(/(?<![a-zA-Z0-9+.-])([a-zA-Z0-9+.-]*:\/\/)[^/@\s]+@/g, (match, prefix) =>
+    /[a-zA-Z]/.test(prefix) ? prefix + '[REDACTED]' : match)
+  .replace(/\b(?:sk|sr)-[A-Za-z0-9_-]{16,}/g, '[REDACTED]')
+  .replace(/\bgh[opsur]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED]')
+  .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED]')
+  .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/g, '[REDACTED]')
+  .replace(/(?<![A-Za-z0-9._%+-])([.%+-]*)([A-Za-z0-9_][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)/g, (match, leading, email, offset, source) =>
+    source[offset + match.length] === ':' || /(?:ssh|scp|rsync|sftp)$/i.test(source.slice(0, offset + leading.length).replace(/[ \t]+$/, '')) ? match : leading + '[REDACTED]')
+  .replace(/([A-Z]:\\Users\\)[^\\\s]+/gi, '$1[REDACTED]')
+  .replace(/(\/Users\/|\/home\/)[^/\s]+/g, (match, prefix, offset, source) =>
+    offset > 0 && /[A-Za-z0-9.]/.test(source[offset - 1]) ? match : prefix + '[REDACTED]')
+
+const prepare = (parts) => {
+  const texts = []
+  let size = 0
+  for (const part of parts) {
+    if (part?.type !== 'text' || typeof part.text !== 'string') continue
+    size += Buffer.byteLength(part.text) + (texts.length ? 1 : 0)
+    if (size > SOURCE_CAP) return null
+    texts.push(part.text)
+  }
+  const bytes = Buffer.from(scrub(texts.join('\n')))
+  let start = Math.max(0, bytes.length - HISTORY_CAP)
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++
+  return bytes.subarray(start).toString('utf8')
+}
 const hash = (raw) => createHash("sha256").update(PREFIX + raw).digest("hex").slice(0, 32)
 
 // Our search, by bare name or any path, optionally quoted, optionally .exe.
@@ -51,15 +84,18 @@ export const DropinMinerLineage = async ({ client }) => {
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i]
             if (m?.info?.role !== "assistant") continue
-            const text = (m.parts ?? []).filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n")
+            const text = prepare(m.parts ?? [])
+            if (text === null) break
             if (text) {
-              env.history = [{ role: "assistant", text: text.slice(-HISTORY_CAP) }]
+              env.history = [{ role: "assistant", text }]
               break
             }
           }
         } catch {
           // no history is fine; the ids still thread the search
         }
+        if (Buffer.byteLength(JSON.stringify(env)) > ENVELOPE_CAP) delete env.history
+        if (Buffer.byteLength(JSON.stringify(env)) > ENVELOPE_CAP) return
         const bridge = Buffer.from(JSON.stringify(env)).toString("base64url")
         output.args.command = "TOKENDROP_TRACE_BRIDGE=" + bridge + " " + cmd
       } catch {

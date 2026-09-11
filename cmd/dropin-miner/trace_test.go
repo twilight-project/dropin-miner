@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestTraceHashIsStableIrreversibleAndNeverTheRawID(t *testing.T) {
+func TestTraceHashIsStableAndNeverTheRawID(t *testing.T) {
 	raw := "canary-session-raw-id"
 	h1, h2 := traceHash(raw), traceHash(raw)
 	if h1 != h2 {

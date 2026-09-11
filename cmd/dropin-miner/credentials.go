@@ -20,9 +20,6 @@ package main
 //	                         0600, refused if a symlink or readable by
 //	                         anyone else — the same posture as the auth
 //	                         store's refresh token
-//	OPENAI_API_KEY           the fallback every SDK user already exports;
-//	                         last, so a personal key never shadows the
-//	                         tenant key and bills the wrong account
 //
 // The key reaches login on stdin or from a named environment variable,
 // never as a flag: argv is visible to every process on the machine and
@@ -55,8 +52,7 @@ const (
 	credentialsFile    = "credentials.json"
 	credentialsVersion = 1
 
-	apiKeyEnv    = "TOKENDROP_API_KEY" // #nosec G101 -- an env var NAME, not a credential value
-	openAIKeyEnv = "OPENAI_API_KEY"
+	apiKeyEnv = "TOKENDROP_API_KEY" // #nosec G101 -- an env var NAME, not a credential value
 
 	// loginProbeTimeout bounds the verification round trip; a router that
 	// does not answer in this long is reported, not waited on.
@@ -64,14 +60,13 @@ const (
 )
 
 // keySource names where a resolved key came from, for messages that must
-// say which of three places to fix.
+// say which source to fix.
 type keySource string
 
 const (
-	keyFromEnv    keySource = "TOKENDROP_API_KEY"
-	keyFromFile   keySource = "credentials file"
-	keyFromOpenAI keySource = "OPENAI_API_KEY"
-	keyFromNone   keySource = ""
+	keyFromEnv  keySource = "TOKENDROP_API_KEY"
+	keyFromFile keySource = "credentials file"
+	keyFromNone keySource = ""
 )
 
 // credentials is the on-disk shape. Router records which gateway the key
@@ -89,19 +84,8 @@ func credentialsPath(m config.Miner) string {
 	return filepath.Join(minerRoot(m), credentialsFile)
 }
 
-// platformKey resolves the bearer credential connect, mining enable and
-// the resume present to the search PLATFORM (register/status/enroll) —
-// deliberately NOT resolveAPIKey (WP2-adversarial-review finding 3).
-// resolveAPIKey's TOKENDROP_API_KEY/OPENAI_API_KEY fallbacks exist for
-// `search`'s router credential, which is a different bearer entirely; a
-// developer's own OPENAI_API_KEY leaking into a platform call mints
-// enrollment for whatever participant that key happens to belong to
-// (never this installation's own), and the mismatch does not surface
-// until the platform later reports "agent no longer known" — silent at
-// the moment it happens, confusing long after. The credentials file is
-// the ONLY source: it is what connect itself wrote after a successful
-// Register, so if it is missing there is nothing to authenticate a
-// platform call with, full stop — no fallback to guess with instead.
+// platformKey uses only the credential connect stored for platform calls.
+// The search-only environment override does not apply to enrollment.
 func platformKey(m config.Miner) (string, error) {
 	creds, err := readCredentials(credentialsPath(m))
 	if err != nil {
@@ -125,8 +109,7 @@ func looksLikePlatformKey(key string) bool {
 
 // resolveAPIKey applies the order documented above. A credentials file
 // that exists but cannot be trusted (symlink, readable by others,
-// unparseable) is an error, not a fall-through: silently continuing to
-// OPENAI_API_KEY would bill a different account without a word.
+// unparseable) preserves its error rather than selecting another source.
 func resolveAPIKey(getenv func(string) string, m config.Miner) (string, keySource, error) {
 	if k := getenv(apiKeyEnv); k != "" {
 		return k, keyFromEnv, nil
@@ -137,9 +120,6 @@ func resolveAPIKey(getenv func(string) string, m config.Miner) (string, keySourc
 		return creds.APIKey, keyFromFile, nil
 	case !errors.Is(err, fs.ErrNotExist):
 		return "", keyFromNone, err
-	}
-	if k := getenv(openAIKeyEnv); k != "" {
-		return k, keyFromOpenAI, nil
 	}
 	return "", keyFromNone, nil
 }
@@ -396,7 +376,7 @@ func loginShow(stdout, stderr io.Writer, getenv func(string) string, m config.Mi
 		return exitClientErr
 	}
 	if key == "" {
-		fmt.Fprintf(stdout, "no key: TOKENDROP_API_KEY is unset, %s does not exist, OPENAI_API_KEY is unset\n  store one with: dropin-miner login\n", path)
+		fmt.Fprintf(stdout, "no key: TOKENDROP_API_KEY is unset, %s does not exist\n  store one with: dropin-miner login\n", path)
 		return exitOK
 	}
 	fmt.Fprintf(stdout, "key %s from %s\n", maskKey(key), source)

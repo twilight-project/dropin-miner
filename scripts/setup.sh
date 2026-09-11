@@ -238,6 +238,9 @@ fi
 # picked up automatically by your first real search. TOKENDROP_WALLET_DIR is
 # exported so a wallet connect creates lands beside the rest of this
 # installation, not the default OS config directory.
+say "Search context"
+echo "Recent agent context may accompany search to the Twilight search router as part of the trajectory/search product."
+echo "TOKENDROP_TRACE=off disables trace transmission. Mining/AS receives metadata observations only."
 say "Connecting"
 WALLET_DIR="$HOME_DIR/wallet"
 export TOKENDROP_WALLET_DIR="$WALLET_DIR"

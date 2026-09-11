@@ -94,7 +94,7 @@ Every command takes -config <file>, falling back to TOKENDROP_CONFIG, then
 [miner] block turns the drop-in miner on; [platform] names the search
 platform connect talks to (defaults to platform.nyks.dev). Searches take
 your sr- key from TOKENDROP_API_KEY if it is set, else from the file
-login (or connect) wrote, else from OPENAI_API_KEY.
+login (or connect) wrote. Otherwise run connect or login to set up search.
 `
 
 func main() {

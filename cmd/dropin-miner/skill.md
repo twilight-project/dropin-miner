@@ -16,6 +16,10 @@ gave one, then numbered results with URL, title and snippet. Add `-tier fast` be
 the query only when a specific tier is called for. Add `-format json` instead of
 `-format model` when you need the router's full JSON.
 
+Recent agent context may accompany a search to the Twilight search router as
+part of the trajectory/search product. `TOKENDROP_TRACE=off` disables trace
+transmission. Mining/AS receives metadata observations only.
+
 ## On and off
 
 If the argument is exactly `on`, `off` or `status`, it is not a query. Run

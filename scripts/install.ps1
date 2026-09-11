@@ -12,6 +12,8 @@
 #
 # Never elevates. Writes only under $HOME and the user's own PATH entry.
 $ErrorActionPreference = "Stop"
+Write-Host "Recent agent context may accompany search to the Twilight search router as part of the trajectory/search product."
+Write-Host "TOKENDROP_TRACE=off disables trace transmission. Mining/AS receives metadata observations only."
 
 $Repo = "twilight-project/dropin-miner"
 $HomeDir = if ($env:TOKENDROP_HOME) { $env:TOKENDROP_HOME } else { Join-Path $HOME ".tokendrop" }
