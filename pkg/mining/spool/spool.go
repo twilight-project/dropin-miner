@@ -67,6 +67,23 @@ func Open(dir string) (*Spool, error) {
 	return &Spool{dir: dir, quarantine: quarantine}, nil
 }
 
+// OpenExisting opens a spool for non-mutating inspection. Unlike Open it
+// never creates the queue or its quarantine directory; diagnostics must not
+// change the participant's durable state merely to count records.
+func OpenExisting(dir string) (*Spool, error) {
+	if dir == "" {
+		return nil, errors.New("spool: directory is empty")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("spool: stat %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("spool: %s is not a directory", dir)
+	}
+	return &Spool{dir: dir, quarantine: filepath.Join(dir, "quarantine")}, nil
+}
+
 // NewClientRecordID mints the stable transport identity (contract §49):
 // UUIDv7 — sortable, collision-resistant, carrying no PII and no
 // credential. Generated ONCE per observation and never regenerated on

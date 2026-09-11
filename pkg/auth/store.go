@@ -48,6 +48,21 @@ func OpenStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- operator-configured state dir, validated just below
 		return nil, fmt.Errorf("auth: create state dir: %w", err)
 	}
+	return openExistingStore(dir)
+}
+
+// OpenStoreExisting opens an already-existing state directory without
+// creating anything. It is the inspection path for commands such as doctor
+// and status, and for search-side state reads: diagnosis must not manufacture
+// custody state merely because a participant asked a question.
+func OpenStoreExisting(dir string) (*Store, error) {
+	if dir == "" {
+		return nil, errors.New("auth: state_dir is empty")
+	}
+	return openExistingStore(dir)
+}
+
+func openExistingStore(dir string) (*Store, error) {
 	info, err := os.Lstat(dir) // #nosec G703 -- same validated operator path
 	if err != nil {
 		return nil, fmt.Errorf("auth: stat state dir: %w", err)
@@ -69,6 +84,17 @@ func OpenStore(dir string) (*Store, error) {
 // to the installation forever). ES256 (ECDSA P-256) per the X-0002
 // interoperability profile; PKCS#8 PEM on disk.
 func (s *Store) DPoPKey() (*ecdsa.PrivateKey, error) {
+	return s.dpopKey(true)
+}
+
+// DPoPKeyExisting loads the installation key without generating one. This is
+// the only key path available to observational commands; a missing key means
+// local authorization is incomplete, not that diagnosis should create it.
+func (s *Store) DPoPKeyExisting() (*ecdsa.PrivateKey, error) {
+	return s.dpopKey(false)
+}
+
+func (s *Store) dpopKey(generate bool) (*ecdsa.PrivateKey, error) {
 	raw, err := s.readSecret(dpopKeyFile)
 	switch {
 	case err == nil:
@@ -85,7 +111,7 @@ func (s *Store) DPoPKey() (*ecdsa.PrivateKey, error) {
 			return nil, errors.New("auth: dpop.key is not an ECDSA P-256 key (X-0002 profile requires ES256)")
 		}
 		return key, nil
-	case errors.Is(err, fs.ErrNotExist):
+	case errors.Is(err, fs.ErrNotExist) && generate:
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("auth: generate DPoP key: %w", err)
@@ -661,51 +687,35 @@ func (s *Store) LoadPayoutDeclared() (address string, ok bool, err error) {
 	return rec.Address, true, nil
 }
 
-// SaveMiningEnabled persists the mining on/off decision askMiningQuestion
-// reached (WP2-adversarial-review finding 4/10) regardless of whether it
-// came from the config file being explicit or from a terminal answer —
-// so a later pollOnce or shouldResume has ONE durable source of truth for
-// "did this installation decide to mine" that does not depend on
-// re-deriving it from config.MiningEnabledExplicit each time (which
-// cannot represent a decision that only ever existed at a terminal, never
-// written to any file).
+// SaveMiningEnabled persists the explicit runtime mining decision. The
+// versioned record is the authority after it exists; configuration may seed
+// this file during an approved onboarding decision but never overrides it.
 func (s *Store) SaveMiningEnabled(enabled bool) error {
 	raw, err := json.Marshal(struct {
+		Version int  `json:"version"`
 		Enabled bool `json:"enabled"`
-	}{Enabled: enabled})
+	}{Version: miningDecisionVersion, Enabled: enabled})
 	if err != nil {
 		return fmt.Errorf("auth: encode mining decision: %w", err)
 	}
-	return s.saveStateFile("mining_decision.json", raw)
+	if err := s.saveStateFile("mining_decision.json", raw); err != nil {
+		return err
+	}
+	// Health is diagnostic only. A successful explicit decision write proves
+	// this component healthy; failure to clear the diagnostic must not make
+	// the participant's decision write fail.
+	_ = s.ClearHealth(HealthDecision)
+	return nil
 }
 
-// LoadMiningEnabled returns the persisted decision, ok=false when
-// askMiningQuestion has never run for this installation (a state
-// directory that predates this fix, or one where connect's first run has
-// not happened yet — or a scripted install through setup.sh/install.ps1,
-// which writes [mining] enabled directly and has no terminal question of
-// its own to run this from at all). cmd/dropin-miner's miningActive is
-// the one place that reads this — every other flag search intake, the
-// flush, connect, the resume and status used to each check on their own
-// ([miner] enabled, config.Mining.Enabled) is gone; miningActive treats
-// ok=false the same as a legacy scripted install always has: mining
-// active by default, exactly as setup.sh's unconditional `[mining]
-// enabled = true` already implies today.
+// LoadMiningEnabled is the compatibility convenience wrapper. Callers that
+// need to distinguish undecided from degraded must use ReadMiningDecision.
 func (s *Store) LoadMiningEnabled() (enabled bool, ok bool, err error) {
-	raw, err := s.readSecret("mining_decision.json")
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, false, nil
+	decision := s.ReadMiningDecision()
+	if decision.Err != nil {
+		return false, decision.Present, decision.Err
 	}
-	if err != nil {
-		return false, false, err
-	}
-	var rec struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return false, false, fmt.Errorf("auth: decode mining decision: %w", err)
-	}
-	return rec.Enabled, true, nil
+	return decision.Enabled, decision.Present, nil
 }
 
 // SaveRevokePending marks that `mining disable` stopped mining locally

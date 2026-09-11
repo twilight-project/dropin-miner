@@ -28,8 +28,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"strings"
 	"time"
 
@@ -120,6 +123,15 @@ type doctorFacts struct {
 	HasRegistration  bool
 	RegistrationSlot string
 	RegistrationAt   string
+
+	MiningDecision    auth.MiningDecision
+	LocalStateKnown   bool
+	ASConfigured      bool
+	ASConfigKnown     bool
+	Health            []auth.HealthRecord
+	HealthErr         error
+	AuthIncomplete    bool
+	AuthIncompleteErr error
 }
 
 // assembleDoctor turns the gathered facts into the five verdicts.
@@ -137,6 +149,12 @@ func assembleDoctor(f doctorFacts) []doctorCheck {
 
 func doctorASCheck(f doctorFacts) doctorCheck {
 	c := doctorCheck{Name: "authorization server"}
+	if f.ASConfigKnown && !f.ASConfigured {
+		c.Verdict = verdictNo
+		c.Detail = "no authorization server configured"
+		c.Fix = "set mining.as_url, chain_id, and slot_id when this participant should mine"
+		return c
+	}
 	if f.DocErr != nil {
 		c.Verdict = verdictNo
 		c.Detail = fmt.Sprintf("cannot reach %s — %v", f.ASBaseURL, redact.Error(f.DocErr))
@@ -161,6 +179,10 @@ func doctorEnrolledCheck(f doctorFacts) doctorCheck {
 		c.Detail = "this installation holds no authorization, so it cannot talk to the AS at all"
 		c.Fix = doctorEnrollFix(f, "claim the URL `dropin-miner connect` printed, then run `dropin-miner connect` "+
 			"again (or just search — it resumes automatically once the claim goes through)")
+	case f.AuthIncomplete:
+		c.Verdict = verdictNo
+		c.Detail = "local authorization is incomplete; no DPoP key is available for authenticated AS checks"
+		c.Fix = doctorEnrollFix(f, "run `dropin-miner connect` again to complete local authorization")
 	case f.StatusErr != nil && f.DocErr == nil && f.EpochKnown:
 		// The AS is up and refused an authorization we hold. That is worth
 		// separating from "the AS is down": one is waited out, the other is
@@ -370,12 +392,16 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := operatorContext(2 * time.Minute)
 	defer cancel()
 
-	_, mining, m, code := miningClients(ctx, []string{"-config", *cfgPath}, "doctor")
-	if code != 0 {
-		return code
+	cfg, src, err := loadConfig(*cfgPath, os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dropin-miner: config (%s): %v\n", orDefaults(src), err)
+		return exitTransport
 	}
+	mining := doctorASClient(ctx, cfg.Mining)
 
-	f := gatherDoctorFacts(ctx, mining, m)
+	f := gatherDoctorFacts(ctx, mining, cfg.Mining)
+	f.ASConfigured = miningASConfigured(cfg.Mining)
+	f.ASConfigKnown = true
 	checks := assembleDoctor(f)
 	printDoctor(stdout, checks, f)
 
@@ -404,6 +430,54 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	return exitTransport
 }
 
+type doctorUnauthenticatedAS struct {
+	disc *auth.Discoverer
+	err  error
+}
+
+func (a doctorUnauthenticatedAS) ServiceDocument(ctx context.Context) (*wire.DiscoveryDocument, error) {
+	if a.disc == nil {
+		return nil, a.err
+	}
+	return a.disc.Document(ctx)
+}
+func (a doctorUnauthenticatedAS) CurrentTarget(context.Context) (*auth.MiningTarget, error) {
+	return nil, a.err
+}
+func (a doctorUnauthenticatedAS) Status(context.Context, uint64) (*auth.EpochStatus, error) {
+	return nil, a.err
+}
+func (a doctorUnauthenticatedAS) PayoutStanding(context.Context) (*auth.PayoutStanding, error) {
+	return nil, a.err
+}
+func (a doctorUnauthenticatedAS) EpochActivity(context.Context, uint64) (*auth.EpochActivity, error) {
+	return nil, a.err
+}
+
+func doctorASClient(_ context.Context, m config.Mining) asClient {
+	if !miningASConfigured(m) {
+		return doctorUnauthenticatedAS{err: errors.New("no authorization server configured")}
+	}
+	disc, err := auth.NewDiscoverer(auth.DiscoveryConfig{
+		BaseURL: m.ASBaseURL, ChainID: m.ChainID, SlotID: m.SlotID, TTL: m.MetadataTTL,
+	})
+	if err != nil {
+		return doctorUnauthenticatedAS{err: err}
+	}
+	store, err := auth.OpenStoreExisting(m.StateDir)
+	if err != nil {
+		return doctorUnauthenticatedAS{disc: disc, err: errors.New("local authorization state is unavailable")}
+	}
+	if _, ok, err := store.LoadRefreshToken(); err != nil || !ok {
+		return doctorUnauthenticatedAS{disc: disc, err: errors.New("local authorization is not enrolled")}
+	}
+	oauthClient, err := auth.NewReadOnlyOAuthClient(context.Background(), disc, store)
+	if err != nil {
+		return doctorUnauthenticatedAS{disc: disc, err: errors.New("local authorization is incomplete")}
+	}
+	return auth.NewMiningClient(disc, oauthClient, store)
+}
+
 // gatherDoctorFacts asks each source once, keeping failures rather than
 // returning on the first one — a degraded AS must not blank the report.
 func gatherDoctorFacts(ctx context.Context, as asClient, m config.Mining) doctorFacts {
@@ -416,17 +490,31 @@ func gatherDoctorFacts(ctx context.Context, as asClient, m config.Mining) doctor
 
 	// Local first, and unconditionally: it is the half that still answers
 	// when nothing else does.
-	if store, err := auth.OpenStore(m.StateDir); err != nil {
-		f.LocalErr = err
+	if store, err := auth.OpenStoreExisting(m.StateDir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			f.LocalStateKnown = true
+			f.MiningDecision = auth.MiningDecision{State: auth.MiningUndecided}
+		} else {
+			f.LocalErr = err
+			f.MiningDecision = auth.MiningDecision{State: auth.MiningDegraded, Present: true, Err: err}
+		}
 	} else {
+		f.LocalStateKnown = true
+		f.MiningDecision = store.ReadMiningDecision()
 		_, ok, err := store.LoadRefreshToken()
 		if err != nil {
 			f.LocalErr = err
 		}
 		f.HasRefresh = ok
+		if f.HasRefresh {
+			if _, err := store.DPoPKeyExisting(); err != nil {
+				f.AuthIncomplete, f.AuthIncompleteErr = true, err
+			}
+		}
 		if reg, ok, err := store.LoadAgentRegistration(); err == nil && ok && reg.LastEnrollmentSlot != "" {
 			f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, reg.LastEnrollmentSlot, reg.LastEnrollmentAt
 		}
+		f.Health, f.HealthErr = store.HealthRecords()
 	}
 
 	f.Doc, f.DocErr = as.ServiceDocument(ctx)
@@ -485,6 +573,37 @@ const (
 )
 
 func printDoctor(w io.Writer, checks []doctorCheck, f doctorFacts) {
+	if f.LocalStateKnown {
+		detail := "persisted runtime decision"
+		switch f.MiningDecision.State {
+		case auth.MiningUndecided:
+			detail = "no persisted runtime decision; mining remains inactive"
+		case auth.MiningDegraded:
+			detail = "mining is stopped for safety until the decision can be trusted"
+		}
+		fmt.Fprintf(w, "  mining                 %-7s  %s%s\n", miningDecisionText(f.MiningDecision), detail, miningDecisionDetail(f.MiningDecision))
+	}
+	if f.ASConfigKnown {
+		if f.ASConfigured {
+			fmt.Fprintf(w, "  authorization config   %-7s  %s\n", "SET", f.ASBaseURL)
+		} else {
+			fmt.Fprintf(w, "  authorization config   %-7s  no authorization server configured\n", "UNSET")
+		}
+	}
+	for _, record := range f.Health {
+		label := "health"
+		if f.MiningDecision.State == auth.MiningDisabled {
+			label = "health (previous unresolved)"
+		}
+		if record.Detail == "" {
+			fmt.Fprintf(w, "  %s %-14s %-7s  %s\n", label, record.Component, "OPEN", record.Reason)
+		} else {
+			fmt.Fprintf(w, "  %s %-14s %-7s  %s — %s\n", label, record.Component, "OPEN", record.Reason, record.Detail)
+		}
+	}
+	if f.HealthErr != nil {
+		fmt.Fprintf(w, "  health               UNKNOWN  %v\n", redact.Error(f.HealthErr))
+	}
 	var unknown []string
 	for _, c := range checks {
 		fmt.Fprintf(w, "  %-*s %-*s  %s\n", doctorNameWidth, c.Name, doctorVerdictWidth, c.Verdict, c.Detail)
@@ -523,7 +642,7 @@ func printQueueTo(w io.Writer, spoolDir string) {
 	cont := func(text string) {
 		fmt.Fprintf(w, "  %-*s %-*s  %s\n", doctorNameWidth, "", doctorVerdictWidth, "", text)
 	}
-	sp, err := spool.Open(spoolDir)
+	sp, err := spool.OpenExisting(spoolDir)
 	if err != nil {
 		line(fmt.Sprintf("unknown (%v)", redact.Error(err)))
 		return

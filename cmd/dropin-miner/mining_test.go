@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +67,7 @@ type asState struct {
 	// capability's observation_submission_deadline — omitted by default,
 	// matching every pre-WP4b test's expectation of a zero scope.Context.Deadline.
 	capabilityDeadline string
+	acceptSubmissions  bool
 }
 
 type fakeAS struct {
@@ -75,9 +77,11 @@ type fakeAS struct {
 	mu    sync.Mutex
 	state asState
 
-	currentCalls atomic.Int64
-	statusCalls  atomic.Int64
-	joinCalls    atomic.Int64
+	currentCalls    atomic.Int64
+	statusCalls     atomic.Int64
+	joinCalls       atomic.Int64
+	submissionCalls atomic.Int64
+	tokenCalls      atomic.Int64
 	// probes counts every request mentioning current-target, routed or
 	// not: a client that assembled the URL itself is still seen here.
 	probes atomic.Int64
@@ -195,6 +199,26 @@ func newFakeAS(t *testing.T) *fakeAS {
 			"receipt": f.receipt(t, epoch, body.DrawID),
 		})
 	})
+	mux.HandleFunc("POST /v1/mining/observations", func(w http.ResponseWriter, r *http.Request) {
+		if !f.get().acceptSubmissions {
+			http.NotFound(w, r)
+			return
+		}
+		f.submissionCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("submission body: %v", err)
+		}
+		var observation struct {
+			ClientRecordID string `json:"client_record_id"`
+		}
+		_ = json.Unmarshal(body, &observation)
+		f.writeJSON(t, w, map[string]any{
+			"submission_status": "ACCEPTED",
+			"client_record_id":  observation.ClientRecordID,
+			"observation_id":    "observation-1",
+		})
+	})
 
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "current-target") {
@@ -247,6 +271,7 @@ func (f *fakeAS) document() map[string]any {
 // and the RFC 8693 exchange that mints a Participation Capability.
 func (f *fakeAS) token(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
+	f.tokenCalls.Add(1)
 	if err := r.ParseForm(); err != nil {
 		t.Fatal(err)
 	}

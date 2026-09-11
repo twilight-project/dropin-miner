@@ -99,9 +99,10 @@ func (o Observe) RingCount() int {
 }
 
 // Mining is the AS-facing mining-plane configuration (contract §18–§19).
-// Disabled by default: a proxy without a [mining] block behaves exactly
-// as it did before the mining integration existed, and every mining
-// failure mode is invisible to inference by construction.
+// Enabled is only the scripted first answer consumed by onboarding; the
+// persisted mining decision is runtime authority, while a non-empty ASBaseURL
+// says AS work is configured. A proxy without a [mining] block behaves exactly
+// as it did before mining integration existed.
 type Mining struct {
 	Enabled     bool
 	ASBaseURL   string
@@ -813,9 +814,10 @@ func (r *rawConfig) finishMiner(upstream *url.URL, mining Mining) (Miner, error)
 	return m, nil
 }
 
-// finishMining validates the mining block only when it is enabled: a
-// disabled block never blocks proxy startup, whatever it contains —
-// inference must not depend on mining configuration being right.
+// finishMining resolves local mining configuration independently from the
+// scripted first-decision answer. An absent AS is a valid search-only/local
+// configuration; once an AS is named, its complete participant identity and
+// safety settings must validate regardless of Mining.Enabled.
 func (r *rawConfig) finishMining() (Mining, error) {
 	m := Mining{
 		Enabled:              r.miningEnabled,
@@ -852,11 +854,8 @@ func (r *rawConfig) finishMining() (Mining, error) {
 	if m.SpoolDir == "" && m.StateDir != "" {
 		m.SpoolDir = filepath.Join(m.StateDir, "spool")
 	}
-	if !m.Enabled {
-		return m, nil
-	}
 	if m.ASBaseURL == "" {
-		return Mining{}, errors.New("mining.as_url: required when mining is enabled")
+		return m, nil
 	}
 	u, err := url.Parse(m.ASBaseURL)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
@@ -882,10 +881,10 @@ func (r *rawConfig) finishMining() (Mining, error) {
 			"use https, or a loopback address for local development", u.Host)
 	}
 	if m.ChainID == "" {
-		return Mining{}, errors.New("mining.chain_id: required when mining is enabled")
+		return Mining{}, errors.New("mining.chain_id: required when an authorization server is configured")
 	}
 	if r.miningSlotID == nil {
-		return Mining{}, errors.New("mining.slot_id: required when mining is enabled (one AS serves exactly one Core Slot)")
+		return Mining{}, errors.New("mining.slot_id: required when an authorization server is configured (one AS serves exactly one Core Slot)")
 	}
 	if m.MetadataTTL < 0 {
 		return Mining{}, errors.New("mining.metadata_ttl: must not be negative")
@@ -895,7 +894,7 @@ func (r *rawConfig) finishMining() (Mining, error) {
 	// Catching it at config time turns a confusing runtime failure deep
 	// in the key store into a startup message naming the actual fix.
 	if m.StateDir == "" {
-		return Mining{}, errors.New("mining.state_dir: required when mining is enabled (no user config directory could be determined for the default)")
+		return Mining{}, errors.New("mining.state_dir: required when an authorization server is configured (no user config directory could be determined for the default)")
 	}
 	if m.CollectorInterval < 0 || m.CollectorBaseBackoff < 0 || m.CollectorMaxBackoff < 0 {
 		return Mining{}, errors.New("mining: collector durations must not be negative")
