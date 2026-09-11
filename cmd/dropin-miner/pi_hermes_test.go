@@ -6,14 +6,40 @@ package main
 // All identifiers are synthetic.
 
 import (
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
+// The Pi extension is TypeScript and cannot call isSearchCommand, so it carries
+// a copy of the recognizer's pattern. This guard fails if that copy ever drifts
+// from the Go searchCommandRe — the one recognizer the Hermes hook, the Cursor
+// hook and Claude Code all go through — so Pi can never fall back to a looser
+// (e.g. substring) match without CI noticing.
+func TestPiExtensionRegexMatchesTheCanonicalRecognizer(t *testing.T) {
+	m := regexp.MustCompile(`SEARCH_RE\s*=\s*/(.*?)/;`).FindStringSubmatch(piExtensionTS)
+	if m == nil {
+		t.Fatal("could not find the SEARCH_RE literal in pi_extension.ts")
+	}
+	if got := m[1]; got != searchCommandRe.String() {
+		t.Errorf("Pi extension regex drifted from searchCommandRe:\n  ts: %s\n  go: %s", got, searchCommandRe.String())
+	}
+}
+
 const (
 	piSkillPath     = "/home/u/.pi/agent/skills/dropin-miner/SKILL.md"
 	piExtensionPath = "/home/u/.pi/agent/extensions/dropin-miner.ts"
-	hermesSkillPath = "/home/u/.hermes/skills/dropin-miner/SKILL.md"
+)
+
+// Hermes' home is platform-dependent (%LOCALAPPDATA%\hermes on Windows,
+// ~/.hermes elsewhere), so derive the expected paths the way the code does
+// rather than hardcode a POSIX layout. The fake machine keys files by
+// filepath.ToSlash of the written path, so slash() to match.
+var (
+	hermesTestHome   = hermesHomeDir("/home/u", func(string) string { return "" })
+	hermesSkillPath  = slash(filepath.Join(hermesTestHome, "skills", agentsName, "SKILL.md"))
+	hermesConfigPath = slash(filepath.Join(hermesTestHome, "config.yaml"))
 )
 
 func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
@@ -32,8 +58,10 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 		if !strings.Contains(s, "name: dropin-miner") {
 			t.Errorf("%s: not a dropin-miner skill:\n%s", p, s)
 		}
-		// It teaches the CLI-as-tool invocation, pointed at this config.
-		if !strings.Contains(s, "search") || !strings.Contains(s, testCfg) {
+		// It teaches the CLI-as-tool invocation, pointed at this config. The
+		// config path is made absolute (drive-lettered on Windows), so match
+		// the basename, not the literal testCfg.
+		if !strings.Contains(s, "search") || !strings.Contains(s, "tokendrop.toml") {
 			t.Errorf("%s: skill does not name the search command with the config", p)
 		}
 	}
@@ -98,8 +126,6 @@ func TestPiClientFlagInstallsOnlyPi(t *testing.T) {
 		t.Error("Hermes was touched despite -client pi")
 	}
 }
-
-const hermesConfigPath = "/home/u/.hermes/config.yaml"
 
 func TestHermesInstallRegistersHookAndUninstallRemovesIt(t *testing.T) {
 	m, ops := newFakeMachine("hermes")

@@ -14,7 +14,13 @@
 import { createHash } from "node:crypto";
 
 const PREFIX = "tokendrop-trace-v1|";
-const HISTORY_CAP = 32 * 1024;
+// The binary's prepareTraceText redacts the history entry and THEN tails it to
+// its own cap, and omits anything larger than this bound whole rather than
+// slicing it — so a secret is never cut before it can be redacted. We defer
+// to that: pass the text whole, or omit it past the same bound. We do not
+// truncate here, which would put a slice ahead of the redaction. Matches the
+// Go hooks' hookTailBytes.
+const HISTORY_OVERSIZE = 256 * 1024;
 const hash = (raw) => createHash("sha256").update(PREFIX + raw).digest("hex").slice(0, 32);
 
 // Our search, by bare name or any path, optionally quoted, optionally .exe.
@@ -65,7 +71,11 @@ export default function (pi) {
         for (let i = entries.length - 1; i >= 0; i--) {
           const text = assistantText(entries[i]);
           if (text) {
-            env.history = [{ role: "assistant", text: text.slice(-HISTORY_CAP) }];
+            // Whole text, unredacted and untruncated: the binary redacts then
+            // truncates. Omit an oversize entry rather than slice it.
+            if (text.length <= HISTORY_OVERSIZE) {
+              env.history = [{ role: "assistant", text }];
+            }
             break;
           }
         }
