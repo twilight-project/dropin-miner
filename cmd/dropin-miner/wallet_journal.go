@@ -105,11 +105,11 @@ const (
 	pendingCheckFailed
 )
 
-// resolvePendingTx is the read-the-journal-first step both `wallet
-// send` and `wallet balance` perform. It never constructs a new
-// transaction and never regenerates a signature — only re-broadcasts
-// the bytes already on disk, if the node has not seen them.
-func resolvePendingTx(ctx context.Context, c *rpcClient, dir string, stdout, stderr io.Writer) pendingOutcome {
+// resolvePendingTxLocked is the read-the-journal-first step both `wallet
+// send` and `wallet balance` perform. Its caller holds wallet.lock. It
+// never constructs a new transaction or regenerates a signature — only
+// re-broadcasts the bytes already on disk if the node has not seen them.
+func resolvePendingTxLocked(ctx context.Context, c *rpcClient, dir string, stdout, stderr io.Writer) pendingOutcome {
 	p, err := loadPendingTx(dir)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner: pending transaction record:", err)
@@ -170,16 +170,12 @@ func resolvePendingTx(ctx context.Context, c *rpcClient, dir string, stdout, std
 		return pendingUnresolved
 	}
 	if bres.Code != 0 {
-		// The node has now explicitly rejected these exact bytes —
-		// the same fact walletSend's own first-broadcast rejection
-		// reports, reached this time on a re-send rather than the
-		// original attempt. Nothing moved; the journal's job is done.
-		if rerr := removePendingTx(dir); rerr != nil {
-			fmt.Fprintln(stderr, "dropin-miner: could not clear the resolved pending transaction:", rerr)
-			return pendingCheckFailed
-		}
-		fmt.Fprintf(stdout, "a previous send (%s) is now known: rejected on re-broadcast (code %d): %s\n", p.Hash, bres.Code, bres.Log)
-		return pendingResolved
+		// A later CheckTx rejection cannot prove that an earlier,
+		// uncertain broadcast of these same bytes was not accepted and
+		// may still commit. Only a confirmed /tx result can resolve this
+		// journal now, so retain it regardless of this later response.
+		fmt.Fprintf(stdout, "a previous send (%s) is still unresolved; re-broadcast was rejected (code %d): %s — check again for inclusion\n", p.Hash, bres.Code, bres.Log)
+		return pendingUnresolved
 	}
 	fmt.Fprintf(stdout, "a previous send (%s) is still unresolved; re-sent the same signed transaction, now accepted — check again to confirm\n", p.Hash)
 	return pendingUnresolved

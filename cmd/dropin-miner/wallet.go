@@ -180,6 +180,11 @@ var afterWalletKeyWritten = func() error { return nil }
 // The default does nothing.
 var beforeJournalingANewPayment = func() {}
 
+// afterPendingTxJournaled is the concurrency-test seam for the critical
+// window between durable journal publication and first-broadcast
+// classification. The default does nothing.
+var afterPendingTxJournaled = func() {}
+
 // createOrRecoverWallet is the ONE wallet-creation path: wallet init
 // and mining enable's address question both call this rather than
 // writing a key directly. It takes wallet.lock for its
@@ -525,7 +530,13 @@ func walletBalance(args []string, stdout, stderr io.Writer, getenv func(string) 
 	// send. Its outcome does not gate anything here — balance never
 	// refuses to report — it is simply the other place a participant
 	// is likely to notice and get the resolution for free.
-	resolvePendingTx(ctx, c, resolvedDir, stdout, stderr)
+	release, err := lockWalletDir(resolvedDir, walletLockTimeout)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	resolvePendingTxLocked(ctx, c, resolvedDir, stdout, stderr)
+	release()
 
 	amount, err := c.balance(ctx, target, *denom)
 	if err != nil {
@@ -571,6 +582,12 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 
 	if *abandon {
+		release, err := lockWalletDir(resolved, walletLockTimeout)
+		if err != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", err)
+			return exitTransport
+		}
+		defer release()
 		p, err := loadPendingTx(resolved)
 		if err != nil {
 			fmt.Fprintln(stderr, "dropin-miner:", err)
@@ -642,15 +659,14 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	c := newRPCClient(nodeURL)
 
 	// Two concurrent `wallet send` invocations must never both journal:
-	// the pending-journal check and everything through the durable write
-	// of a new journal happen under the same cross-process lock
+	// the pending-journal check and everything through classification of
+	// the first broadcast happen under the same cross-process lock
 	// `createOrRecoverWallet` uses for creation, so a second sender
 	// blocked here re-checks the journal AFTER the first one's write has
 	// landed and finds it, rather than racing past the same stale "no
-	// journal yet" answer. Released right after the journal write
-	// succeeds — everything after that (broadcast, the confirmation
-	// wait) needs no more exclusivity, because the journal's own
-	// existence on disk is what stops a second sender, not the lock.
+	// journal yet" answer. Once the first broadcast is classified, the
+	// journal itself is sufficient serialization and the later block wait
+	// needs no lock.
 	release, err := lockWalletDir(resolved, walletLockTimeout)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
@@ -666,7 +682,7 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// No new payment is ever constructed while a journal is pending
 	// (§4.3): resolve it first, before touching the node for anything
 	// this specific send needs.
-	switch resolvePendingTx(ctx, c, resolved, stdout, stderr) {
+	switch resolvePendingTxLocked(ctx, c, resolved, stdout, stderr) {
 	case pendingResolved:
 		fmt.Fprintln(stdout, "a previous send was confirmed; run again to send another")
 		return exitOK
@@ -776,8 +792,7 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintln(stderr, "dropin-miner: could not journal this transaction before sending it:", err)
 		return exitTransport
 	}
-	release()
-	locked = false
+	afterPendingTxJournaled()
 
 	res, err := c.broadcast(ctx, txRaw)
 	if err != nil {
@@ -797,6 +812,8 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintf(stderr, "dropin-miner: the chain rejected this transaction (code %d): %s\n", res.Code, res.Log)
 		return exitChainRejected
 	}
+	release()
+	locked = false
 	fmt.Fprintf(stdout, "submitted: %s\n", res.Hash)
 
 	// Acceptance into the mempool is not execution. Waiting is the
@@ -812,9 +829,21 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintf(stderr, "  outcome unknown: %s — check later: %s/tx?hash=0x%s\n", res.Hash, nodeURL, res.Hash)
 		return exitOutcomeUnknown
 	}
-	if rerr := removePendingTx(resolved); rerr != nil {
-		fmt.Fprintln(stderr, "dropin-miner:", rerr)
-	}
+	// The first-broadcast lock was deliberately released before the
+	// confirmation wait. Reacquire the same journal lock for this final
+	// mutation; another command may already have confirmed and removed
+	// the journal, in which case removePendingTx is idempotent.
+	func() {
+		releaseJournal, lockErr := lockWalletDir(resolved, walletLockTimeout)
+		if lockErr != nil {
+			fmt.Fprintln(stderr, "dropin-miner: could not lock the confirmed pending transaction for removal:", lockErr)
+			return
+		}
+		defer releaseJournal()
+		if rerr := removePendingTx(resolved); rerr != nil {
+			fmt.Fprintln(stderr, "dropin-miner:", rerr)
+		}
+	}()
 	if tx.TxResult.Code != 0 {
 		fmt.Fprintf(stderr, "dropin-miner: included at height %s but FAILED (code %d): %s\n",
 			tx.Height, tx.TxResult.Code, tx.TxResult.Log)

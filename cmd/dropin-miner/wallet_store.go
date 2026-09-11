@@ -54,6 +54,11 @@ const (
 // caller should not have written anything.
 var errWalletLockBusy = errors.New("wallet: another process is creating or repairing this wallet")
 
+// onWalletLockContention is a deterministic test seam: journal tests use it
+// to prove that a competing wallet command has actually reached the held
+// cross-process lock, without depending on scheduler timing or sleeps.
+var onWalletLockContention = func() {}
+
 // lockWalletDir takes the cross-process creation lock for dir, the same
 // try-lock-then-bounded-poll shape pkg/auth's refresh-token lock uses,
 // built on this package's own tryLockFile/unlockFile (already
@@ -70,6 +75,7 @@ func lockWalletDir(dir string, timeout time.Duration) (release func(), err error
 		if held {
 			return func() { _ = unlockFile(f) }, nil
 		}
+		onWalletLockContention()
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return nil, fmt.Errorf("%w: gave up after %s waiting on %s", errWalletLockBusy, timeout, path)

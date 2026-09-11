@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func journalTestSetup(t *testing.T, cfg nodeConfig) (dir string, node *fakeNode, env func(string) string) {
@@ -293,58 +294,161 @@ func TestRerunWithInsufficientEvidenceDoesNotRebroadcast(t *testing.T) {
 	}
 }
 
-// TestRerunRebroadcastRejectionResolvesTheJournal: the node has never
-// heard of the hash (found=false), so a re-broadcast of the same bytes
-// is attempted, exactly as
-// TestRerunWhenNodeDoesNotKnowTheHashRebroadcastsSameBytes — but this
-// time the node's own response to THAT re-broadcast is an explicit
-// rejection (code != 0). That is proof, not silence: the journal is
-// resolved (removed) and the code and log are reported, the same fact
-// walletSend's own first-broadcast rejection reports, reached this time
-// on a re-send.
-func TestRerunRebroadcastRejectionResolvesTheJournal(t *testing.T) {
-	node := newFakeNode(t, nodeConfig{
+// A later re-broadcast rejection is not proof that the first uncertain
+// copy was never accepted. The journal remains until /tx supplies the
+// complete confirmation predicate, whether inclusion succeeded or the
+// transaction was included but failed during execution.
+func TestRerunRebroadcastRejectionStaysUnresolvedUntilTxConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		deliverCode uint32
+		wantReport  string
+	}{
+		{name: "confirmed", deliverCode: 0, wantReport: "confirmed in block"},
+		{name: "included but failed", deliverCode: 9, wantReport: "FAILED at height"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node := newFakeNode(t, nodeConfig{
+				chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
+				broadcastCode: 7, broadcastLog: "insufficient funds on re-check", deliverCode: tc.deliverCode,
+			})
+			dir := walletScratchDir(t)
+			env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
+			var out, errOut bytes.Buffer
+			if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &out, &errOut, env); code != 0 {
+				t.Fatalf("init: %s", errOut.String())
+			}
+
+			txRaw := []byte("fixed-test-tx-bytes-rejected-on-rebroadcast-" + tc.name)
+			hash := txHash(txRaw)
+			if err := writePendingTx(dir, pendingTx{
+				Hash: hash, TxRawB64: b64(txRaw), To: "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh",
+				Amount: "1000", Denom: "utwlt", ChainID: "twilight-devnet-2", CreatedAt: nowRFC3339(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var newPayments int32
+			orig := beforeJournalingANewPayment
+			beforeJournalingANewPayment = func() { atomic.AddInt32(&newPayments, 1) }
+			t.Cleanup(func() { beforeJournalingANewPayment = orig })
+
+			out.Reset()
+			errOut.Reset()
+			code := cmdWallet(sendArgs(dir, node.srv.URL), strings.NewReader(""), &out, &errOut, env)
+			if code != exitOutcomeUnknown {
+				t.Fatalf("re-broadcast exit %d, want exitOutcomeUnknown: %s", code, errOut.String())
+			}
+			if p, err := loadPendingTx(dir); err != nil || p == nil {
+				t.Fatalf("re-broadcast rejection must retain the journal: %v %v", p, err)
+			}
+			if !strings.Contains(out.String(), "re-broadcast was rejected") || !strings.Contains(out.String(), "still unresolved") {
+				t.Errorf("output must preserve uncertainty: %q", out.String())
+			}
+			if got := atomic.LoadInt32(&newPayments); got != 0 {
+				t.Fatalf("resolution constructed %d fresh payments", got)
+			}
+
+			out.Reset()
+			errOut.Reset()
+			code = cmdWallet(sendArgs(dir, node.srv.URL), strings.NewReader(""), &out, &errOut, env)
+			if code != exitOK {
+				t.Fatalf("confirmation exit %d, want exitOK: %s", code, errOut.String())
+			}
+			if !strings.Contains(out.String(), tc.wantReport) {
+				t.Errorf("confirmation report = %q, want %q", out.String(), tc.wantReport)
+			}
+			if _, err := os.Stat(filepath.Join(dir, pendingTxFile)); !os.IsNotExist(err) {
+				t.Fatal("full /tx confirmation must remove the journal")
+			}
+			if got := atomic.LoadInt32(&newPayments); got != 0 {
+				t.Fatalf("confirmation constructed %d fresh payments", got)
+			}
+			node.mu.Lock()
+			bc := node.broadcastCount
+			node.mu.Unlock()
+			if bc != 1 {
+				t.Fatalf("expected only the exact-byte re-broadcast, got %d broadcasts", bc)
+			}
+		})
+	}
+}
+
+func TestBalanceCannotResolveJournalBeforeFirstBroadcastClassification(t *testing.T) {
+	testJournalCommandWaitsForFirstBroadcastClassification(t, "balance")
+}
+
+func TestAbandonCannotRemoveJournalBeforeFirstBroadcastClassification(t *testing.T) {
+	testJournalCommandWaitsForFirstBroadcastClassification(t, "abandon")
+}
+
+func testJournalCommandWaitsForFirstBroadcastClassification(t *testing.T, command string) {
+	t.Helper()
+	dir, node, env := journalTestSetup(t, nodeConfig{
 		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
-		broadcastCode: 7, broadcastLog: "insufficient funds on re-check",
+		broadcastCode: 5, broadcastLog: "first broadcast rejected",
 	})
-	dir := walletScratchDir(t)
-	env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
-	var out, errOut bytes.Buffer
-	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &out, &errOut, env); code != 0 {
-		t.Fatalf("init: %s", errOut.String())
+
+	journaled := make(chan struct{})
+	allowBroadcast := make(chan struct{})
+	var allowOnce sync.Once
+	releaseSender := func() { allowOnce.Do(func() { close(allowBroadcast) }) }
+	defer releaseSender()
+	origJournaled := afterPendingTxJournaled
+	afterPendingTxJournaled = func() {
+		close(journaled)
+		<-allowBroadcast
+	}
+	t.Cleanup(func() { afterPendingTxJournaled = origJournaled })
+
+	contended := make(chan struct{})
+	var contentionOnce sync.Once
+	origContended := onWalletLockContention
+	onWalletLockContention = func() { contentionOnce.Do(func() { close(contended) }) }
+	t.Cleanup(func() { onWalletLockContention = origContended })
+
+	senderDone := make(chan int, 1)
+	go func() {
+		var out, errOut bytes.Buffer
+		senderDone <- cmdWallet(sendArgs(dir, node.srv.URL), strings.NewReader(""), &out, &errOut, env)
+	}()
+	<-journaled
+
+	commandDone := make(chan int, 1)
+	go func() {
+		var out, errOut bytes.Buffer
+		if command == "balance" {
+			commandDone <- cmdWallet([]string{"balance", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2"},
+				strings.NewReader(""), &out, &errOut, env)
+			return
+		}
+		commandDone <- cmdWallet([]string{"send", "-dir", dir, "-abandon-pending"}, strings.NewReader(""), &out, &errOut, env)
+	}()
+
+	select {
+	case <-contended:
+		// The competitor reached wallet.lock and found the sender still
+		// holding it: this is the deterministic critical-section proof.
+	case code := <-commandDone:
+		t.Fatalf("%s completed with exit %d before first-broadcast classification", command, code)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s neither contended on wallet.lock nor completed", command)
+	}
+	select {
+	case code := <-commandDone:
+		t.Fatalf("%s completed with exit %d while the sender still held wallet.lock", command, code)
+	default:
+	}
+	if p, err := loadPendingTx(dir); err != nil || p == nil {
+		t.Fatalf("sender's journal must remain intact during first-broadcast classification: %v %v", p, err)
 	}
 
-	txRaw := []byte("fixed-test-tx-bytes-rejected-on-rebroadcast")
-	hash := txHash(txRaw)
-	if err := writePendingTx(dir, pendingTx{
-		Hash: hash, TxRawB64: b64(txRaw), To: "twilight1kl0dn0rtwk46h9zcmazyyrruta290crh93rnlh",
-		Amount: "1000", Denom: "utwlt", ChainID: "twilight-devnet-2", CreatedAt: nowRFC3339(),
-	}); err != nil {
-		t.Fatal(err)
+	releaseSender()
+	if code := <-senderDone; code != exitChainRejected {
+		t.Fatalf("sender exit %d, want exitChainRejected", code)
 	}
-	// node has NOT seen this tx: /tx answers "not found" until the
-	// re-broadcast below sets lastTx, so resolvePendingTx takes the
-	// found=false branch and re-sends.
-
-	out.Reset()
-	errOut.Reset()
-	code := cmdWallet([]string{"balance", "-dir", dir, "-node", node.srv.URL, "-chain-id", "twilight-devnet-2"},
-		strings.NewReader(""), &out, &errOut, env)
-	if code != exitOK {
-		t.Fatalf("balance exit %d: %s", code, errOut.String())
-	}
-	node.mu.Lock()
-	bc := node.broadcastCount
-	node.mu.Unlock()
-	if bc != 1 {
-		t.Fatalf("expected exactly one re-broadcast, got %d", bc)
-	}
-	if _, err := os.Stat(filepath.Join(dir, pendingTxFile)); !os.IsNotExist(err) {
-		t.Fatal("journal should be removed once the re-broadcast is explicitly rejected")
-	}
-	if !strings.Contains(out.String(), "rejected on re-broadcast") || !strings.Contains(out.String(), "7") ||
-		!strings.Contains(out.String(), "insufficient funds on re-check") {
-		t.Errorf("output should report the rejection code and log: %q", out.String())
+	if code := <-commandDone; code != exitOK {
+		t.Fatalf("%s exit %d, want exitOK", command, code)
 	}
 }
 
