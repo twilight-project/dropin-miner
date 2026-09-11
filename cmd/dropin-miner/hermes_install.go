@@ -82,6 +82,25 @@ func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPl
 	return planWrite(ops, label, path, hermesAppendBlock(stripped, body), mode, "pre_tool_call lineage hook", p)
 }
 
+// hermesHookInstalled reports whether OUR block is in this config and names
+// this binary — what `agents status` needs in order to tell a complete
+// install from a skill sitting there with no lineage behind it. Read-only.
+func hermesHookInstalled(ops agentOps, path, bin string) bool {
+	b, _, err := readWithMode(ops, path)
+	if err != nil || b == nil {
+		return false
+	}
+	i := bytes.Index(b, []byte(agentsMarkerBegin))
+	if i < 0 {
+		return false
+	}
+	j := bytes.Index(b[i:], []byte(agentsMarkerEnd))
+	if j < 0 {
+		return false
+	}
+	return bytes.Contains(b[i:i+j], []byte(bin))
+}
+
 // hermesConfigRefusal reports, in a phrase that completes "config.yaml …",
 // why our block must not be appended to this configuration — or "" when
 // appending it is safe.

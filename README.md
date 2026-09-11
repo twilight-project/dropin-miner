@@ -44,8 +44,9 @@ searches into the spool, submit once, exit. Two flushes at once queue on a
 lock. A machine that never searches never runs one.
 
 The **trace** is how the router groups one task's searches. It comes from
-whichever of these the host allows: a hook that rewrites the shell command
-with `TOKENDROP_TRACE_BRIDGE=<envelope>` (Claude Code, opencode), a per-workspace
+whichever of these the host allows: a hook, plugin or extension that rewrites
+the shell command with `TOKENDROP_TRACE_BRIDGE=<envelope>` (Claude Code,
+opencode, Pi, Hermes), a per-workspace
 lineage file the hooks write and `search` reads (Cursor, and every host as a
 fallback), or a hashed per-shell identity when there is no hook at all. Every
 identifier is hashed before it leaves the machine; the assistant text just
@@ -62,8 +63,8 @@ transmission. Mining/AS receives metadata observations only.
 | Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
 | Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus the four tokendrop directories made writable — never the config, key or wallet) so searches record and the claim resumes |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
-| Pi | skill | full: an auto-discovered extension rewrites the bash command | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
-| Hermes | skill | full: a pre_tool_call hook rewrites the command | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
+| Pi | skill | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
+| Hermes | skill | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
 | anything else | rules line | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only hook entries that name this binary.

@@ -159,17 +159,29 @@ paste into `AGENTS.md`.
 **Pi** gets a skill in `~/.pi/agent/skills/dropin-miner/` and an
 auto-discovered extension in `~/.pi/agent/extensions/`. The extension rewrites
 the bash command that runs the search with the trace bridge, the way the Claude
-Code hook and the opencode plugin do — full session, turn and history lineage,
-not just per-shell.
+Code hook and the opencode plugin do: the session, the call, the assistant text
+that led to that particular search, and how many times the context window has
+compacted — read back from the session Pi itself persisted, so a resumed
+session keeps its place.
 
 **Hermes** gets a skill in its skills directory (`HERMES_HOME`, else
 `~/.hermes/skills/`) and a `pre_tool_call` hook in `config.yaml` that rewrites
-the search command with the trace bridge — full lineage, like Pi. Both load at
+the search command with the trace bridge. Less rides with it than with Pi, and
+that is a property of Hermes rather than a gap here: its hook payload carries
+the session, the tool call and the turn — which is what we send, each hashed —
+and no assistant text and no compaction state, so neither is sent. Both load at
 session start, so they take effect next launch. Two Hermes notes: it asks once
 to approve the hook the first time it fires (approve it, or start Hermes with
-`--accept-hooks`), and its shell tool lives in the `terminal`/`coding`
-toolsets, so run Hermes with one of those for the search to execute. All these
-agents earn the same as every other.
+`--accept-hooks`, `HERMES_ACCEPT_HOOKS=1`, or `hooks_auto_accept: true` — a
+run that cannot prompt and has none of those simply skips the hook), and its
+shell tool lives in the `terminal`/`coding` toolsets, so run Hermes with one of
+those for the search to execute. All these agents earn the same as every other.
+
+If your `config.yaml` already has a `hooks:` section of its own, install will
+not touch the file: it prints the four lines to paste under your own section
+instead. That refusal is deliberate and errs on the cautious side — YAML keeps
+the last of two identical keys and says nothing, so a config edited on a guess
+could lose the hooks you wrote, with no error to tell you.
 
 `dropin-miner agents uninstall` removes exactly those files and entries.
 

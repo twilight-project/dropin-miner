@@ -30,9 +30,10 @@ the tool (what an agent runs):
              served request for mining and starts a flush. Exit: 0=2xx,
              1=transport, 2=usage, 3=HTTP 4xx, 4=HTTP 5xx.
   agents     agents install|status|uninstall — find Claude Code, Codex,
-             Cursor and opencode on this machine and give each the search
-             skill and the hooks it supports. -dry-run previews, -yes skips
-             the prompt, -client <name> picks one.
+             Cursor, opencode, Pi and Hermes on this machine and give each
+             the search skill and the hooks it supports. -dry-run previews,
+             -yes skips the prompt, -client <name> picks one (claude, codex,
+             cursor, opencode, pi, hermes).
              agents prefer on|off — whether this search or the agent's own
              is the default (off keeps this one for when you name it);
              in the agent, /dropin-miner off and /dropin-miner on do the same

@@ -1,8 +1,10 @@
 package main
 
-// Pi and Hermes: two more skill-only agents. Both consume the same SKILL.md
-// dropin already renders, so install is a skill write, status reads it back,
-// and uninstall removes exactly it. Hermes' skills dir honors HERMES_HOME.
+// Pi and Hermes as agent surfaces: what install writes, what status reports
+// back, what `prefer` rewrites, and that uninstall removes exactly what was
+// written. The lineage channels themselves are tested next door — the Pi
+// extension in pi_extension_test.go (executed in Node), the Hermes hook and
+// its config handling in hermes_hook_test.go and hermes_install_test.go.
 // All identifiers are synthetic.
 
 import (
@@ -13,11 +15,13 @@ import (
 )
 
 // The JavaScript hosts cannot call isSearchCommand, so the shared trace
-// source carries a copy of the recognizer's pattern. This guard fails if that
-// copy ever drifts from the Go searchCommandRe — the one recognizer the Hermes
-// hook, the Cursor hook and Claude Code all go through — so no adapter can fall
-// back to a looser (e.g. substring) match without CI noticing. It is checked on
-// the shared source because that is now the only place the pattern exists.
+// source carries a copy of the recognizer's pattern. This guard fails if
+// that copy ever drifts from the Go searchCommandRe — the one recognizer
+// the Hermes hook, the Cursor hook and Claude Code all go through — so no
+// adapter can fall back to a looser (e.g. substring) match without CI
+// noticing. It is checked on the shared source because that is now the only
+// place the pattern exists: TestEveryJSHostRendersTheSharedTraceSource is
+// what proves both adapters actually get it.
 func TestPiExtensionRegexMatchesTheCanonicalRecognizer(t *testing.T) {
 	m := regexp.MustCompile(`SEARCH_RE\s*=\s*/(.*?)/\n`).FindStringSubmatch(agentTraceCommonJS)
 	if m == nil {
@@ -75,9 +79,12 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 		t.Errorf("Pi extension is not the lineage bridge:\n%s", s)
 	}
 
-	// Status reports both installed.
-	if _, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); !strings.Contains(out, "Pi") || !strings.Contains(out, "Hermes") {
-		t.Errorf("status omits Pi/Hermes:\n%s", out)
+	// Status reports both installed, and says which halves are present.
+	_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+	for _, want := range []string{"Pi", "installed (skill+extension)", "Hermes", "installed (skill+hook)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status missing %q:\n%s", want, out)
+		}
 	}
 
 	// A second install is a no-op for both.
@@ -92,6 +99,101 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 	for _, p := range []string{piSkillPath, piExtensionPath, hermesSkillPath} {
 		if _, ok := m.files[p]; ok {
 			t.Errorf("still present after uninstall: %s", p)
+		}
+	}
+}
+
+// A half-installed host is a state worth naming: the skill alone runs the
+// search but threads no lineage, and the lineage channel alone threads a
+// trace for a search the agent has no reason to run. Reporting either as
+// complete would answer "why is this not working" with "installed".
+func TestPiAndHermesStatusDistinguishesEachHalf(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{"nothing", nil, []string{"Pi           not on PATH  not installed", "Hermes       not on PATH  not installed"}},
+		{"skill only",
+			map[string]string{piSkillPath: "skill", hermesSkillPath: "skill"},
+			[]string{"installed (skill only)"}},
+		{"channel only",
+			map[string]string{
+				piExtensionPath:  "extension",
+				hermesConfigPath: string(hermesAppendBlock(nil, mustHermesYAML(t))),
+			},
+			[]string{"installed (extension only)", "installed (hook only)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ops := newFakeMachine()
+			for p, b := range tc.files {
+				m.files[p] = []byte(b)
+			}
+			_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("status missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// `agents prefer` has to reach every installed skill. A participant who
+// turns the default off and finds one agent still preferring this search
+// has been told something untrue by the command that printed "in effect
+// now, and in every agent from its next start".
+func TestAgentsPreferRewritesPiAndHermesSkills(t *testing.T) {
+	m, ops := newFakeMachine("claude", "codex", "cursor", "pi", "hermes")
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	if code, out, errOut := runAgents(t, ops, nil, "prefer", "off", "-config", testCfg); code != exitOK {
+		t.Fatalf("prefer off: %d\n%s%s", code, out, errOut)
+	}
+	for _, p := range []string{piSkillPath, hermesSkillPath} {
+		if s := string(m.files[p]); !strings.Contains(s, "turned OFF as the default") {
+			t.Errorf("%s was not rewritten by `prefer off`:\n%s", p, s)
+		}
+	}
+	if code, _, _ := runAgents(t, ops, nil, "prefer", "on", "-config", testCfg); code != exitOK {
+		t.Fatal("prefer on failed")
+	}
+	for _, p := range []string{piSkillPath, hermesSkillPath} {
+		if s := string(m.files[p]); strings.Contains(s, "turned OFF as the default") {
+			t.Errorf("%s was not rewritten back by `prefer on`:\n%s", p, s)
+		}
+	}
+}
+
+// `prefer` writes only files that are already ours: an agent with no skill
+// installed does not get one created behind the participant's back.
+func TestAgentsPreferDoesNotCreateAMissingPiOrHermesSkill(t *testing.T) {
+	m, ops := newFakeMachine("pi", "hermes")
+	if code, _, _ := runAgents(t, ops, nil, "prefer", "off", "-config", testCfg); code != exitOK {
+		t.Fatal("prefer off failed")
+	}
+	for _, p := range []string{piSkillPath, hermesSkillPath} {
+		if _, ok := m.files[p]; ok {
+			t.Errorf("prefer created a skill for an agent that had none: %s", p)
+		}
+	}
+}
+
+// Every implemented host appears in the -client guidance; a host that is
+// implemented but undocumented is one nobody can ask for by name.
+func TestClientGuidanceNamesEverySurface(t *testing.T) {
+	_, ops := newFakeMachine()
+	_, _, errOut := runAgents(t, ops, nil, "install", "-client", "nonesuch", "-config", testCfg)
+	for _, s := range agentSurfaces {
+		if !strings.Contains(errOut, s.id) {
+			t.Errorf("the unknown -client error omits %q:\n%s", s.id, errOut)
+		}
+		if !strings.Contains(agentsUsage, s.id) {
+			t.Errorf("agents usage omits -client %q", s.id)
+		}
+		if !strings.Contains(usageText, s.label) && !strings.Contains(usageText, s.id) {
+			t.Errorf("dropin-miner help omits %q", s.label)
 		}
 	}
 }
