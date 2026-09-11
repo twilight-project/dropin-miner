@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,7 @@ func doctorConfig(t *testing.T, asURL, stateDir, spoolDir string) string {
 }
 
 func quoteTOML(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	return strconv.Quote(value)
 }
 
 func TestDoctorMissingStateDoesNotCreateMiningStateOrDPoP(t *testing.T) {

@@ -158,8 +158,10 @@ func TestHealthIsBoundedRedactedAndComponentIndependent(t *testing.T) {
 	if len(decision.Detail) > healthDetailCap || strings.Contains(decision.Detail, secret) {
 		t.Fatalf("health detail was not bounded/redacted: %q", decision.Detail)
 	}
-	if mode, err := os.Stat(filepath.Join(store.dir, healthDecision)); err != nil || mode.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("health file mode is not owner-only: mode=%v err=%v", mode, err)
+	if posixModes {
+		if mode, err := os.Stat(filepath.Join(store.dir, healthDecision)); err != nil || mode.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("health file mode is not owner-only: mode=%v err=%v", mode, err)
+		}
 	}
 	if err := store.ClearHealth(HealthCapture); err != nil {
 		t.Fatal(err)
