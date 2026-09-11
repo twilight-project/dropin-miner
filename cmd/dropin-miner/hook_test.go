@@ -102,6 +102,8 @@ func hookMainWith(ops hookOps, hc hookContext, args []string, stdin *bytes.Reade
 		}
 	case "cursor":
 		hookCursor(ops, hc, args[1], payload, stdout)
+	case "hermes":
+		hookHermes(args[1], payload, stdout)
 	case "flush":
 		_ = ops.spawnFlush(hc.cfgPath)
 	default:
@@ -513,4 +515,56 @@ func cursorTestSearch(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return (binEntry{command: executable}).searchCommand() + ` "q"`
+}
+
+func TestHookHermesModifiesOurSearchCommand(t *testing.T) {
+	_, ops := newFakeHookOps(nil)
+	hc := hookContext{}
+	ours := map[string]any{
+		"hook_event_name": "pre_tool_call",
+		"tool_name":       "terminal",
+		"tool_input":      map[string]any{"command": `dropin-miner search -format model "x"`, "timeout": 30},
+		"session_id":      "conv-42",
+	}
+	out, _ := runHook(t, ops, hc, "hermes pre_tool_call", ours)
+	var resp struct {
+		Decision  string         `json:"decision"`
+		ToolInput map[string]any `json:"tool_input"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("output not a JSON directive: %v\n%s", err, out)
+	}
+	if resp.Decision != "modify" {
+		t.Errorf("decision = %q, want modify", resp.Decision)
+	}
+	if resp.ToolInput["timeout"] != float64(30) {
+		t.Errorf("timeout not preserved: %v", resp.ToolInput["timeout"])
+	}
+	cmd, _ := resp.ToolInput["command"].(string)
+	if !strings.HasPrefix(cmd, "TOKENDROP_TRACE_BRIDGE=") {
+		t.Fatalf("command not prefixed with the bridge: %q", cmd)
+	}
+	bridge := strings.SplitN(strings.TrimPrefix(cmd, "TOKENDROP_TRACE_BRIDGE="), " ", 2)[0]
+	env := decodeTraceBridge(bridge)
+	if env == nil || env.Harness != "hermes" {
+		t.Fatalf("bridge does not decode to a hermes envelope: %+v", env)
+	}
+	if env.SessionID != traceHash("conv-42") || env.SessionID == "conv-42" {
+		t.Errorf("session id not hashed: %q", env.SessionID)
+	}
+	if env.CallID == "" {
+		t.Error("no call id")
+	}
+	for name, p := range map[string]map[string]any{
+		"foreign command": {"tool_name": "terminal", "tool_input": map[string]any{"command": "ls -la"}, "session_id": "s"},
+		"already bridged": {"tool_name": "terminal", "tool_input": map[string]any{"command": "TOKENDROP_TRACE_BRIDGE=x dropin-miner search q"}, "session_id": "s"},
+		"no command":      {"tool_name": "read", "tool_input": map[string]any{"path": "/etc/hosts"}, "session_id": "s"},
+	} {
+		if out, _ := runHook(t, ops, hc, "hermes pre_tool_call", p); out != "" {
+			t.Errorf("%s: expected no directive, got %q", name, out)
+		}
+	}
+	if out, _ := runHook(t, ops, hc, "hermes post_tool_call", ours); out != "" {
+		t.Errorf("post_tool_call must be untouched, got %q", out)
+	}
 }

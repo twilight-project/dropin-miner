@@ -163,9 +163,13 @@ Code hook and the opencode plugin do — full session, turn and history lineage,
 not just per-shell.
 
 **Hermes** gets a skill in its skills directory (`HERMES_HOME`, else
-`~/.hermes/skills/`); Hermes loads skills at session start, so it picks the
-search up next time you launch it, threading a per-shell lineage. Both earn the
-same as every other agent.
+`~/.hermes/skills/`) and a `pre_tool_call` hook in `config.yaml` that rewrites
+the search command with the trace bridge — full lineage, like Pi. Both load at
+session start, so they take effect next launch. Two Hermes notes: it asks once
+to approve the hook the first time it fires (approve it, or start Hermes with
+`--accept-hooks`), and its shell tool lives in the `terminal`/`coding`
+toolsets, so run Hermes with one of those for the search to execute. All these
+agents earn the same as every other.
 
 `dropin-miner agents uninstall` removes exactly those files and entries.
 

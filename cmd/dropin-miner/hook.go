@@ -157,6 +157,10 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 		if len(args) > 1 {
 			hookCursor(ops, hc, args[1], payload, stdout)
 		}
+	case "hermes":
+		if len(args) > 1 {
+			hookHermes(args[1], payload, stdout)
+		}
 	case "flush":
 		if ops.spawnFlush != nil {
 			_ = ops.spawnFlush(hc.cfgPath)
@@ -521,6 +525,56 @@ type cursorPayload struct {
 // conversation updates the workspace's lineage file; the two events Cursor
 // waits on an answer for (sessionStart, beforeShellExecution) get exactly
 // the answer that lets the session proceed.
+// hermesHookPayload is the pre_tool_call wire Hermes sends a shell hook:
+// {hook_event_name, tool_name, tool_input, session_id, cwd}. We need the
+// tool's input (which for the shell tool carries "command") and the session.
+type hermesHookPayload struct {
+	ToolInput json.RawMessage `json:"tool_input"`
+	SessionID string          `json:"session_id"`
+}
+
+// hookHermes handles Hermes' pre_tool_call shell hook. On a shell command
+// that runs our search, it returns a modify directive prefixing the command
+// with TOKENDROP_TRACE_BRIDGE=<envelope> — Hermes' session threaded into the
+// search the same way the Claude hook and opencode plugin do. Any other
+// command, or any doubt, returns nothing: the tool call is untouched and the
+// search runs with its per-shell trace (fail-open). Matching is on the
+// command, not the tool name, so it holds whatever Hermes calls its shell.
+func hookHermes(event string, payload []byte, stdout io.Writer) {
+	if event != "pre_tool_call" {
+		return
+	}
+	var p hermesHookPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return
+	}
+	var input map[string]any
+	if err := json.Unmarshal(p.ToolInput, &input); err != nil || input == nil {
+		return
+	}
+	cmd, _ := input["command"].(string)
+	if !isSearchCommand(cmd) || strings.Contains(cmd, bridgeEnv+"=") {
+		return
+	}
+	env := &traceEnvelope{
+		V:         traceVersion,
+		Harness:   "hermes",
+		SessionID: traceHash(p.SessionID),
+		CallID:    traceRandomID(),
+		Window:    "none",
+	}
+	bridge, err := encodeTraceBridge(env)
+	if err != nil {
+		return
+	}
+	input["command"] = bridgeEnv + "=" + bridge + " " + cmd
+	out, err := json.Marshal(map[string]any{"decision": "modify", "tool_input": input})
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(stdout, string(out))
+}
+
 func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdout io.Writer) {
 	var p cursorPayload
 	if err := json.Unmarshal(payload, &p); err != nil {

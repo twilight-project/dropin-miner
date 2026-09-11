@@ -136,6 +136,7 @@ type agentPaths struct {
 	piSkill        string
 	piExtension    string
 	hermesSkill    string
+	hermesConfig   string
 }
 
 func (o agentOps) paths(getenv func(string) string) agentPaths {
@@ -162,26 +163,31 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 		piSkill:        filepath.Join(o.home, ".pi", "agent", "skills", agentsName, "SKILL.md"),
 		piExtension:    filepath.Join(o.home, ".pi", "agent", "extensions", agentsName+".ts"),
 		hermesSkill:    filepath.Join(hermesSkillsDir(o.home, getenv), agentsName, "SKILL.md"),
+		hermesConfig:   filepath.Join(hermesHomeDir(o.home, getenv), "config.yaml"),
 	}
 }
 
-// hermesSkillsDir mirrors Hermes' own resolution (hermes_constants.py):
+// hermesHomeDir mirrors Hermes' own resolution (hermes_constants.py):
 // HERMES_HOME wins; otherwise the platform default — %LOCALAPPDATA%\hermes on
-// Windows, ~/.hermes elsewhere — with skills under <home>/skills. Installs
-// land on machines we do not control, so we honor the override rather than
-// hardcode a single path.
-func hermesSkillsDir(home string, getenv func(string) string) string {
+// Windows, ~/.hermes elsewhere. Installs land on machines we do not control,
+// so we honor the override rather than hardcode a single path.
+func hermesHomeDir(home string, getenv func(string) string) string {
 	if h := strings.TrimSpace(getenv("HERMES_HOME")); h != "" {
-		return filepath.Join(h, "skills")
+		return h
 	}
 	if runtime.GOOS == "windows" {
 		base := strings.TrimSpace(getenv("LOCALAPPDATA"))
 		if base == "" {
 			base = filepath.Join(home, "AppData", "Local")
 		}
-		return filepath.Join(base, "hermes", "skills")
+		return filepath.Join(base, "hermes")
 	}
-	return filepath.Join(home, ".hermes", "skills")
+	return filepath.Join(home, ".hermes")
+}
+
+// hermesSkillsDir is <home>/skills, hermesConfigPath is <home>/config.yaml.
+func hermesSkillsDir(home string, getenv func(string) string) string {
+	return filepath.Join(hermesHomeDir(home, getenv), "skills")
 }
 
 // binEntry is how every host reaches the binary: its absolute path (agents
@@ -621,10 +627,14 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 		case "hermes":
-			if !planWrite(ops, s.label, paths.hermesSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
+			changed := planWrite(ops, s.label, paths.hermesSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
+			if planHermesHook(ops, s.label, paths.hermesConfig, entry, &p) {
+				changed = true
+			}
+			if !changed {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
-			p.notes = append(p.notes, s.label+": Hermes loads skills at session start, so this takes effect next session (or run `/skills install --now` inside Hermes)")
+			p.notes = append(p.notes, s.label+": takes effect next session; Hermes asks once to approve the hook the first time it fires — approve it, or launch with --accept-hooks. Its shell tool is in the terminal/coding toolsets.")
 		}
 	}
 	return p
@@ -885,6 +895,12 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface,
 			rm(paths.piExtension)
 		case "hermes":
 			rm(filepath.Dir(paths.hermesSkill))
+			if existing, mode, err := readWithMode(ops, paths.hermesConfig); err == nil && existing != nil {
+				if next, had := removeMarkedBlock(existing); had {
+					planWrite(ops, s.label, paths.hermesConfig, next, mode, "remove lineage hook", &p)
+					removed = true
+				}
+			}
 		}
 		if !removed {
 			p.skipped = append(p.skipped, s.label+": not installed")
@@ -1137,6 +1153,65 @@ func indentBlock(s string) string {
 		lines[i] = "    " + l
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ── Hermes lineage hook ──────────────────────────────────────────────────
+//
+// Hermes has no per-workspace lineage file and no in-process plugin we can
+// drop in, but it does run declared shell-script hooks: a `hooks:` block in
+// config.yaml, each entry a command that receives the tool call as JSON on
+// stdin and may return a modify directive. We register a pre_tool_call hook
+// that runs `dropin-miner hook hermes pre_tool_call`; on a terminal command
+// that runs our search it rewrites the command with the trace bridge. Since
+// config.yaml is YAML and the dependency budget is stdlib + toml (no YAML
+// parser), we append a marked block and refuse rather than rewrite a file
+// that already carries a hooks: section of its own.
+
+// planHermesHook adds (or refreshes) our marked hooks: block in Hermes'
+// config.yaml. Returns whether it planned a write.
+func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPlan) bool {
+	existing, mode, err := readWithMode(ops, path)
+	if err != nil {
+		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
+		return false
+	}
+	stripped, _ := removeMarkedBlock(existing)
+	if hasTopLevelHooks(stripped) {
+		p.refused = append(p.refused, fmt.Sprintf(
+			"%s: %s already has a hooks: section; add this pre_tool_call entry under it by hand:\n%s",
+			label, path, indentBlock(hermesHookYAML(entry))))
+		return false
+	}
+	next := appendMarkedBlock(stripped, hermesHookBlock(entry))
+	return planWrite(ops, label, path, next, mode, "pre_tool_call lineage hook", p)
+}
+
+// hasTopLevelHooks reports whether the YAML already declares a top-level
+// hooks: key (column 0) the tool did not write.
+func hasTopLevelHooks(b []byte) bool {
+	s := string(b)
+	return strings.HasPrefix(s, "hooks:") || strings.Contains(s, "\nhooks:")
+}
+
+func hermesHookCommand(entry binEntry) string {
+	cmd := fmt.Sprintf("%q hook", entry.command)
+	if entry.cfg != "" {
+		cmd += fmt.Sprintf(" -config %q", entry.cfg)
+	}
+	return cmd + " hermes pre_tool_call"
+}
+
+// hermesHookYAML is the hooks: mapping, single-quoted so the shell
+// double-quotes inside the command are literal YAML.
+func hermesHookYAML(entry binEntry) string {
+	return "hooks:\n" +
+		"  pre_tool_call:\n" +
+		"    - command: '" + hermesHookCommand(entry) + "'\n" +
+		"      matcher: \"terminal\"\n"
+}
+
+func hermesHookBlock(entry binEntry) []byte {
+	return []byte(agentsMarkerBegin + "\n" + hermesHookYAML(entry) + agentsMarkerEnd + "\n")
 }
 
 func decodeJSONObject(b []byte) (map[string]any, error) {

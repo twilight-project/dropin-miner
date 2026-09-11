@@ -98,3 +98,64 @@ func TestPiClientFlagInstallsOnlyPi(t *testing.T) {
 		t.Error("Hermes was touched despite -client pi")
 	}
 }
+
+const hermesConfigPath = "/home/u/.hermes/config.yaml"
+
+func TestHermesInstallRegistersHookAndUninstallRemovesIt(t *testing.T) {
+	m, ops := newFakeMachine("hermes")
+	// Hermes already has a config the tool must preserve.
+	m.files[hermesConfigPath] = []byte("database:\n  journal_mode: \"wal\"\n")
+
+	if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	got := string(m.files[hermesConfigPath])
+	for _, want := range []string{
+		"journal_mode",             // the user's config preserved
+		agentsMarkerBegin,          // our block
+		"hooks:", "pre_tool_call:", // the hook
+		"hermes pre_tool_call",  // our subcommand
+		"matcher: \"terminal\"", // fires on the shell tool
+		agentsMarkerEnd,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config.yaml missing %q:\n%s", want, got)
+		}
+	}
+	// Idempotent.
+	before := got
+	if code, _, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatal("second install failed")
+	}
+	if string(m.files[hermesConfigPath]) != before {
+		t.Error("second install was not idempotent")
+	}
+	// Uninstall removes only our block; the user's config survives.
+	if code, _, _ := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatal("uninstall failed")
+	}
+	left := string(m.files[hermesConfigPath])
+	if strings.Contains(left, agentsMarkerBegin) || strings.Contains(left, "pre_tool_call") {
+		t.Errorf("uninstall left our hook behind:\n%s", left)
+	}
+	if !strings.Contains(left, "journal_mode") {
+		t.Errorf("uninstall dropped the user's own config:\n%s", left)
+	}
+}
+
+func TestHermesInstallRefusesForeignHooksSection(t *testing.T) {
+	m, ops := newFakeMachine("hermes")
+	foreign := "hooks:\n  post_tool_call:\n    - command: \"my-own-hook\"\n"
+	m.files[hermesConfigPath] = []byte(foreign)
+
+	code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	if code != exitTransport {
+		t.Fatalf("expected a refusal exit, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "already has a hooks: section") {
+		t.Errorf("expected a refusal snippet, got:\n%s", out)
+	}
+	if string(m.files[hermesConfigPath]) != foreign {
+		t.Errorf("the user's own hooks section was modified:\n%s", m.files[hermesConfigPath])
+	}
+}

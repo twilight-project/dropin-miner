@@ -63,7 +63,7 @@ transmission. Mining/AS receives metadata observations only.
 | Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus the four tokendrop directories made writable — never the config, key or wallet) so searches record and the claim resumes |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | Pi | skill | full: an auto-discovered extension rewrites the bash command | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
-| Hermes | skill | per-shell | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/` (loads next session) |
+| Hermes | skill | full: a pre_tool_call hook rewrites the command | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
 | anything else | rules line | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only hook entries that name this binary.
