@@ -4,9 +4,10 @@ package main
 // coding agent on this machine — with a skill and hooks, never a tool
 // server.
 //
-//	agents install     detect Claude Code, Codex, Cursor and opencode on PATH
-//	                   and give each a skill naming `dropin-miner search`,
-//	                   plus the hooks that host supports
+//	agents install     detect Claude Code, Codex, Cursor, opencode, Pi and
+//	                   Hermes on PATH and give each a skill naming
+//	                   `dropin-miner search`, plus the hooks that host
+//	                   supports
 //	agents status      what is installed where, and which search is the default
 //	agents uninstall   take it all back out, and nothing else
 //	agents prefer      on|off: whether this search or the agent's own is the
@@ -33,6 +34,14 @@ package main
 //	opencode      an in-process plugin that prefixes our search command with
 //	              the bridge, the way the Claude hook does, plus a line to
 //	              paste into AGENTS.md (opencode has no skill directory).
+//	Pi            ~/.pi/agent/skills/dropin-miner/SKILL.md, and an
+//	              auto-discovered extension in ~/.pi/agent/extensions/ that
+//	              prefixes our search command with the bridge.
+//	Hermes        <HERMES_HOME or ~/.hermes>/skills/dropin-miner/SKILL.md,
+//	              and one pre_tool_call entry in config.yaml — a marked
+//	              block, appended only to a config we can read
+//	              conservatively enough to be sure we are not displacing
+//	              hooks of the participant's own.
 //
 // Every config edit is a JSON merge that adds our entries and nothing
 // else, refuses a file that is not plain JSON rather than rewrite it
@@ -64,6 +73,31 @@ var skillMD string
 
 //go:embed opencode_plugin.js
 var opencodePluginJS string
+
+//go:embed pi_extension.ts
+var piExtensionTS string
+
+//go:embed agent_trace_common.js
+var agentTraceCommonJS string
+
+// traceCommonMarker is the line a JavaScript host's template carries where
+// the shared trace-preparation source belongs.
+const traceCommonMarker = "// {{TRACE_COMMON}}"
+
+// renderAgentScript is what actually gets installed for a JavaScript or
+// TypeScript host: that host's own template with the one shared
+// trace-preparation source (agent_trace_common.js) spliced in. The
+// installed file stays standalone — no import of ours to resolve at
+// runtime, no npm, no bundler — while the scrub, the byte accounting and
+// the two caps live in exactly one place in the repository. Rendering,
+// rather than each adapter carrying its own copy, is the point: the
+// adapter builds the bridge, so an adapter whose scrub had drifted would
+// put raw assistant text into a process argument before the binary ever
+// saw it. TestEveryJSHostRendersTheSharedTraceSource keeps the marker
+// honest in both templates.
+func renderAgentScript(template string) string {
+	return strings.Replace(template, traceCommonMarker, strings.TrimRight(agentTraceCommonJS, "\n"), 1)
+}
 
 const (
 	agentsName        = "dropin-miner"
@@ -108,6 +142,8 @@ var agentSurfaces = []agentSurface{
 	{"codex", "Codex", "codex"},
 	{"cursor", "Cursor", "cursor"},
 	{"opencode", "opencode", "opencode"},
+	{"pi", "Pi", "pi"},
+	{"hermes", "Hermes", "hermes"},
 }
 
 func surfaceByID(id string) (agentSurface, bool) {
@@ -119,6 +155,18 @@ func surfaceByID(id string) (agentSurface, bool) {
 	return agentSurface{}, false
 }
 
+// surfaceIDs is every -client value, in one place: help, the unknown-client
+// error and the nothing-detected line all read from the same list the
+// installer itself iterates, so a host can never be implemented and then
+// left out of the guidance that tells people it exists.
+func surfaceIDs() string {
+	ids := make([]string, 0, len(agentSurfaces))
+	for _, s := range agentSurfaces {
+		ids = append(ids, s.id)
+	}
+	return strings.Join(ids, ", ")
+}
+
 type agentPaths struct {
 	claudeSkill    string
 	claudeSettings string
@@ -127,6 +175,10 @@ type agentPaths struct {
 	cursorSkill    string
 	cursorHooks    string
 	opencodePlugin string
+	piSkill        string
+	piExtension    string
+	hermesSkill    string
+	hermesConfig   string
 }
 
 func (o agentOps) paths(getenv func(string) string) agentPaths {
@@ -150,6 +202,10 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 		cursorSkill:    filepath.Join(o.home, ".cursor", "skills", agentsName, "SKILL.md"),
 		cursorHooks:    filepath.Join(o.home, ".cursor", "hooks.json"),
 		opencodePlugin: filepath.Join(xdg, "opencode", "plugins", agentsName+".js"),
+		piSkill:        filepath.Join(o.home, ".pi", "agent", "skills", agentsName, "SKILL.md"),
+		piExtension:    filepath.Join(o.home, ".pi", "agent", "extensions", agentsName+".ts"),
+		hermesSkill:    filepath.Join(hermesSkillsDir(o.home, getenv), agentsName, "SKILL.md"),
+		hermesConfig:   filepath.Join(hermesHomeDir(o.home, getenv), "config.yaml"),
 	}
 }
 
@@ -269,7 +325,7 @@ func cmdAgents(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 	return agentsMain(realAgentOps(), args, stdin, stdout, stderr, getenv)
 }
 
-const agentsUsage = `usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
+var agentsUsage = `usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
        dropin-miner agents prefer on|off|status [-config file]
   install     detect coding agents on PATH and give each the search skill and hooks
   status      what is installed where, and which search is the default
@@ -278,7 +334,7 @@ const agentsUsage = `usage: dropin-miner agents install|status|uninstall [-confi
               when named; on: this one is the default. Rewrites the installed
               skills so it takes effect in every agent (/dropin-miner off|on in
               the agent does the same)
-  -client     act on this agent only (claude, codex, cursor, opencode); repeatable
+  -client     act on this agent only (` + surfaceIDs() + `); repeatable
   -dry-run    print the plan, change nothing
   -yes        do not ask before writing
 `
@@ -337,7 +393,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 
 	fmt.Fprintf(stdout, "dropin-miner agents %s\n", sub)
 	if len(detected) == 0 && len(clients) == 0 {
-		fmt.Fprintln(stdout, "  no coding agent found on PATH (looked for: claude, codex, cursor, opencode)")
+		fmt.Fprintf(stdout, "  no coding agent found on PATH (looked for: %s)\n", surfaceIDs())
 	} else {
 		fmt.Fprintf(stdout, "  agents: %s\n", strings.Join(labels(selected), ", "))
 	}
@@ -440,8 +496,15 @@ func agentsPrefer(ops agentOps, args []string, stdout, stderr io.Writer, getenv 
 	// touched, and an agent with no skill gets none.
 	paths := ops.paths(getenv)
 	var p agentPlan
+	// Every host we install a skill for, not a subset: a participant who
+	// turns the default off and finds one agent still preferring this
+	// search has been told something untrue by the command that printed
+	// "in effect now". opencode is absent because it has no skill — its
+	// plugin carries no preference text — and creating one here would
+	// install a host the participant never asked for.
 	for _, sk := range []struct{ label, path string }{
 		{"Claude Code", paths.claudeSkill}, {"Codex", paths.codexSkill}, {"Cursor", paths.cursorSkill},
+		{"Pi", paths.piSkill}, {"Hermes", paths.hermesSkill},
 	} {
 		if _, err := ops.stat(sk.path); err != nil {
 			continue
@@ -486,7 +549,7 @@ func selectSurfaces(ops agentOps, clients []string) (selected, detected []agentS
 	for _, c := range clients {
 		s, ok := surfaceByID(strings.ToLower(strings.TrimSpace(c)))
 		if !ok {
-			return nil, detected, fmt.Errorf("unknown -client %q (claude, codex, cursor, opencode)", c)
+			return nil, detected, fmt.Errorf("unknown -client %q (%s)", c, surfaceIDs())
 		}
 		selected = append(selected, s)
 	}
@@ -576,11 +639,28 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 		case "opencode":
-			js := strings.ReplaceAll(opencodePluginJS, "{{BINARY}}", entry.command)
+			js := renderAgentScript(opencodePluginJS)
 			if !planWrite(ops, s.label, paths.opencodePlugin, []byte(js), 0o600, "lineage plugin", &p) {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 			p.notes = append(p.notes, s.label+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
+		case "pi":
+			changed := planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
+			if planWrite(ops, s.label, paths.piExtension, []byte(renderAgentScript(piExtensionTS)), 0o600, "lineage extension", &p) {
+				changed = true
+			}
+			if !changed {
+				p.skipped = append(p.skipped, s.label+": already installed")
+			}
+		case "hermes":
+			changed := planWrite(ops, s.label, paths.hermesSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
+			if planHermesHook(ops, s.label, paths.hermesConfig, entry, &p) {
+				changed = true
+			}
+			if !changed {
+				p.skipped = append(p.skipped, s.label+": already installed")
+			}
+			p.notes = append(p.notes, s.label+": takes effect next session; Hermes asks once to approve the hook the first time it fires — approve it, or launch with --accept-hooks. Its shell tool is in the terminal/coding toolsets.")
 		}
 	}
 	return p
@@ -836,6 +916,17 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface,
 			}
 		case "opencode":
 			rm(paths.opencodePlugin)
+		case "pi":
+			rm(filepath.Dir(paths.piSkill))
+			rm(paths.piExtension)
+		case "hermes":
+			rm(filepath.Dir(paths.hermesSkill))
+			if existing, mode, err := readWithMode(ops, paths.hermesConfig); err == nil && existing != nil {
+				if next, had := hermesRemoveBlock(existing); had {
+					planWrite(ops, s.label, paths.hermesConfig, next, mode, "remove lineage hook", &p)
+					removed = true
+				}
+			}
 		}
 		if !removed {
 			p.skipped = append(p.skipped, s.label+": not installed")
@@ -897,6 +988,32 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected [
 		case "opencode":
 			if exists(paths.opencodePlugin) {
 				state = "installed (plugin)"
+			}
+		// Pi and Hermes each have two halves, and a half-installed host is
+		// the state worth naming: the skill alone teaches the agent to run
+		// the search but threads no lineage, and the extension or hook
+		// alone threads lineage for a search the agent has no reason to
+		// run. Reporting either as simply "installed" would answer the
+		// question the participant is actually asking — why is this not
+		// working — with the word "installed".
+		case "pi":
+			switch {
+			case exists(paths.piSkill) && exists(paths.piExtension):
+				state = "installed (skill+extension)"
+			case exists(paths.piSkill):
+				state = "installed (skill only)"
+			case exists(paths.piExtension):
+				state = "installed (extension only)"
+			}
+		case "hermes":
+			hooked := hermesHookInstalled(ops, paths.hermesConfig, entry)
+			switch {
+			case exists(paths.hermesSkill) && hooked:
+				state = "installed (skill+hook)"
+			case exists(paths.hermesSkill):
+				state = "installed (skill only)"
+			case hooked:
+				state = "installed (hook only)"
 			}
 		}
 		found := "not on PATH"

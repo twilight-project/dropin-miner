@@ -9,6 +9,23 @@ subjects wouldn't make obvious on its own.
 
 ## Unreleased
 
+- **Pi and Hermes are supported hosts**, each with a skill and its own
+  lineage channel: an auto-discovered extension for Pi
+  (`~/.pi/agent/extensions/`), a `pre_tool_call` hook in `config.yaml` for
+  Hermes. What rides with a search differs by host and is now described
+  honestly in both places it is documented — Pi carries the session, the
+  call, the assistant text that led to that search and the context-window
+  generation; Hermes' hook payload exposes no assistant text and no
+  compaction state, so it carries the session, call and turn only. Every
+  identifier is hashed before it leaves the machine, and the assistant text
+  Pi sends is redacted and capped *in the extension*, before it is ever put
+  on a command line. Two behaviors worth knowing: Hermes asks once to
+  approve the hook (or `--accept-hooks`), and a `config.yaml` that already
+  has a `hooks:` section of its own is left untouched with the snippet
+  printed to paste, rather than edited on a guess — YAML silently keeps the
+  last of two identical keys, so guessing wrong would delete hooks you
+  wrote. `agents prefer`, `agents status` and `-client` all know both hosts.
+
 - **Wallet custody hardening: exclusive/recoverable creation, a bounded keyfile
   decoder, a send journal, and a stricter confirmation rule.** Wallet creation
   (`wallet init` and `mining enable`'s address question) now goes through one

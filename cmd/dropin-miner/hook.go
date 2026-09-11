@@ -157,6 +157,10 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 		if len(args) > 1 {
 			hookCursor(ops, hc, args[1], payload, stdout)
 		}
+	case "hermes":
+		if len(args) > 1 {
+			hookHermes(args[1], payload, stdout)
+		}
 	case "flush":
 		if ops.spawnFlush != nil {
 			_ = ops.spawnFlush(hc.cfgPath)

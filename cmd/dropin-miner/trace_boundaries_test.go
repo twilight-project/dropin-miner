@@ -120,7 +120,12 @@ func TestOpencodeRedactionBoundaries(t *testing.T) {
 	cases["email_leading_punctuation"] = ".+syntheticperson012345@example.test"
 	cases["ordinary_prose"] = "bearer tokens expire soon; ssh deploy@example.test; git@example.test:repo; https://example.test/home/page"
 	cases["utf8_tail"] = strings.Repeat("界", traceHistoryCap/3+2)
-	input, _ := json.Marshal(map[string]any{"plugin": opencodePluginJS, "cases": cases})
+	// The rendered artifact — the template with the shared trace-preparation
+	// source spliced in — is what `agents install` actually writes, so it is
+	// what this acceptance test executes. Every assertion below is unchanged
+	// from before the shared source existed: the migration is mechanical or
+	// this test says otherwise.
+	input, _ := json.Marshal(map[string]any{"plugin": renderAgentScript(opencodePluginJS), "cases": cases})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script) // #nosec G204 -- fixed test script and local Node runtime; synthetic input on stdin
@@ -148,6 +153,146 @@ func TestOpencodeRedactionBoundaries(t *testing.T) {
 			assertPreparedHistory(t, env.History[0].Text, text)
 		})
 	}
+}
+
+// The single-source-of-truth guard. Each JavaScript host keeps its own
+// standalone artifact — that is what the host loads — but the scrub and the
+// caps inside it are spliced from one file. What makes that real rather
+// than aspirational is that neither template contains the logic at all: a
+// drifted second copy cannot exist in a file that has no copy.
+func TestEveryJSHostRendersTheSharedTraceSource(t *testing.T) {
+	shared := strings.TrimRight(agentTraceCommonJS, "\n")
+	for name, template := range map[string]string{"opencode": opencodePluginJS, "pi": piExtensionTS} {
+		t.Run(name, func(t *testing.T) {
+			if n := strings.Count(template, traceCommonMarker); n != 1 {
+				t.Fatalf("template carries the trace-common marker %d times, want exactly 1", n)
+			}
+			rendered := renderAgentScript(template)
+			if !strings.Contains(rendered, shared) {
+				t.Fatal("the rendered artifact does not contain the shared source verbatim")
+			}
+			if strings.Contains(rendered, traceCommonMarker) {
+				t.Fatal("the rendered artifact still carries an unexpanded marker")
+			}
+			// The template's own text must hold none of the shared logic:
+			// no redaction, no caps, no second recognizer.
+			for _, forked := range []string{"[REDACTED]", "32 * 1024", "48 * 1024", "256 * 1024", "createHash", "SEARCH_RE ="} {
+				if strings.Contains(template, forked) {
+					t.Errorf("the %s template carries its own copy of %q instead of using the shared source", name, forked)
+				}
+			}
+			// And the rendered artifact must have exactly one of each.
+			for _, once := range []string{"const scrubTraceText", "const prepareTraceHistory", "const traceBridge", "const SEARCH_RE"} {
+				if n := strings.Count(rendered, once); n != 1 {
+					t.Errorf("rendered %s has %d definitions of %q, want 1", name, n, once)
+				}
+			}
+		})
+	}
+}
+
+// The shared source, executed directly: the same canaries the Go and
+// opencode boundary tests use, plus the four budget edges, asserted against
+// the functions both adapters actually call.
+func TestSharedTraceSourceRedactionBoundaries(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to verify the shared trace-preparation source")
+	}
+	script := `
+ const fs = await import('node:fs');
+ const input = JSON.parse(fs.readFileSync(0,'utf8'));
+ const src = input.shared + "\nexport { prepareTraceHistory, traceBridge, needsTraceBridge, traceHash };";
+ const m = await import('data:text/javascript;base64,'+Buffer.from(src).toString('base64'));
+ const result = {};
+ for (const [name, parts] of Object.entries(input.cases)) {
+  const text = m.prepareTraceHistory(parts);
+  const env = { v: 1, harness: 'test', session_id: m.traceHash('s') };
+  if (text) env.history = [{ role: 'assistant', text }];
+  result[name] = { text, bridge: m.traceBridge(env), history: env.history ? env.history.length : 0 };
+ }
+ // An envelope too large even with no history at all: no bridge.
+ const huge = { v: 1, harness: 'test', session_id: 'x'.repeat(input.envelopeCap + 1) };
+ result['__no_bridge'] = { bridge: m.traceBridge(huge), history: huge.history ? 1 : 0 };
+ process.stdout.write(JSON.stringify(result));`
+
+	textCases := traceBoundaryInputs()
+	cases := map[string][]map[string]string{}
+	for name, text := range textCases {
+		cases[name] = []map[string]string{{"type": "text", "text": text}}
+	}
+	// The complete source budget is measured in BYTES across all parts,
+	// joined with one newline each — over it, the entry is omitted whole
+	// rather than sliced, because slicing is what hides a severed secret
+	// from the scrubber.
+	cases["source_budget"] = []map[string]string{{"type": "text", "text": strings.Repeat("x", hookTailBytes+1)}}
+	cases["max_source"] = []map[string]string{{"type": "text", "text": strings.Repeat("x", hookTailBytes)}}
+	cases["source_budget_across_parts"] = []map[string]string{
+		{"type": "text", "text": strings.Repeat("x", hookTailBytes/2)},
+		{"type": "text", "text": strings.Repeat("y", hookTailBytes/2)},
+	}
+	cases["utf8_source_budget"] = []map[string]string{{"type": "text", "text": strings.Repeat("界", hookTailBytes/3+1)}}
+	cases["history_cap"] = []map[string]string{{"type": "text", "text": strings.Repeat("z", traceHistoryCap*2)}}
+	cases["envelope_drops_history"] = []map[string]string{{"type": "text", "text": strings.Repeat("\"", traceHistoryCap)}}
+
+	input, _ := json.Marshal(map[string]any{"shared": agentTraceCommonJS, "cases": cases, "envelopeCap": traceEnvelopeCap})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script) // #nosec G204 -- fixed test script and local Node runtime; synthetic input on stdin
+	cmd.Stdin = strings.NewReader(string(input))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("shared source: %v\n%s", err, output)
+	}
+	var results map[string]struct {
+		Text    *string `json:"text"`
+		Bridge  *string `json:"bridge"`
+		History int     `json:"history"`
+	}
+	if err := json.Unmarshal(output, &results); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, text := range textCases {
+		t.Run(name, func(t *testing.T) {
+			got := results[name]
+			if got.Text == nil {
+				t.Fatal("a bounded source was omitted whole")
+			}
+			assertPreparedHistory(t, *got.Text, text)
+		})
+	}
+	t.Run("over the source budget is omitted whole", func(t *testing.T) {
+		for _, name := range []string{"source_budget", "source_budget_across_parts", "utf8_source_budget"} {
+			if got := results[name]; got.Text != nil {
+				t.Errorf("%s: sliced an over-budget source instead of omitting it (%d bytes kept)", name, len(*got.Text))
+			}
+		}
+		if results["max_source"].Text == nil {
+			t.Error("a source exactly at the budget was omitted")
+		}
+	})
+	t.Run("history is capped at the tail", func(t *testing.T) {
+		got := results["history_cap"]
+		if got.Text == nil || len(*got.Text) != traceHistoryCap {
+			t.Fatalf("history was not capped to %d bytes: %v", traceHistoryCap, got.Text)
+		}
+	})
+	t.Run("an oversized envelope drops history first", func(t *testing.T) {
+		got := results["envelope_drops_history"]
+		if got.Bridge == nil {
+			t.Fatal("no bridge at all, when dropping history would have been enough")
+		}
+		env := decodeTraceBridge(*got.Bridge)
+		if env == nil || len(env.History) != 0 {
+			t.Fatalf("history survived an oversized envelope: %+v", env)
+		}
+	})
+	t.Run("an envelope oversized without history yields no bridge", func(t *testing.T) {
+		if b := results["__no_bridge"].Bridge; b != nil {
+			t.Fatalf("a bridge was built past the envelope cap (%d bytes)", len(*b))
+		}
+	})
 }
 
 func TestTraceSourceBudget(t *testing.T) {

@@ -102,6 +102,8 @@ func hookMainWith(ops hookOps, hc hookContext, args []string, stdin *bytes.Reade
 		}
 	case "cursor":
 		hookCursor(ops, hc, args[1], payload, stdout)
+	case "hermes":
+		hookHermes(args[1], payload, stdout)
 	case "flush":
 		_ = ops.spawnFlush(hc.cfgPath)
 	default:
