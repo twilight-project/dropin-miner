@@ -153,6 +153,194 @@ func TestFlushNeverDialsTheRouterEvenOnFailure(t *testing.T) {
 	}
 }
 
+func seedIntakeRecord(t *testing.T, intakeDir, requestID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := writeIntake(intakeDir, intakeRecord{
+		RequestID:      requestID,
+		StatusCode:     http.StatusOK,
+		StartedAt:      now,
+		FinishedAt:     now,
+		ChosenProvider: "fictional",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFlushCurrentTargetFailurePersistsHealthAndUsesDeliverOnly(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.targetStatus = http.StatusServiceUnavailable })
+	f := newFlushFixture(t, as)
+	seedIntakeRecord(t, f.cfg.Miner.IntakeDir, "current-target-failure")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	_, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	if records, _, err := readIntake(f.cfg.Miner.IntakeDir); err != nil || len(records) != 1 {
+		t.Fatalf("current-target failure changed intake: records=%d err=%v", len(records), err)
+	}
+	if got := spoolCount(t, f.cfg.Mining.SpoolDir); got != 0 {
+		t.Fatalf("current-target failure promoted %d observation(s)", got)
+	}
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok {
+		t.Fatalf("flush health missing after current-target failure: ok=%v err=%v", ok, err)
+	}
+	if record.Component != auth.HealthFlush || record.Reason != auth.HealthSubmissionFailed {
+		t.Fatalf("current-target health = %+v, want flush/submission_failed", record)
+	}
+	if !strings.HasPrefix(record.Detail, currentTargetHealthPrefix) {
+		t.Fatalf("current-target detail = %q, want prefix %q", record.Detail, currentTargetHealthPrefix)
+	}
+	if !strings.Contains(stderr.String(), "no target epoch this run") {
+		t.Fatalf("deliverOnly behavior was not preserved: stderr=%q", stderr.String())
+	}
+}
+
+func TestFlushCurrentTargetAuthFailureUsesAuthStateHealth(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.tokenStatus = http.StatusUnauthorized })
+	f := newFlushFixture(t, as)
+	seedIntakeRecord(t, f.cfg.Miner.IntakeDir, "current-target-auth-failure")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	_, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok {
+		t.Fatalf("flush health missing after auth current-target failure: ok=%v err=%v", ok, err)
+	}
+	if record.Component != auth.HealthFlush || record.Reason != auth.HealthAuthUnavailable {
+		t.Fatalf("auth current-target health = %+v, want flush/auth_state_unavailable", record)
+	}
+	if !strings.HasPrefix(record.Detail, currentTargetHealthPrefix) {
+		t.Fatalf("auth current-target detail = %q, want prefix %q", record.Detail, currentTargetHealthPrefix)
+	}
+}
+
+func TestSuccessfulCurrentTargetClearsOnlyTargetResolutionHealth(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.targetStatus = http.StatusServiceUnavailable })
+	f := newFlushFixture(t, as)
+	seedIntakeRecord(t, f.cfg.Miner.IntakeDir, "current-target-recovery")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("failed-target flush exit %d: %s", code, stderr.String())
+	}
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || !ok {
+		t.Fatalf("target-resolution health was not recorded: ok=%v err=%v", ok, err)
+	}
+
+	as.set(func(s *asState) {
+		s.targetStatus, s.epoch, s.joinable, s.acceptSubmissions = 0, 1042, false, true
+	})
+	stdout.Reset()
+	stderr.Reset()
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("recovery flush exit %d: %s", code, stderr.String())
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || ok {
+		t.Fatalf("target-resolution health survived successful resolution: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthFlushSpawnFailed, "spawn remains broken"); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("unrelated-health flush exit %d: %s", code, stderr.String())
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok || record.Reason != auth.HealthFlushSpawnFailed {
+		t.Fatalf("successful target lookup cleared unrelated health: record=%+v ok=%v err=%v", record, ok, err)
+	}
+}
+
+func TestFlushNoOpenTargetIsNormalAndKeepsIntake(t *testing.T) {
+	as := newFakeAS(t)
+	f := newFlushFixture(t, as)
+	seedIntakeRecord(t, f.cfg.Miner.IntakeDir, "no-open-target")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	_, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || ok {
+		t.Fatalf("no-open-target created flush health: ok=%v err=%v", ok, err)
+	}
+	if records, _, err := readIntake(f.cfg.Miner.IntakeDir); err != nil || len(records) != 1 {
+		t.Fatalf("no-open-target changed intake: records=%d err=%v", len(records), err)
+	}
+	if got := spoolCount(t, f.cfg.Mining.SpoolDir); got != 0 {
+		t.Fatalf("no-open-target promoted %d observation(s)", got)
+	}
+	if !strings.Contains(stderr.String(), "no target epoch this run") {
+		t.Fatalf("deliverOnly behavior missing for no-open-target: %q", stderr.String())
+	}
+}
+
+func TestFlushMissingCurrentTargetEndpointIsNormal(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.advertise, s.epoch = false, 1042 })
+	f := newFlushFixture(t, as)
+	seedIntakeRecord(t, f.cfg.Miner.IntakeDir, "missing-current-target-endpoint")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	_, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || ok {
+		t.Fatalf("missing endpoint created flush health: ok=%v err=%v", ok, err)
+	}
+	if records, _, err := readIntake(f.cfg.Miner.IntakeDir); err != nil || len(records) != 1 {
+		t.Fatalf("missing endpoint changed intake: records=%d err=%v", len(records), err)
+	}
+	if !strings.Contains(stderr.String(), "no current-target endpoint") {
+		t.Fatalf("existing endpoint warning disappeared: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no target epoch this run") {
+		t.Fatalf("deliverOnly behavior missing for missing endpoint: %q", stderr.String())
+	}
+}
+
 // seedSpoolRecord writes one durable spool record under (slotID, epoch),
 // the way promoteIntake would have on some earlier flush.
 func seedSpoolRecord(t *testing.T, spoolDir string, slotID, epoch uint64) {

@@ -8,8 +8,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/redact"
@@ -191,21 +194,62 @@ func (d *epochDriver) tick(ctx context.Context) {
 	reqCtx, cancel := context.WithTimeout(ctx, driverTickTimeout)
 	defer cancel()
 
-	epoch, ok := d.target(reqCtx)
-	if !ok {
+	target := d.target(reqCtx)
+	if target.state != targetResolved {
 		return
 	}
-	d.joinIfNeeded(reqCtx, epoch)
-	d.ensure(reqCtx, epoch)
+	d.joinIfNeeded(reqCtx, target.epoch)
+	d.ensure(reqCtx, target.epoch)
+}
+
+type targetState uint8
+
+const (
+	targetResolved targetState = iota
+	targetNoOpen
+	targetEndpointAbsent
+	targetResolutionFailed
+)
+
+// targetResult keeps the three current-target outcomes distinct for callers.
+// queried says whether a live current-target request established the result;
+// a pinned epoch is resolved locally and must not clear current-target health.
+type targetResult struct {
+	state       targetState
+	epoch       uint64
+	err         error
+	authFailure bool
+	queried     bool
+}
+
+// targetAuthFailure preserves the existing OAuth/credential classification:
+// token-endpoint refusals are oauth2.RetrieveError values, while a missing
+// refresh authorization and an AS 401/403 are explicit authorization faults.
+// Discovery, transport, and other current-target failures remain ordinary
+// target-resolution failures.
+func targetAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		return true
+	}
+	text := err.Error()
+	return strings.Contains(text, "no refresh authorization") ||
+		strings.Contains(text, "auth: AS refused with status 401") ||
+		strings.Contains(text, "auth: AS refused with status 403") ||
+		strings.Contains(text, "auth: AS refused (401 ") ||
+		strings.Contains(text, "auth: AS refused (403 ")
 }
 
 // target resolves the epoch this tick works on: the operator's pin when
 // there is one, otherwise whatever the AS currently offers.
-func (d *epochDriver) target(ctx context.Context) (uint64, bool) {
+func (d *epochDriver) target(ctx context.Context) targetResult {
 	if d.pinned != nil {
 		// Pinned means pinned: no query, so this path also works
 		// against an AS that cannot answer one.
-		return *d.pinned, true
+		return targetResult{state: targetResolved, epoch: *d.pinned}
 	}
 	t, err := d.mining.CurrentTarget(ctx)
 	switch {
@@ -217,7 +261,7 @@ func (d *epochDriver) target(ctx context.Context) (uint64, bool) {
 		// up without restarting the proxy.
 		d.once(ctx, slog.LevelWarn, noteTarget,
 			"mining: this AS advertises no current-target endpoint; upgrade it, or pin mining.target_epoch", err)
-		return 0, false
+		return targetResult{state: targetEndpointAbsent, err: err, queried: true}
 	case err != nil:
 		// credentialLevel, NOT Debug — and this is the site that matters
 		// most for it.
@@ -237,16 +281,16 @@ func (d *epochDriver) target(ctx context.Context) (uint64, bool) {
 		// every tick by design, and nobody should be told the proxy is
 		// broken when it is merely not joined yet.
 		d.once(ctx, d.credentialLevel(), noteTarget, "mining: current target unavailable", err)
-		return 0, false
+		return targetResult{state: targetResolutionFailed, err: err, authFailure: targetAuthFailure(err), queried: true}
 	}
 	d.clear(noteTarget)
 	if t == nil {
 		// 200 with nothing open is an answer, not a fault: the slot is
 		// between targets. Nothing to do, and nothing to say about it —
 		// this is the ordinary state for most of an epoch boundary.
-		return 0, false
+		return targetResult{state: targetNoOpen, queried: true}
 	}
-	return t.TargetEpoch, true
+	return targetResult{state: targetResolved, epoch: t.TargetEpoch, queried: true}
 }
 
 // joinIfNeeded enrolls for epoch, at most once.

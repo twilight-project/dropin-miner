@@ -32,6 +32,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
@@ -40,9 +41,41 @@ import (
 	"github.com/twilight-project/dropin-miner/pkg/mining/promote"
 	"github.com/twilight-project/dropin-miner/pkg/mining/scope"
 	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
+	"github.com/twilight-project/dropin-miner/pkg/redact"
 )
 
 const flushDefaultTimeout = 90 * time.Second
+
+const currentTargetHealthPrefix = "current-target resolution failed: "
+
+func markCurrentTargetHealth(store *auth.Store, target targetResult) {
+	if store == nil || target.state != targetResolutionFailed || target.err == nil {
+		return
+	}
+	reason := auth.HealthSubmissionFailed
+	if target.authFailure {
+		reason = auth.HealthAuthUnavailable
+	}
+	detail := currentTargetHealthPrefix + redact.Error(target.err).Error()
+	_ = store.MarkHealth(auth.HealthFlush, reason, detail)
+}
+
+// clearCurrentTargetHealth clears only the flush record produced by a
+// current-target resolution failure. Delivery failures and lifecycle faults
+// use the same public reason vocabulary but are not proved recovered by a
+// successful target lookup.
+func clearCurrentTargetHealth(store *auth.Store) {
+	if store == nil {
+		return
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok || !strings.HasPrefix(record.Detail, currentTargetHealthPrefix) {
+		return
+	}
+	if record.Reason == auth.HealthAuthUnavailable || record.Reason == auth.HealthSubmissionFailed {
+		_ = store.ClearHealth(auth.HealthFlush)
+	}
+}
 
 func markFlushHealthFromConfig(cfgPath string, getenv func(string) string, reason auth.HealthReason, detail string) {
 	cfg, _, err := loadConfig(cfgPath, getenv)
@@ -204,8 +237,12 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	case fresh:
 		epoch = stamp.TargetEpoch
 	default:
-		e, ok := driver.target(ctx)
-		if !ok {
+		target := driver.target(ctx)
+		if target.state != targetResolved {
+			markCurrentTargetHealth(store, target)
+			if target.queried && target.state == targetNoOpen {
+				clearCurrentTargetHealth(store)
+			}
 			// driver.target already said why, once. Intake stays for the
 			// next flush; the spool may still drain if it holds records
 			// for an epoch we joined earlier.
@@ -213,7 +250,10 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 			_ = writeFlushStamp(stampPath, stamp)
 			return rep, deliverOnly(ctx, cfg, mining, caps, store, &rep, stderr)
 		}
-		epoch = e
+		if target.queried {
+			clearCurrentTargetHealth(store)
+		}
+		epoch = target.epoch
 		driver.joinIfNeeded(ctx, epoch)
 		driver.ensure(ctx, epoch)
 		rep.AskedAS = true
