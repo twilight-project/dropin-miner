@@ -14,17 +14,33 @@ package main
 // All paths and identifiers here are synthetic.
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func hermesEntry(bin, cfg string) binEntry { return binEntry{command: bin, cfg: cfg} }
 
+// testBinEntry is the binEntry `agents` actually resolves on the fake
+// machine: its executable, and testCfg made absolute exactly as
+// resolveEntry does it. The absolute part matters — on Windows that adds a
+// drive letter, so an entry built from the literal testCfg describes a
+// config this installation would never have written, and a fixture built
+// from it silently stops being the thing under test.
+func testBinEntry(t *testing.T, bin string) binEntry {
+	t.Helper()
+	abs, err := filepath.Abs(testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binEntry{command: bin, cfg: abs}
+}
+
 // mustHermesYAML is the hook block as it would be installed here, for
 // tests that need a config that already carries ours.
 func mustHermesYAML(t *testing.T) string {
 	t.Helper()
-	body, ok := hermesHookYAML(binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: testCfg})
+	body, ok := hermesHookYAML(testBinEntry(t, "/home/u/.tokendrop/bin/dropin-miner"))
 	if !ok {
 		t.Fatal("could not render the Hermes hook YAML")
 	}
@@ -389,8 +405,10 @@ func TestHermesStatusRecognizesOurHookForAnyBinaryPath(t *testing.T) {
 // "is some hook of ours here". A block left by another installation is not
 // this installation being complete.
 func TestHermesStatusDoesNotClaimAnotherInstallsHook(t *testing.T) {
+	// Each stale entry differs from this installation's in exactly one way,
+	// so a pass cannot come from some unrelated mismatch.
 	for name, stale := range map[string]binEntry{
-		"another binary": {command: "/somewhere/else/bin/dropin-miner", cfg: testCfg},
+		"another binary": testBinEntry(t, "/somewhere/else/bin/dropin-miner"),
 		"another config": {command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/somewhere/else/tokendrop.toml"},
 		"no config":      {command: "/home/u/.tokendrop/bin/dropin-miner"},
 	} {

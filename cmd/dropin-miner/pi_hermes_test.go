@@ -108,28 +108,40 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 // trace for a search the agent has no reason to run. Reporting either as
 // complete would answer "why is this not working" with "installed".
 func TestPiAndHermesStatusDistinguishesEachHalf(t *testing.T) {
+	// Each half state is produced by installing for real and then taking one
+	// half away, rather than by hand-building the files. A fixture written
+	// from the literal testCfg is not what this installation would ever have
+	// written: resolveEntry makes the config path absolute — drive-lettered
+	// on Windows — so the hand-built hook names a config that does not match,
+	// status rightly declines to claim it, and the test fails on Windows for
+	// a reason that has nothing to do with what it is checking.
+	installed := func(t *testing.T, remove ...string) string {
+		t.Helper()
+		m, ops := newFakeMachine("pi", "hermes")
+		if code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install: %d\n%s", code, out)
+		}
+		for _, p := range remove {
+			if _, ok := m.files[p]; !ok {
+				t.Fatalf("install did not write %s, so removing it proves nothing", p)
+			}
+			delete(m.files, p)
+		}
+		_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+		return out
+	}
+
 	for _, tc := range []struct {
-		name  string
-		files map[string]string
-		want  []string
+		name   string
+		remove []string
+		want   []string
 	}{
-		{"nothing", nil, []string{"Pi           not on PATH  not installed", "Hermes       not on PATH  not installed"}},
-		{"skill only",
-			map[string]string{piSkillPath: "skill", hermesSkillPath: "skill"},
-			[]string{"installed (skill only)"}},
-		{"channel only",
-			map[string]string{
-				piExtensionPath:  "extension",
-				hermesConfigPath: string(hermesAppendBlock(nil, mustHermesYAML(t))),
-			},
-			[]string{"installed (extension only)", "installed (hook only)"}},
+		{"both halves", nil, []string{"installed (skill+extension)", "installed (skill+hook)"}},
+		{"skill only", []string{piExtensionPath, hermesConfigPath}, []string{"installed (skill only)"}},
+		{"channel only", []string{piSkillPath, hermesSkillPath}, []string{"installed (extension only)", "installed (hook only)"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, ops := newFakeMachine()
-			for p, b := range tc.files {
-				m.files[p] = []byte(b)
-			}
-			_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+			out := installed(t, tc.remove...)
 			for _, want := range tc.want {
 				if !strings.Contains(out, want) {
 					t.Errorf("status missing %q:\n%s", want, out)
@@ -137,6 +149,16 @@ func TestPiAndHermesStatusDistinguishesEachHalf(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("nothing", func(t *testing.T) {
+		_, ops := newFakeMachine()
+		_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+		for _, want := range []string{"Pi           not on PATH  not installed", "Hermes       not on PATH  not installed"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("status missing %q:\n%s", want, out)
+			}
+		}
+	})
 }
 
 // `agents prefer` has to reach every installed skill. A participant who
