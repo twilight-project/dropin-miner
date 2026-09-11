@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/config"
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
+	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
 	"github.com/twilight-project/dropin-miner/pkg/observe"
 )
 
@@ -74,6 +76,7 @@ func loadConfig(cfgPath string, getenv func(string) string) (*config.Config, str
 // is the search-router observation shape the proxy's observer would have
 // produced, minus the parsing: the CLI has the response in hand.
 type intakeRecord struct {
+	ClientRecordID string    `json:"client_record_id,omitempty"`
 	V              int       `json:"v"`
 	RequestID      string    `json:"request_id"`
 	Host           string    `json:"host,omitempty"`
@@ -114,6 +117,13 @@ func writeIntake(dir string, rec intakeRecord) (string, error) {
 	if rec.RequestID == "" {
 		return "", errors.New("intake: request id is required")
 	}
+	if rec.ClientRecordID == "" {
+		id, err := spool.NewClientRecordID()
+		if err != nil {
+			return "", err
+		}
+		rec.ClientRecordID = id
+	}
 	rec.V = intakeVersion
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -124,12 +134,7 @@ func writeIntake(dir string, rec intakeRecord) (string, error) {
 	}
 	name := fmt.Sprintf("%020d-%s.json", rec.FinishedAt.UnixNano(), randomSuffix())
 	final := filepath.Join(dir, name)
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
+	if err := fsx.WriteFileAtomic(dir, name, data, 0o600); err != nil {
 		return "", err
 	}
 	return final, nil

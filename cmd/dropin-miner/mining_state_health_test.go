@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
+
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -403,6 +405,19 @@ func TestFlushHealthTracksSubmissionBacklogAndRelevantRecovery(t *testing.T) {
 		t.Fatalf("backlog health = %+v ok=%t err=%v", rec, ok, err)
 	}
 
+	// Make the durable retry deadline due; a restart alone no longer does so.
+	sp, err := spool.Open(f.cfg.Mining.SpoolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := sp.Pending()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("pending: %+v %v", records, err)
+	}
+	records[0].NextAttemptAt = time.Now().Add(-time.Hour)
+	if err := sp.Rewrite(records[0]); err != nil {
+		t.Fatal(err)
+	}
 	as.set(func(s *asState) { s.acceptSubmissions = true })
 	if rep := run(); rep.Delivered != 1 || rep.Pending != 0 {
 		t.Fatalf("recovered flush report = %+v", rep)

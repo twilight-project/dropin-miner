@@ -75,7 +75,7 @@ func TestWriteSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := record(t, 1042)
-	if err := s.Write(rec); err != nil {
+	if err := s.Enqueue(rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestRemoveAndQuarantine(t *testing.T) {
 	s := newSpool(t)
 	keep, drop := record(t, 1), record(t, 2)
 	for _, r := range []*Record{keep, drop} {
-		if err := s.Write(r); err != nil {
+		if err := s.Enqueue(r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -148,7 +148,7 @@ func TestRemoveAndQuarantine(t *testing.T) {
 func TestCorruptRecordQuarantinedNotFatal(t *testing.T) {
 	s := newSpool(t)
 	good := record(t, 5)
-	if err := s.Write(good); err != nil {
+	if err := s.Enqueue(good); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(s.dir, "7-5-corrupt.json"), []byte("{not json"), 0o600); err != nil {
@@ -167,7 +167,7 @@ func TestCorruptRecordQuarantinedNotFatal(t *testing.T) {
 func TestTouchPersistsAttempts(t *testing.T) {
 	s := newSpool(t)
 	rec := record(t, 9)
-	if err := s.Write(rec); err != nil {
+	if err := s.Enqueue(rec); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
@@ -192,7 +192,7 @@ func TestPendingIsOldestFirst(t *testing.T) {
 	var ids []string
 	for i := 0; i < 5; i++ {
 		rec := record(t, 3)
-		if err := s.Write(rec); err != nil {
+		if err := s.Enqueue(rec); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, rec.ClientRecordID)

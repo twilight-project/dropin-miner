@@ -121,7 +121,10 @@ func refusalCode(raw []byte) string {
 
 // retryAfter honors a server-supplied Retry-After (§64).
 func retryAfter(resp *http.Response) time.Duration {
-	v := resp.Header.Get("Retry-After")
+	return retryAfterAt(resp.Header.Get("Retry-After"), time.Now())
+}
+
+func retryAfterAt(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
@@ -129,7 +132,7 @@ func retryAfter(resp *http.Response) time.Duration {
 		return time.Duration(secs) * time.Second
 	}
 	if when, err := http.ParseTime(v); err == nil {
-		if d := time.Until(when); d > 0 {
+		if d := when.Sub(now); d > 0 {
 			return d
 		}
 	}

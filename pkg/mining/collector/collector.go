@@ -33,6 +33,9 @@ type Submitter interface {
 	Submit(ctx context.Context, rec *spool.Record) (satisfied bool, permanent bool, retryAfter time.Duration, err error)
 }
 
+// DefaultMaxAttempts is the historical CLI delivery limit. Direct Options zero is unlimited.
+const DefaultMaxAttempts = 50
+
 // Options tunes the delivery loop.
 type Options struct {
 	// Interval is the idle poll period; a wakeup shortcuts it.
@@ -43,9 +46,14 @@ type Options struct {
 	// MaxAttempts quarantines a record that keeps failing, so one bad
 	// record can never block the queue forever. Zero means unlimited.
 	MaxAttempts int
+	// Now is the retry/health clock. Nil uses the real wall clock.
+	Now func() time.Time
 }
 
 func (o *Options) withDefaults() {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 	if o.Interval == 0 {
 		o.Interval = 30 * time.Second
 	}
@@ -54,9 +62,6 @@ func (o *Options) withDefaults() {
 	}
 	if o.MaxBackoff == 0 {
 		o.MaxBackoff = 5 * time.Minute
-	}
-	if o.MaxAttempts == 0 {
-		o.MaxAttempts = 50
 	}
 }
 
@@ -67,9 +72,11 @@ type Collector struct {
 	opts      Options
 
 	wake chan struct{}
-	// backoff holds per-record next-attempt times in memory; the
-	// durable attempt count in the record survives restarts.
-	backoff map[string]time.Time
+	// Narrow per-instance storage seams keep failure tests on the real spool.
+	rewrite             func(*spool.Record) error
+	quarantine          func(*spool.Record, string) error
+	remove              func(*spool.Record) error
+	passRemovalFailures int
 
 	// health is what this collector knows about the AS, and it is the only
 	// state here read from another goroutine — the admin surface and the
@@ -86,6 +93,7 @@ type Collector struct {
 // boot. This cannot go stale: every field is written by the delivery path as
 // it happens, so a proxy that has been running for a day reports today.
 type Health struct {
+	RetryBacklog int
 	// Queued is how many observations are waiting. It is the number that
 	// matters to a participant, because "340 queued and none accepted for
 	// 25 minutes" is the concrete form of being connected and earning
@@ -104,6 +112,15 @@ type Health struct {
 	// any success, so it counts the current run of trouble rather than the
 	// total.
 	ConsecutiveFailures int
+	// Delivered counts validated ACKs with completed durable local removal in
+	// this pass; quarantine and unsuccessful local removal never increment it.
+	Delivered            int
+	SubmissionFailures   int
+	TerminalFailures     int
+	Quarantined          int
+	LocalRemovalFailures int
+	CleanupRecovered     int
+	StorageError         string
 }
 
 // Health returns a snapshot. Safe to call from any goroutine.
@@ -116,7 +133,8 @@ func (c *Collector) Health() Health {
 func (c *Collector) recordSuccess() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.health.LastSuccess = time.Now()
+	c.health.LastSuccess = c.opts.Now()
+	c.health.Delivered++
 	c.health.ConsecutiveFailures = 0
 	c.health.LastFailureNote = ""
 }
@@ -124,28 +142,25 @@ func (c *Collector) recordSuccess() {
 func (c *Collector) recordFailure(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.health.LastFailure = time.Now()
+	c.health.LastFailure = c.opts.Now()
+	c.health.SubmissionFailures++
 	c.health.ConsecutiveFailures++
 	if err != nil {
 		c.health.LastFailureNote = redact.Error(err).Error()
 	}
 }
 
-func (c *Collector) recordQueueDepth(n int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.health.Queued = n
-}
-
 func New(s *spool.Spool, sub Submitter, opts Options) *Collector {
 	opts.withDefaults()
-	return &Collector{
+	c := &Collector{
 		spool:     s,
 		submitter: sub,
 		opts:      opts,
 		wake:      make(chan struct{}, 1),
-		backoff:   make(map[string]time.Time),
+		rewrite:   s.Rewrite, quarantine: s.Quarantine, remove: s.Remove,
 	}
+	c.refreshState()
+	return c
 }
 
 // Wake is the best-effort nudge after a spool write (PX-15: the write
@@ -176,64 +191,151 @@ func (c *Collector) Run(ctx context.Context) {
 // Drain runs one delivery pass (exported for tests and the sweep).
 func (c *Collector) Drain(ctx context.Context) { c.drain(ctx) }
 
+func (c *Collector) storageFailure(err error, removal bool) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.health.StorageError = redact.Error(err).Error()
+	if removal {
+		c.passRemovalFailures++
+		c.health.LocalRemovalFailures = c.passRemovalFailures
+	}
+}
+
+func (c *Collector) refreshState() {
+	state, err := c.spool.State()
+	if err != nil {
+		c.storageFailure(err, false)
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.health.Queued = state.Queued
+	c.health.RetryBacklog = state.RetryBacklog
+	c.health.Quarantined = state.Quarantined
+	if n := state.Terminal + state.Quarantined; n > c.health.TerminalFailures {
+		c.health.TerminalFailures = n
+	}
+	c.health.LocalRemovalFailures = max(state.RemovalPending, c.passRemovalFailures)
+}
+
 func (c *Collector) drain(ctx context.Context) {
+	c.mu.Lock()
+	c.health.Delivered = 0
+	c.health.SubmissionFailures = 0
+	c.health.TerminalFailures = 0
+	c.health.LocalRemovalFailures = 0
+	c.passRemovalFailures = 0
+	c.health.StorageError = ""
+	c.mu.Unlock()
+	c.refreshState()
+	defer c.refreshState()
 	records, err := c.spool.Pending()
 	if err != nil {
-		return // a scan failure is transient; the next tick retries
+		c.storageFailure(err, false)
+		return
 	}
-	c.recordQueueDepth(len(records))
-	now := time.Now()
 	for _, rec := range records {
 		if ctx.Err() != nil {
 			return
 		}
-		if next, ok := c.backoff[rec.ClientRecordID]; ok && now.Before(next) {
+		// Terminal and acknowledged records are cleanup work, never submissions.
+		if rec.TerminalReason != "" {
+			c.storageFailure(c.quarantine(rec, rec.TerminalReason), false)
+			continue
+		}
+		if rec.RemovalPending {
+			c.finishRemoval(rec, false)
+			continue
+		}
+		if c.opts.MaxAttempts > 0 && rec.Attempts >= c.opts.MaxAttempts {
+			c.markTerminal(rec, "attempts_exhausted")
+			continue
+		}
+		if c.opts.Now().Before(rec.NextAttemptAt) {
 			continue
 		}
 		c.deliver(ctx, rec)
 	}
 }
 
+func (c *Collector) finishRemoval(rec *spool.Record, acknowledged bool) {
+	if err := c.remove(rec); err != nil {
+		c.storageFailure(err, true)
+		return
+	}
+	if !acknowledged {
+		c.mu.Lock()
+		c.health.CleanupRecovered++
+		c.mu.Unlock()
+		return
+	}
+	c.recordSuccess()
+}
+
+func (c *Collector) markTerminal(rec *spool.Record, reason string) {
+	updated := *rec
+	updated.TerminalReason = reason
+	if err := c.rewrite(&updated); err != nil {
+		c.storageFailure(err, false)
+		return
+	}
+	*rec = updated
+	c.mu.Lock()
+	c.health.TerminalFailures++
+	c.mu.Unlock()
+	c.storageFailure(c.quarantine(rec, reason), false)
+}
+
 func (c *Collector) deliver(ctx context.Context, rec *spool.Record) {
 	satisfied, permanent, retryAfter, err := c.submitter.Submit(ctx, rec)
 	switch {
 	case satisfied:
-		// §58: the delivery obligation is discharged; only now may the
-		// durable copy go.
-		_ = c.spool.Remove(rec)
-		delete(c.backoff, rec.ClientRecordID)
-		c.recordSuccess()
-	case permanent:
-		// A conflicting evidence identity can never succeed on retry;
-		// keep it for inspection rather than deleting evidence.
-		reason := "permanent"
-		if err != nil {
-			reason = err.Error()
+		updated := *rec
+		updated.RemovalPending = true
+		if err := c.rewrite(&updated); err != nil {
+			c.storageFailure(err, true)
+			return
 		}
-		_ = c.spool.Quarantine(rec, reason)
-		delete(c.backoff, rec.ClientRecordID)
+		*rec = updated
+		c.finishRemoval(rec, true)
+	case permanent:
 		c.recordFailure(err)
+		updated := *rec
+		updated.Attempts++
+		c.markTerminal(&updated, "permanent")
 	default:
 		c.recordFailure(err)
-		c.scheduleRetry(rec, retryAfter)
+		c.storageFailure(c.scheduleRetry(rec, retryAfter), false)
 	}
 }
 
-// scheduleRetry applies bounded exponential backoff with jitter, honors
-// a server-supplied Retry-After, and quarantines a record that has
-// exhausted its attempts so it cannot block the queue forever.
-func (c *Collector) scheduleRetry(rec *spool.Record, retryAfter time.Duration) {
-	_ = c.spool.Touch(rec)
-	if c.opts.MaxAttempts > 0 && rec.Attempts >= c.opts.MaxAttempts {
-		_ = c.spool.Quarantine(rec, "attempts_exhausted")
-		delete(c.backoff, rec.ClientRecordID)
-		return
-	}
+// scheduleRetry persists one selected deadline and incremented attempt count.
+// No process-local backoff decision survives independently of this rewrite.
+func (c *Collector) scheduleRetry(rec *spool.Record, retryAfter time.Duration) error {
+	updated := *rec
+	updated.Attempts++
 	wait := retryAfter
 	if wait <= 0 {
-		wait = c.backoffFor(rec.Attempts)
+		wait = c.backoffFor(updated.Attempts)
 	}
-	c.backoff[rec.ClientRecordID] = time.Now().Add(wait)
+	updated.NextAttemptAt = c.opts.Now().Add(wait)
+	if c.opts.MaxAttempts > 0 && updated.Attempts >= c.opts.MaxAttempts {
+		updated.TerminalReason = "attempts_exhausted"
+	}
+	if err := c.rewrite(&updated); err != nil {
+		return err
+	}
+	*rec = updated
+	if rec.TerminalReason != "" {
+		c.mu.Lock()
+		c.health.TerminalFailures++
+		c.mu.Unlock()
+		return c.quarantine(rec, rec.TerminalReason)
+	}
+	return nil
 }
 
 func (c *Collector) backoffFor(attempts int) time.Duration {
@@ -279,7 +381,7 @@ func (w *SpoolWriter) Enqueue(slotID, targetEpoch uint64, observation any) (stri
 		Observation:    payload,
 	}
 	// Durable FIRST. Only then is the record safe to announce.
-	if err := w.Spool.Write(rec); err != nil {
+	if err := w.Spool.Enqueue(rec); err != nil {
 		return "", err
 	}
 	if w.Collector != nil {

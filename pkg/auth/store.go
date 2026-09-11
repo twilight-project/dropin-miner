@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
+
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/twilight-project/dropin-miner/pkg/mining/draw"
@@ -155,31 +157,7 @@ func (s *Store) SaveRefreshToken(token string) error {
 	if token == "" {
 		return errors.New("auth: refusing to store an empty refresh token")
 	}
-	tmp, err := os.CreateTemp(s.dir, refreshTokenFile+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("auth: stage refresh token: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: chmod refresh token: %w", err)
-	}
-	if _, err := tmp.WriteString(token); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: write refresh token: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: sync refresh token: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("auth: close refresh token: %w", err)
-	}
-	if err := os.Rename(tmpName, filepath.Join(s.dir, refreshTokenFile)); err != nil {
-		return fmt.Errorf("auth: install refresh token: %w", err)
-	}
-	return nil
+	return fsx.WriteFileAtomic(s.dir, refreshTokenFile, []byte(token), 0o600)
 }
 
 // LoadRefreshToken returns the stored refresh authorization, or ok=false
@@ -233,22 +211,7 @@ func (s *Store) readSecret(name string) ([]byte, error) {
 // createExclusive writes a brand-new secret file 0600 via O_CREAT|O_EXCL
 // — first generation must never clobber concurrent creation.
 func (s *Store) createExclusive(name string, data []byte) error {
-	f, err := os.OpenFile(filepath.Join(s.dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- store-dir + fixed name
-	if err != nil {
-		return fmt.Errorf("auth: create %s: %w", name, err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("auth: write %s: %w", name, err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("auth: sync %s: %w", name, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("auth: close %s: %w", name, err)
-	}
-	return nil
+	return fsx.WriteFileExclusive(s.dir, name, data, 0o600)
 }
 
 // saveStateFile durably REPLACES name's content — SaveRefreshToken's exact
@@ -261,31 +224,7 @@ func (s *Store) createExclusive(name string, data []byte) error {
 // name. Any failure removes the temp file rather than leaving it for a
 // later rename to publish by accident.
 func (s *Store) saveStateFile(name string, data []byte) error {
-	tmp, err := os.CreateTemp(s.dir, name+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("auth: stage %s: %w", name, err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: chmod %s: %w", name, err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: write %s: %w", name, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: sync %s: %w", name, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("auth: close %s: %w", name, err)
-	}
-	if err := os.Rename(tmpName, filepath.Join(s.dir, name)); err != nil {
-		return fmt.Errorf("auth: install %s: %w", name, err)
-	}
-	return nil
+	return fsx.WriteFileAtomic(s.dir, name, data, 0o600)
 }
 
 // ParticipationSecret loads the installation's 32-byte participation

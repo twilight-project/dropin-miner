@@ -27,13 +27,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
@@ -291,24 +295,40 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 	before, _ := sp.Count()
 	coll := collector.New(sp, submitter, collector.Options{
 		Interval:    time.Hour, // never fires: Drain is called once
-		MaxAttempts: m.CollectorMaxAttempts,
+		MaxAttempts: productionMaxAttempts(m.CollectorMaxAttempts),
 	})
 	coll.Drain(ctx)
 	after, _ := sp.Count()
 	rep.Pending = after
-	if before > after {
-		rep.Delivered = before - after
-	}
+	rep.Delivered = coll.Health().Delivered
 	updateFlushDeliveryHealth(store, coll.Health(), before, after, rep.Delivered, stderr)
-	if promotionErr != nil {
+	if promotionErr != nil && coll.Health().TerminalFailures == 0 {
 		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, promotionErr.Error())
 	}
 	return rep, exitOK
 }
 
 func updateFlushDeliveryHealth(store *auth.Store, health collector.Health, before, after, delivered int, stderr io.Writer) {
-	if health.ConsecutiveFailures > 0 {
+	if health.TerminalFailures > 0 {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, "terminal or quarantined evidence remains unresolved")
+		if health.StorageError != "" {
+			fmt.Fprintln(stderr, "flush: storage:", health.StorageError)
+		}
+		return
+	}
+	if health.LocalRemovalFailures > 0 {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, "accepted evidence awaits durable local removal: "+health.StorageError)
+		return
+	}
+	if health.StorageError != "" && health.SubmissionFailures == 0 {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, health.StorageError)
+		return
+	}
+	if health.ConsecutiveFailures > 0 || health.SubmissionFailures > 0 {
 		detail := health.LastFailureNote
+		if health.StorageError != "" {
+			detail += "; retry persistence: " + health.StorageError
+		}
 		if detail == "" {
 			detail = "the authorization server did not accept a queued observation"
 		}
@@ -323,6 +343,14 @@ func updateFlushDeliveryHealth(store *auth.Store, health collector.Health, befor
 		return
 	}
 
+	if health.RetryBacklog > 0 {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthSpoolBacklog, fmt.Sprintf("%d queued observation(s) await retry", health.RetryBacklog))
+		return
+	}
+	if health.CleanupRecovered > 0 {
+		_ = store.ClearHealth(auth.HealthFlush)
+		return
+	}
 	// A fresh collector can legitimately skip records that are still under
 	// persisted backoff. That is not a new submission failure, but if a prior
 	// failed delivery is already on record and no queued item progressed, the
@@ -424,13 +452,11 @@ func deliverOnly(ctx context.Context, cfg *config.Config, mining *auth.MiningCli
 		return exitTransport
 	}
 	before, _ := sp.Count()
-	coll := collector.New(sp, auth.NewSubmitter(mining, caps), collector.Options{Interval: time.Hour, MaxAttempts: cfg.Mining.CollectorMaxAttempts})
+	coll := collector.New(sp, auth.NewSubmitter(mining, caps), collector.Options{Interval: time.Hour, MaxAttempts: productionMaxAttempts(cfg.Mining.CollectorMaxAttempts)})
 	coll.Drain(ctx)
 	after, _ := sp.Count()
 	rep.Pending = after
-	if before > after {
-		rep.Delivered = before - after
-	}
+	rep.Delivered = coll.Health().Delivered
 	updateFlushDeliveryHealth(store, coll.Health(), before, after, rep.Delivered, stderr)
 	fmt.Fprintln(stderr, "flush: no target epoch this run; intake kept for the next flush")
 	return exitOK
@@ -446,6 +472,10 @@ type intakeEnqueuer interface {
 // (slot, epoch) and removes each intake file only after its record is
 // durably spooled. Files it cannot read are counted and left alone.
 func promoteIntake(dir string, out intakeEnqueuer, slotID, epoch uint64) (promoted, unreadable int, err error) {
+	return promoteIntakeWithOps(dir, out, slotID, epoch, fsx.WriteFileAtomic, os.Remove)
+}
+
+func promoteIntakeWithOps(dir string, out intakeEnqueuer, slotID, epoch uint64, write func(string, string, []byte, os.FileMode) error, remove func(string) error) (promoted, unreadable int, err error) {
 	records, bad, err := readIntake(dir)
 	unreadable = len(bad)
 	if err != nil {
@@ -455,15 +485,35 @@ func promoteIntake(dir string, out intakeEnqueuer, slotID, epoch uint64) (promot
 	for _, f := range records {
 		obs := f.rec.observation()
 		if !promote.Eligible(obs) {
-			_ = os.Remove(f.path) // structurally never payable; keeping it earns nothing
+			if err := remove(f.path); err != nil {
+				firstErr = errors.Join(firstErr, err)
+			} // structurally ineligible
 			continue
 		}
-		id, err := spool.NewClientRecordID()
-		if err != nil {
-			firstErr = errors.Join(firstErr, err)
+		if f.rec.ClientRecordID == "" {
+			id, mintErr := spool.NewClientRecordID()
+			if mintErr != nil {
+				firstErr = errors.Join(firstErr, mintErr)
+				continue
+			}
+			f.rec.ClientRecordID = id
+			data, encodeErr := json.Marshal(f.rec)
+			if encodeErr != nil {
+				firstErr = errors.Join(firstErr, encodeErr)
+				continue
+			}
+			if writeErr := write(filepath.Dir(f.path), filepath.Base(f.path), data, 0o600); writeErr != nil {
+				firstErr = errors.Join(firstErr, writeErr)
+				continue
+			}
+		}
+		// A previous upgrade may have published the ID but failed its directory
+		// sync. Confirm that publication before allowing destructive promotion.
+		if syncErr := fsx.SyncDirectory(dir); syncErr != nil && !errors.Is(syncErr, fsx.ErrDirectorySyncUnsupported) {
+			firstErr = errors.Join(firstErr, syncErr)
 			continue
 		}
-		rec, err := promote.Build(obs, id)
+		rec, err := promote.Build(obs, f.rec.ClientRecordID)
 		if err != nil {
 			firstErr = errors.Join(firstErr, err)
 			continue
@@ -472,8 +522,19 @@ func promoteIntake(dir string, out intakeEnqueuer, slotID, epoch uint64) (promot
 			firstErr = errors.Join(firstErr, err)
 			continue
 		}
-		_ = os.Remove(f.path)
+		if err := remove(f.path); err != nil {
+			firstErr = errors.Join(firstErr, err)
+			continue
+		}
 		promoted++
 	}
 	return promoted, unreadable, firstErr
+}
+
+// productionMaxAttempts preserves omitted and explicit-zero configuration behavior.
+func productionMaxAttempts(configured int) int {
+	if configured == 0 {
+		return collector.DefaultMaxAttempts
+	}
+	return configured
 }
