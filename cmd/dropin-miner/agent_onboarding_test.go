@@ -1965,6 +1965,9 @@ func TestConnectRefusesToOverwriteAnExistingCredentialsFileUnlessForced(t *testi
 	if _, ok := loadAgent(t, stateDir); ok {
 		t.Fatal("a registration was persisted despite the refusal")
 	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
 
 	if code, _, errOut := runConnect(t, cfgPath, nil, "-force"); code != exitOK {
 		t.Fatalf("connect -force still refused: %d %s", code, errOut)
