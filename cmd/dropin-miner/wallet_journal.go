@@ -83,6 +83,26 @@ func removePendingTx(dir string) error {
 	return err
 }
 
+// removePendingTxIfHash removes the journal only while it still names
+// expectedHash. The caller holds wallet.lock. currentHash is empty when
+// no journal exists and names the retained journal when it was replaced.
+func removePendingTxIfHash(dir, expectedHash string) (removed bool, currentHash string, err error) {
+	p, err := loadPendingTx(dir)
+	if err != nil {
+		return false, "", err
+	}
+	if p == nil {
+		return false, "", nil
+	}
+	if !strings.EqualFold(p.Hash, expectedHash) {
+		return false, p.Hash, nil
+	}
+	if err := removePendingTx(dir); err != nil {
+		return false, p.Hash, err
+	}
+	return true, p.Hash, nil
+}
+
 // pendingOutcome is what resolvePendingTx found.
 type pendingOutcome int
 

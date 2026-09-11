@@ -374,6 +374,147 @@ func TestRerunRebroadcastRejectionStaysUnresolvedUntilTxConfirmation(t *testing.
 	}
 }
 
+func TestRemovePendingTxIfHash(t *testing.T) {
+	lockedRemove := func(t *testing.T, dir, expectedHash string) (bool, string, error) {
+		t.Helper()
+		release, err := lockWalletDir(dir, walletLockTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		return removePendingTxIfHash(dir, expectedHash)
+	}
+
+	t.Run("matching journal", func(t *testing.T) {
+		dir := walletScratchDir(t)
+		txRaw := []byte("matching-journal-bytes")
+		hash := txHash(txRaw)
+		if err := writePendingTx(dir, pendingTx{Hash: hash, TxRawB64: b64(txRaw)}); err != nil {
+			t.Fatal(err)
+		}
+		removed, currentHash, err := lockedRemove(t, dir, strings.ToLower(hash))
+		if err != nil || !removed || currentHash != hash {
+			t.Fatalf("removed=%v currentHash=%q err=%v", removed, currentHash, err)
+		}
+		if p, err := loadPendingTx(dir); err != nil || p != nil {
+			t.Fatalf("matching journal should be removed: %v %v", p, err)
+		}
+	})
+
+	t.Run("journal already absent", func(t *testing.T) {
+		dir := walletScratchDir(t)
+		removed, currentHash, err := lockedRemove(t, dir, txHash([]byte("already-cleared")))
+		if err != nil || removed || currentHash != "" {
+			t.Fatalf("removed=%v currentHash=%q err=%v", removed, currentHash, err)
+		}
+	})
+
+	t.Run("replacement journal", func(t *testing.T) {
+		dir := walletScratchDir(t)
+		txRaw := []byte("replacement-journal-bytes")
+		hash := txHash(txRaw)
+		if err := writePendingTx(dir, pendingTx{Hash: hash, TxRawB64: b64(txRaw)}); err != nil {
+			t.Fatal(err)
+		}
+		removed, currentHash, err := lockedRemove(t, dir, txHash([]byte("confirmed-old-transaction")))
+		if err != nil || removed || currentHash != hash {
+			t.Fatalf("removed=%v currentHash=%q err=%v", removed, currentHash, err)
+		}
+		p, err := loadPendingTx(dir)
+		if err != nil || p == nil {
+			t.Fatalf("replacement journal should remain: %v %v", p, err)
+		}
+		gotRaw, err := p.txRaw()
+		if err != nil || !bytes.Equal(gotRaw, txRaw) {
+			t.Fatalf("replacement bytes=%q err=%v, want %q", gotRaw, err, txRaw)
+		}
+	})
+}
+
+func TestConfirmedSenderDoesNotRemoveAReplacementJournal(t *testing.T) {
+	nodeA := newFakeNode(t, nodeConfig{
+		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 9, balance: "1000000",
+	})
+	dir := walletScratchDir(t)
+	env := envOf(map[string]string{walletPassphraseEnv: "p-test-1"})
+	var initOut, initErr bytes.Buffer
+	if code := cmdWallet([]string{"init", "-dir", dir, "-print-anyway"}, strings.NewReader(""), &initOut, &initErr, env); code != exitOK {
+		t.Fatalf("init: %s", initErr.String())
+	}
+
+	cleanupReached := make(chan string, 1)
+	resumeCleanup := make(chan struct{})
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(resumeCleanup) }) }
+	defer resume()
+	origCleanup := beforeConfirmedJournalCleanup
+	beforeConfirmedJournalCleanup = func(hash string) {
+		cleanupReached <- hash
+		<-resumeCleanup
+	}
+	t.Cleanup(func() { beforeConfirmedJournalCleanup = origCleanup })
+
+	var aOut, aErr bytes.Buffer
+	aDone := make(chan int, 1)
+	go func() {
+		aDone <- cmdWallet(sendArgs(dir, nodeA.srv.URL), strings.NewReader(""), &aOut, &aErr, env)
+	}()
+	hashA := <-cleanupReached
+
+	var balanceOut, balanceErr bytes.Buffer
+	if code := cmdWallet([]string{"balance", "-dir", dir, "-node", nodeA.srv.URL, "-chain-id", "twilight-devnet-2"},
+		strings.NewReader(""), &balanceOut, &balanceErr, env); code != exitOK {
+		t.Fatalf("resolver exit %d: %s", code, balanceErr.String())
+	}
+	if p, err := loadPendingTx(dir); err != nil || p != nil {
+		t.Fatalf("resolver should have removed A's journal: %v %v", p, err)
+	}
+
+	nodeB := newFakeNode(t, nodeConfig{
+		chainID: "twilight-devnet-2", accountNumber: 5, sequence: 10, balance: "1000000", emptyHash: true,
+	})
+	var bOut, bErr bytes.Buffer
+	if code := cmdWallet(sendArgs(dir, nodeB.srv.URL, "-amount", "2000"), strings.NewReader(""), &bOut, &bErr, env); code != exitOutcomeUnknown {
+		t.Fatalf("sender B exit %d, want exitOutcomeUnknown: %s", code, bErr.String())
+	}
+	pBefore, err := loadPendingTx(dir)
+	if err != nil || pBefore == nil {
+		t.Fatalf("sender B should leave a recoverable journal: %v %v", pBefore, err)
+	}
+	bRaw, err := pBefore.txRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.EqualFold(pBefore.Hash, hashA) {
+		t.Fatal("sender B did not create a distinct transaction")
+	}
+	nodeB.mu.Lock()
+	broadcastRaw := []byte(nodeB.lastTx)
+	nodeB.mu.Unlock()
+	if !bytes.Equal(bRaw, broadcastRaw) {
+		t.Fatalf("B journal bytes differ from its broadcast: journal=%x broadcast=%x", bRaw, broadcastRaw)
+	}
+
+	resume()
+	if code := <-aDone; code != exitOK {
+		t.Fatalf("sender A exit %d, want exitOK: %s", code, aErr.String())
+	}
+	if !strings.Contains(aOut.String(), "confirmed in block") {
+		t.Errorf("sender A should report its own confirmation normally: %q", aOut.String())
+	}
+	if !strings.Contains(aErr.String(), "leaving replacement") || !strings.Contains(aErr.String(), pBefore.Hash) {
+		t.Errorf("sender A should diagnose the retained replacement: %q", aErr.String())
+	}
+	pAfter, err := loadPendingTx(dir)
+	if err != nil || pAfter == nil {
+		t.Fatalf("sender A removed B's journal: %v %v", pAfter, err)
+	}
+	afterRaw, err := pAfter.txRaw()
+	if err != nil || !strings.EqualFold(pAfter.Hash, pBefore.Hash) || !bytes.Equal(afterRaw, bRaw) {
+		t.Fatalf("replacement changed: before=%+v after=%+v rawErr=%v", pBefore, pAfter, err)
+	}
+}
+
 func TestBalanceCannotResolveJournalBeforeFirstBroadcastClassification(t *testing.T) {
 	testJournalCommandWaitsForFirstBroadcastClassification(t, "balance")
 }

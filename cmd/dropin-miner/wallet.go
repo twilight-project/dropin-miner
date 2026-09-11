@@ -185,6 +185,11 @@ var beforeJournalingANewPayment = func() {}
 // classification. The default does nothing.
 var afterPendingTxJournaled = func() {}
 
+// beforeConfirmedJournalCleanup is the test seam immediately before a
+// sender reacquires wallet.lock after its unlocked confirmation wait.
+// The default does nothing.
+var beforeConfirmedJournalCleanup = func(string) {}
+
 // createOrRecoverWallet is the ONE wallet-creation path: wallet init
 // and mining enable's address question both call this rather than
 // writing a key directly. It takes wallet.lock for its
@@ -831,8 +836,10 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 	// The first-broadcast lock was deliberately released before the
 	// confirmation wait. Reacquire the same journal lock for this final
-	// mutation; another command may already have confirmed and removed
-	// the journal, in which case removePendingTx is idempotent.
+	// mutation, then remove only if this transaction still owns the
+	// journal. Another command may have cleared it and allowed a later
+	// sender to publish a replacement while this sender was waiting.
+	beforeConfirmedJournalCleanup(hash)
 	func() {
 		releaseJournal, lockErr := lockWalletDir(resolved, walletLockTimeout)
 		if lockErr != nil {
@@ -840,8 +847,13 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return
 		}
 		defer releaseJournal()
-		if rerr := removePendingTx(resolved); rerr != nil {
+		removed, currentHash, rerr := removePendingTxIfHash(resolved, hash)
+		if rerr != nil {
 			fmt.Fprintln(stderr, "dropin-miner:", rerr)
+			return
+		}
+		if !removed && currentHash != "" {
+			fmt.Fprintf(stderr, "dropin-miner: confirmed transaction %s no longer owns the pending journal; leaving replacement %s intact\n", hash, currentHash)
 		}
 	}()
 	if tx.TxResult.Code != 0 {
