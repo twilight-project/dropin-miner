@@ -33,6 +33,7 @@ import (
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
+	platformapi "github.com/twilight-project/dropin-miner/pkg/platform"
 )
 
 // ── stubs ──────────────────────────────────────────────────────────────
@@ -52,11 +53,21 @@ type stubPlatform struct {
 	lastRequestedScopes     []string
 	lastRequestedScopesSeen bool
 	failNextRegisters       int
+	dropNextRegisterBodies  int
+	statusNotFound          bool
+	statusError             bool
+	statusByAgent           map[string]string
+	scopesByAgent           map[string][]string
 }
 
 func newStubPlatform(t *testing.T) *stubPlatform {
 	t.Helper()
-	f := &stubPlatform{status: "unclaimed", slots: []string{"twilight-slot-3"}}
+	f := &stubPlatform{
+		status:        "unclaimed",
+		slots:         []string{"twilight-slot-3"},
+		statusByAgent: make(map[string]string),
+		scopesByAgent: make(map[string][]string),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -67,26 +78,75 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 		f.registerCalls++
 		f.lastRequestedScopes = body.RequestedScopes
 		f.lastRequestedScopesSeen = true
+		registerNumber := f.registerCalls
 		if f.failNextRegisters > 0 {
 			f.failNextRegisters--
 			f.mu.Unlock()
 			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "internal"}})
 			return
 		}
+		agentID := fmt.Sprintf("agent-%d", registerNumber)
+		key := "sr-stubkey"
+		claimCode := "AB12-CD34"
+		if registerNumber > 1 {
+			key = fmt.Sprintf("sr-stubkey-%d", registerNumber)
+			claimCode = fmt.Sprintf("EF56-GH%02d", registerNumber)
+		}
+		registrationStatus := f.status
+		registrationScopes := append([]string(nil), f.scopes...)
+		if registrationStatus == "expired" {
+			// An expired identity's replacement starts a fresh claim. Preserve
+			// the stub's older pre-claim behavior for installer tests, where
+			// claim is deliberately called before the first registration.
+			registrationStatus = "unclaimed"
+			registrationScopes = nil
+		}
+		f.statusByAgent[agentID] = registrationStatus
+		f.scopesByAgent[agentID] = registrationScopes
+		drop := f.dropNextRegisterBodies > 0
+		if drop {
+			f.dropNextRegisterBodies--
+		}
 		f.mu.Unlock()
+		if drop {
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+			}
+			return
+		}
 		writeStubJSON(w, http.StatusCreated, map[string]any{
-			"agent_id": "agent-1", "key": "sr-stubkey",
-			"claim_url": f.srv.URL + "/claim/AB12-CD34", "claim_code": "AB12-CD34",
+			"agent_id": agentID, "key": key,
+			"claim_url": f.srv.URL + "/claim/" + claimCode, "claim_code": claimCode,
 			"claim_expires_at": "2026-09-16T00:00:00Z",
 			"poll":             map[string]any{"interval_s": 1},
 			"tier":             "unclaimed",
 		})
 	})
-	mux.HandleFunc("GET /v1/agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.statusCalls++
+		id := strings.TrimPrefix(r.URL.Path, "/v1/agents/")
 		st, scopes, slots, consoleURL := f.status, f.scopes, f.slots, f.consoleURL
+		notFound := f.statusNotFound
+		statusError := f.statusError
+		if agentStatus, ok := f.statusByAgent[id]; ok {
+			st = agentStatus
+		}
+		if agentScopes, ok := f.scopesByAgent[id]; ok {
+			scopes = agentScopes
+		}
 		f.mu.Unlock()
+		if notFound {
+			writeStubJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "not_found"}})
+			return
+		}
+		if statusError {
+			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "temporary"}})
+			return
+		}
 		body := map[string]any{
 			"status": st, "scopes": scopes,
 			"mining": map[string]any{"available": len(slots) > 0, "slots": slots},
@@ -121,6 +181,10 @@ func (f *stubPlatform) claim(scopes ...string) {
 	defer f.mu.Unlock()
 	f.status = "claimed"
 	f.scopes = scopes
+	for id := range f.statusByAgent {
+		f.statusByAgent[id] = "claimed"
+		f.scopesByAgent[id] = append([]string(nil), scopes...)
+	}
 }
 
 // setStatus forces a status the ordinary lifecycle (claim) doesn't reach
@@ -129,6 +193,21 @@ func (f *stubPlatform) setStatus(status string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.status = status
+	for id := range f.statusByAgent {
+		f.statusByAgent[id] = status
+	}
+}
+
+func (f *stubPlatform) setStatusNotFound(notFound bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusNotFound = notFound
+}
+
+func (f *stubPlatform) setStatusError(statusError bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusError = statusError
 }
 
 // setSlots overrides the single-slot default (WP2-review judgment call 1:
@@ -169,6 +248,12 @@ func (f *stubPlatform) failNextRegister(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failNextRegisters = n
+}
+
+func (f *stubPlatform) dropNextRegisterResponse() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dropNextRegisterBodies++
 }
 
 func writeStubJSON(w http.ResponseWriter, status int, v any) {
@@ -411,6 +496,15 @@ func connectConfig(t *testing.T, platformURL, asURL string) (cfgPath, stateDir s
 	return writeTOML(t, b.String()), stateDir
 }
 
+func mustLoadConfig(t *testing.T, cfgPath string) *config.Config {
+	t.Helper()
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
 // scriptedMiningConfig builds a config for testing askMiningQuestion's
 // non-interactive branch directly: a syntactically valid [mining] block
 // (as_url/chain_id/slot_id — never dialed by askMiningQuestion itself,
@@ -490,7 +584,11 @@ func TestConnectCaseAccountExistsSearchOnly(t *testing.T) {
 	}
 	platform.claim("credits")
 
-	// Resumed connect (a second run) picks up the stored registration
+	// First persist the claimed state through the detached poll path.
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("claimed resume exited %d: %s", code, errOut)
+	}
+	// A later foreground connect picks up the stored claimed registration
 	// and polls rather than re-registering.
 	code, out, _ := runConnect(t, cfgPath, nil)
 	if code != exitOK {
@@ -1867,6 +1965,9 @@ func TestConnectRefusesToOverwriteAnExistingCredentialsFileUnlessForced(t *testi
 	if _, ok := loadAgent(t, stateDir); ok {
 		t.Fatal("a registration was persisted despite the refusal")
 	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
 
 	if code, _, errOut := runConnect(t, cfgPath, nil, "-force"); code != exitOK {
 		t.Fatalf("connect -force still refused: %d %s", code, errOut)
@@ -1900,9 +2001,264 @@ func TestStatusExitsZeroForUnclaimedAndSearchOnly(t *testing.T) {
 	}
 }
 
-// WP2-adversarial-review finding 17: an undecodable agent.json must not
-// wedge connect.
-func TestConnectTreatsCorruptRegistrationAsAbsent(t *testing.T) {
+// A corrupt registration with no platform credential can proceed, but the
+// unreadable evidence must be preserved rather than silently overwritten.
+func TestConnectPreservesCorruptRegistrationWithoutPlatformCredential(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	corrupt := []byte("{not json")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("connect did not recover with no platform credential: exit %d, stderr=%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "could not be decoded") {
+		t.Fatalf("no acknowledgment of the corrupt record on stderr: %q", errOut)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-1" || reg.Status != "unclaimed" {
+		t.Fatalf("did not persist the fresh registration: %+v ok=%v", reg, ok)
+	}
+	if got, err := os.ReadFile(filepath.Join(stateDir, "agent.json.corrupt")); err != nil || string(got) != string(corrupt) { // #nosec G304 -- test controls its temporary state directory
+		t.Fatalf("corrupt registration evidence was not preserved: err=%v contents=%q", err, got)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("Register calls = %d, want 1", registerCalls)
+	}
+}
+
+// A corrupt registration beside a platform credential is a local identity
+// conflict. Re-registering would create a second identity before the client
+// knows whether the existing key belongs to the unreadable record.
+func TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg, _, err := loadConfig(cfgPath, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not json")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credPath := credentialsPath(cfg.Miner)
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credPath, credentials{APIKey: "sr-existing-key"}); err != nil { // #nosec G101 -- canned test credential
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthCapture, auth.HealthIntakeUnwritable, "preserve capture health"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, "preserve flush health"); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code == exitOK {
+		t.Fatalf("connect succeeded despite corrupt registration and existing credential")
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
+	if !strings.Contains(errOut, "credentials.json already holds a platform key") {
+		t.Fatalf("missing credential-conflict diagnostic: %q", errOut)
+	}
+	if !strings.Contains(errOut, "-force") {
+		t.Fatalf("missing -force guidance: %q", errOut)
+	}
+	if got, err := os.ReadFile(filepath.Join(stateDir, "agent.json")); err != nil || string(got) != string(corrupt) { // #nosec G304 -- test controls its temporary state directory
+		t.Fatalf("corrupt registration was modified: err=%v contents=%q", err, got)
+	}
+	if got, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(got), "sr-existing-key") { // #nosec G304 -- test controls its temporary credential path
+		t.Fatalf("existing credential was modified: err=%v contents=%q", err, got)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-force"); code != exitOK {
+		t.Fatalf("connect -force did not authorize replacement: code=%d stderr=%s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("Register calls after -force = %d, want 1", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-1" {
+		t.Fatalf("fresh registration was not persisted after -force: %+v ok=%v", reg, ok)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "agent.json.corrupt")); err != nil {
+		t.Fatalf("corrupt registration evidence was not preserved after -force: %v", err)
+	}
+	if decision := store.ReadMiningDecision(); decision.State != auth.MiningDisabled {
+		t.Fatalf("-force changed the persisted mining decision: %+v", decision)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthCapture); err != nil || !ok {
+		t.Fatalf("-force cleared capture health: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || !ok {
+		t.Fatalf("-force cleared flush health: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestForegroundConnectReplacesExpiredRegistrationAndPropagatesNewIdentity(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("initial connect failed: %s", errOut)
+	}
+	oldURL := platform.srv.URL + "/claim/AB12-CD34"
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	const payout = "twilight1uwew6p63453wm0znz723lrneuls4xy29swp89n"
+	if err := store.SavePayoutAddress(payout); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthCapture, auth.HealthIntakeUnwritable, "preserve capture health"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, "preserve flush health"); err != nil {
+		t.Fatal(err)
+	}
+	platform.setStatus("expired")
+
+	code, out, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("expired replacement failed: code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
+	newURL := platform.srv.URL + "/claim/EF56-GH02"
+	if !strings.Contains(out, newURL) || !strings.Contains(out, "EF56-GH02") {
+		t.Fatalf("replacement output did not show the new claim target/code: %q", out)
+	}
+	if strings.Contains(out, oldURL) || strings.Contains(out, "AB12-CD34") {
+		t.Fatalf("replacement output retained the expired claim target/code: %q", out)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 2 {
+		t.Fatalf("Register calls = %d, want exactly 2", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-2" || reg.ClaimURL != newURL || reg.ClaimCode != "EF56-GH02" || reg.Status != "unclaimed" {
+		t.Fatalf("durable replacement registration = %+v ok=%v", reg, ok)
+	}
+	if got, err := os.ReadFile(credentialsPath(mustLoadConfig(t, cfgPath).Miner)); err != nil || !strings.Contains(string(got), "sr-stubkey-2") {
+		t.Fatalf("new platform key was not published: err=%v contents=%q", err, got)
+	}
+	if got, ok, err := store.LoadPayoutAddress(); err != nil || !ok || got != payout {
+		t.Fatalf("unrelated payout state changed: value=%q ok=%v err=%v", got, ok, err)
+	}
+	if decision := store.ReadMiningDecision(); decision.State != auth.MiningEnabled {
+		t.Fatalf("expired replacement changed the persisted mining decision: %+v", decision)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthCapture); err != nil || !ok {
+		t.Fatalf("expired replacement cleared capture health: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || !ok {
+		t.Fatalf("expired replacement cleared flush health: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || ok {
+		t.Fatalf("pending registration journal remains after replacement: ok=%v err=%v", ok, err)
+	}
+
+	var statusOut bytes.Buffer
+	if needsMining := printAgentIdentityStatus([]string{"-config", cfgPath}, &statusOut, &bytes.Buffer{}, noEnv); needsMining {
+		t.Fatal("search-only replacement unexpectedly requested the AS mining report")
+	}
+	if !strings.Contains(statusOut.String(), newURL) || strings.Contains(statusOut.String(), oldURL) {
+		t.Fatalf("status did not report only the replacement identity: %q", statusOut.String())
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("second foreground connect failed: code=%d stderr=%s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 2 {
+		t.Fatalf("second foreground connect minted another agent: Register calls=%d", registerCalls)
+	}
+	reg, ok = loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-2" {
+		t.Fatalf("replacement identity did not remain durable: %+v ok=%v", reg, ok)
+	}
+}
+
+func TestDetachedResumePersistsExpiredWithoutReplacing(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("initial connect failed: %s", errOut)
+	}
+	platform.setStatus("expired")
+
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("detached resume failed: %d %s", code, errOut)
+	}
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("detached resume of persisted expiry failed: %d %s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("detached resume replaced the expired identity: Register calls=%d", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-1" || reg.Status != "expired" {
+		t.Fatalf("detached resume did not persist the expired identity: %+v ok=%v", reg, ok)
+	}
+	if shouldResume(mustLoadConfig(t, cfgPath)) {
+		t.Fatal("shouldResume approved a replacement for an expired identity")
+	}
+}
+
+func TestExpiredRegistrationNotFoundDoesNotTriggerReplacement(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("initial connect failed: %s", errOut)
+	}
+	platform.setStatus("expired")
+	if code, _, errOut := runConnect(t, cfgPath, nil, "-resume"); code != exitOK {
+		t.Fatalf("detached expiry observation failed: %d %s", code, errOut)
+	}
+	platform.setStatusNotFound(true)
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code == exitOK {
+		t.Fatal("not-found expired identity was replaced as if expiry had been confirmed")
+	}
+	if !strings.Contains(errOut, "no longer known to the platform") {
+		t.Fatalf("not-found result was not kept distinct from expiry: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("not-found handling minted a replacement: Register calls=%d", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-1" || reg.Status != "expired" {
+		t.Fatalf("not-found handling changed the expired registration: %+v ok=%v", reg, ok)
+	}
+}
+
+func TestExpiredRegistrationWithMissingCredentialRefusesForceReplacement(t *testing.T) {
 	withShortConnectTimings(t)
 	platform := newStubPlatform(t)
 	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
@@ -1910,21 +2266,279 @@ func TestConnectTreatsCorruptRegistrationAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), []byte("{not json"), 0o600); err != nil {
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-expired", Status: "expired", ClaimURL: platform.srv.URL + "/claim/OLD", ClaimCode: "OLD",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = store
-
-	code, _, errOut := runConnect(t, cfgPath, nil)
-	if code != exitOK {
-		t.Fatalf("connect wedged on a corrupt registration: exit %d, stderr=%s", code, errOut)
+	cfg := mustLoadConfig(t, cfgPath)
+	credPath := credentialsPath(cfg.Miner)
+	if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
-	if !strings.Contains(errOut, "could not be read") {
-		t.Fatalf("no acknowledgment of the corrupt record on stderr: %q", errOut)
+
+	code, _, errOut := runConnect(t, cfgPath, nil, "-force")
+	if code == exitOK {
+		t.Fatal("connect -force replaced an expired registration without a verifiable credential")
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
+	if !strings.Contains(errOut, "cannot safely verify") || !strings.Contains(errOut, "platform credential") {
+		t.Fatalf("missing actionable missing-credential diagnostic: %q", errOut)
 	}
 	reg, ok := loadAgent(t, stateDir)
-	if !ok || reg.AgentID != "agent-1" {
-		t.Fatalf("did not re-register after finding a corrupt record: %+v ok=%v", reg, ok)
+	if !ok || reg.AgentID != "agent-expired" || reg.Status != "expired" {
+		t.Fatalf("expired registration changed: %+v ok=%v", reg, ok)
+	}
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Fatalf("missing credential was unexpectedly written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "registration_pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("replacement journal was unexpectedly created: %v", err)
+	}
+}
+
+func TestExpiredRegistrationStatusFailureRefusesForceReplacement(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-expired", Status: "expired", ClaimURL: platform.srv.URL + "/claim/OLD", ClaimCode: "OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoadConfig(t, cfgPath)
+	credPath := credentialsPath(cfg.Miner)
+	if err := writeCredentials(credPath, credentials{APIKey: "sr-old-key"}); err != nil { // #nosec G101 -- canned test credential
+		t.Fatal(err)
+	}
+	platform.setStatusError(true)
+
+	code, _, errOut := runConnect(t, cfgPath, nil, "-force")
+	if code == exitOK {
+		t.Fatal("connect -force replaced an expired registration after status verification failed")
+	}
+	if !strings.Contains(errOut, "could not safely verify") || !strings.Contains(errOut, "-force") {
+		t.Fatalf("missing actionable status-failure diagnostic: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-expired" || reg.Status != "expired" {
+		t.Fatalf("expired registration changed: %+v ok=%v", reg, ok)
+	}
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-old-key") { // #nosec G304 -- test controls its credential path
+		t.Fatalf("existing credential changed: err=%v contents=%q", err, raw)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "registration_pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("replacement journal was unexpectedly created: %v", err)
+	}
+}
+
+func TestLostRegisterResponseLeavesNoLocalCommitAndNextConnectMayRetry(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	platform.dropNextRegisterResponse()
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code == exitOK {
+		t.Fatal("connect claimed success after the Register response was lost")
+	}
+	if !strings.Contains(errOut, "register") {
+		t.Fatalf("lost response was not reported as a Register transport failure: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("Register calls after lost response=%d, want 1", registerCalls)
+	}
+	if _, ok := loadAgent(t, stateDir); ok {
+		t.Fatal("an invented agent registration was persisted")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "registration_pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("a complete-response journal was created after a lost response: %v", err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("ordinary connect could not retry after ambiguous Register failure: %d %s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 2 {
+		t.Fatalf("ordinary retry did not register normally: Register calls=%d", registerCalls)
+	}
+}
+
+func TestPendingRegistrationRecoveryPublishesWithoutRegister(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := platformapi.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
+	fresh, err := client.Register(context.Background(), "journal-crash", nil)
+	if err != nil {
+		t.Fatalf("completed Register response: %v", err)
+	}
+	pending := pendingRegistrationFromPlatform(fresh)
+	if err := store.SavePendingRegistration(pending); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("pending registration recovery failed: %d %s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("pending recovery changed the completed Register count: %d", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != pending.AgentID || reg.ClaimURL != pending.ClaimURL {
+		t.Fatalf("journaled registration was not published: %+v ok=%v", reg, ok)
+	}
+	if got, err := os.ReadFile(credentialsPath(cfg.Miner)); err != nil || !strings.Contains(string(got), pending.Key) {
+		t.Fatalf("journaled platform key was not published: err=%v contents=%q", err, got)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || ok {
+		t.Fatalf("journal was not cleared after recovery: ok=%v err=%v", ok, err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("repeated recovery/resume failed: %d %s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("repeated recovery minted another registration: %d", registerCalls)
+	}
+}
+
+func TestPendingExpiredReplacementRecoveryCompletesAcrossRestart(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldURL := platform.srv.URL + "/claim/OLD"
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-old", ClaimURL: oldURL, ClaimCode: "OLD", Status: "expired",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-old-key"}); err != nil { // #nosec G101 -- canned test credential
+		t.Fatal(err)
+	}
+	if err := store.SavePendingRegistration(auth.PendingRegistration{
+		AgentID:         "agent-new",
+		Key:             "sr-new-key",
+		ClaimURL:        platform.srv.URL + "/claim/NEW",
+		ClaimCode:       "NEW",
+		ClaimExpiresAt:  "2026-09-16T00:00:00Z",
+		Status:          "unclaimed",
+		ReplaceExpired:  true,
+		PreviousAgentID: "agent-old",
+		PreviousKey:     "sr-old-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code != exitOK {
+		t.Fatalf("replacement journal recovery failed: %d %s", code, errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("restart recovery minted another registration: %d", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-new" || reg.ClaimURL != platform.srv.URL+"/claim/NEW" || reg.Status != "unclaimed" {
+		t.Fatalf("replacement journal did not complete publication: %+v ok=%v", reg, ok)
+	}
+	if got, err := os.ReadFile(credentialsPath(cfg.Miner)); err != nil || !strings.Contains(string(got), "sr-new-key") {
+		t.Fatalf("replacement key was not published after restart: err=%v contents=%q", err, got)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || ok {
+		t.Fatalf("replacement journal survived successful recovery: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPendingRegistrationConflictDoesNotOverwriteOrRegister(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := auth.PendingRegistration{
+		AgentID:        "agent-journal",
+		Key:            "sr-journal-key",
+		ClaimURL:       platform.srv.URL + "/claim/JOURNAL-1",
+		ClaimCode:      "JOURNAL-1",
+		ClaimExpiresAt: "2026-09-16T00:00:00Z",
+		Status:         "unclaimed",
+	}
+	if err := store.SavePendingRegistration(pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: "sr-other-key"}); err != nil { // #nosec G101 -- canned test credential
+		t.Fatal(err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code == exitOK {
+		t.Fatal("connect overwrote a conflicting credential during journal recovery")
+	} else if !strings.Contains(errOut, "different platform key") {
+		t.Fatalf("missing journal conflict diagnostic: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("journal conflict issued a new Register: %d", registerCalls)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || !ok {
+		t.Fatalf("journal was lost after a publication conflict: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPendingRegistrationAgentConflictDoesNotOverwriteOrRegister(t *testing.T) {
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-other", ClaimURL: platform.srv.URL + "/claim/OTHER", ClaimCode: "OTHER", Status: "unclaimed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePendingRegistration(auth.PendingRegistration{
+		AgentID:        "agent-journal",
+		Key:            "sr-journal-key",
+		ClaimURL:       platform.srv.URL + "/claim/JOURNAL-1",
+		ClaimCode:      "JOURNAL-1",
+		ClaimExpiresAt: "2026-09-16T00:00:00Z",
+		Status:         "unclaimed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, errOut := runConnect(t, cfgPath, nil); code == exitOK {
+		t.Fatal("connect overwrote a conflicting agent registration during journal recovery")
+	} else if !strings.Contains(errOut, "different identity") {
+		t.Fatalf("missing agent conflict diagnostic: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("agent conflict issued a new Register: %d", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-other" {
+		t.Fatalf("conflicting agent registration was overwritten: %+v ok=%v", reg, ok)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || !ok {
+		t.Fatalf("journal was lost after an agent publication conflict: ok=%v err=%v", ok, err)
 	}
 }
 
