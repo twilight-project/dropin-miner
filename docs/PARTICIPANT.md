@@ -156,11 +156,16 @@ it alone and prints the settings to add by hand.
 **opencode** gets an in-process plugin that threads the search, plus a line to
 paste into `AGENTS.md`.
 
-**Pi** gets a skill in `~/.pi/agent/skills/dropin-miner/`. **Hermes** gets one
-in its skills directory (`HERMES_HOME`, else `~/.hermes/skills/`); Hermes loads
-skills at session start, so it picks the search up next time you launch it.
-Both thread a per-shell lineage — enough to group one shell's searches — and
-earn the same as every other agent.
+**Pi** gets a skill in `~/.pi/agent/skills/dropin-miner/` and an
+auto-discovered extension in `~/.pi/agent/extensions/`. The extension rewrites
+the bash command that runs the search with the trace bridge, the way the Claude
+Code hook and the opencode plugin do — full session, turn and history lineage,
+not just per-shell.
+
+**Hermes** gets a skill in its skills directory (`HERMES_HOME`, else
+`~/.hermes/skills/`); Hermes loads skills at session start, so it picks the
+search up next time you launch it, threading a per-shell lineage. Both earn the
+same as every other agent.
 
 `dropin-miner agents uninstall` removes exactly those files and entries.
 

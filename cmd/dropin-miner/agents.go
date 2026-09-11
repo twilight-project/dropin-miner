@@ -66,6 +66,9 @@ var skillMD string
 //go:embed opencode_plugin.js
 var opencodePluginJS string
 
+//go:embed pi_extension.ts
+var piExtensionTS string
+
 const (
 	agentsName        = "dropin-miner"
 	agentsMarkerBegin = "# >>> dropin-miner agents install >>>"
@@ -131,6 +134,7 @@ type agentPaths struct {
 	cursorHooks    string
 	opencodePlugin string
 	piSkill        string
+	piExtension    string
 	hermesSkill    string
 }
 
@@ -156,6 +160,7 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 		cursorHooks:    filepath.Join(o.home, ".cursor", "hooks.json"),
 		opencodePlugin: filepath.Join(xdg, "opencode", "plugins", agentsName+".js"),
 		piSkill:        filepath.Join(o.home, ".pi", "agent", "skills", agentsName, "SKILL.md"),
+		piExtension:    filepath.Join(o.home, ".pi", "agent", "extensions", agentsName+".ts"),
 		hermesSkill:    filepath.Join(hermesSkillsDir(o.home, getenv), agentsName, "SKILL.md"),
 	}
 }
@@ -608,7 +613,11 @@ func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, e
 			}
 			p.notes = append(p.notes, s.label+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
 		case "pi":
-			if !planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer), 0o600, "skill", &p) {
+			changed := planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer), 0o600, "skill", &p)
+			if planWrite(ops, s.label, paths.piExtension, []byte(piExtensionTS), 0o600, "lineage extension", &p) {
+				changed = true
+			}
+			if !changed {
 				p.skipped = append(p.skipped, s.label+": already installed")
 			}
 		case "hermes":
@@ -873,6 +882,7 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface,
 			rm(paths.opencodePlugin)
 		case "pi":
 			rm(filepath.Dir(paths.piSkill))
+			rm(paths.piExtension)
 		case "hermes":
 			rm(filepath.Dir(paths.hermesSkill))
 		}

@@ -12,6 +12,7 @@ import (
 
 const (
 	piSkillPath     = "/home/u/.pi/agent/skills/dropin-miner/SKILL.md"
+	piExtensionPath = "/home/u/.pi/agent/extensions/dropin-miner.ts"
 	hermesSkillPath = "/home/u/.hermes/skills/dropin-miner/SKILL.md"
 )
 
@@ -37,6 +38,14 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 		}
 	}
 
+	// Pi also gets the lineage extension, auto-discovered from its extensions dir.
+	ext, ok := m.files[piExtensionPath]
+	if !ok {
+		t.Errorf("Pi lineage extension not written: %s", piExtensionPath)
+	} else if s := string(ext); !strings.Contains(s, `harness: "pi"`) || !strings.Contains(s, "tokendrop-trace-v1|") || !strings.Contains(s, "TOKENDROP_TRACE_BRIDGE=") {
+		t.Errorf("Pi extension is not the lineage bridge:\n%s", s)
+	}
+
 	// Status reports both installed.
 	if _, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); !strings.Contains(out, "Pi") || !strings.Contains(out, "Hermes") {
 		t.Errorf("status omits Pi/Hermes:\n%s", out)
@@ -51,7 +60,7 @@ func TestPiAndHermesInstallWriteSkillsAndUninstallRemovesThem(t *testing.T) {
 	if code, _, _ := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
 		t.Fatal("uninstall failed")
 	}
-	for _, p := range []string{piSkillPath, hermesSkillPath} {
+	for _, p := range []string{piSkillPath, piExtensionPath, hermesSkillPath} {
 		if _, ok := m.files[p]; ok {
 			t.Errorf("still present after uninstall: %s", p)
 		}

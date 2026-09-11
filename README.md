@@ -62,7 +62,7 @@ transmission. Mining/AS receives metadata observations only.
 | Cursor | skill | full: lineage file from sessionStart, thought, response, shell and compaction hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
 | Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus the four tokendrop directories made writable — never the config, key or wallet) so searches record and the claim resumes |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
-| Pi | skill | per-shell | `~/.pi/agent/skills/dropin-miner/` |
+| Pi | skill | full: an auto-discovered extension rewrites the bash command | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
 | Hermes | skill | per-shell | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/` (loads next session) |
 | anything else | rules line | per-shell | printed for you to paste |
 
