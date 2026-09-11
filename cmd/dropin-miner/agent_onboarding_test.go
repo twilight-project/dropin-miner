@@ -55,6 +55,7 @@ type stubPlatform struct {
 	failNextRegisters       int
 	dropNextRegisterBodies  int
 	statusNotFound          bool
+	statusError             bool
 	statusByAgent           map[string]string
 	scopesByAgent           map[string][]string
 }
@@ -130,6 +131,7 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/agents/")
 		st, scopes, slots, consoleURL := f.status, f.scopes, f.slots, f.consoleURL
 		notFound := f.statusNotFound
+		statusError := f.statusError
 		if agentStatus, ok := f.statusByAgent[id]; ok {
 			st = agentStatus
 		}
@@ -139,6 +141,10 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 		f.mu.Unlock()
 		if notFound {
 			writeStubJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "not_found"}})
+			return
+		}
+		if statusError {
+			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "temporary"}})
 			return
 		}
 		body := map[string]any{
@@ -196,6 +202,12 @@ func (f *stubPlatform) setStatusNotFound(notFound bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.statusNotFound = notFound
+}
+
+func (f *stubPlatform) setStatusError(statusError bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusError = statusError
 }
 
 // setSlots overrides the single-slot default (WP2-review judgment call 1:
@@ -2240,6 +2252,89 @@ func TestExpiredRegistrationNotFoundDoesNotTriggerReplacement(t *testing.T) {
 	reg, ok := loadAgent(t, stateDir)
 	if !ok || reg.AgentID != "agent-1" || reg.Status != "expired" {
 		t.Fatalf("not-found handling changed the expired registration: %+v ok=%v", reg, ok)
+	}
+}
+
+func TestExpiredRegistrationWithMissingCredentialRefusesForceReplacement(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-expired", Status: "expired", ClaimURL: platform.srv.URL + "/claim/OLD", ClaimCode: "OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoadConfig(t, cfgPath)
+	credPath := credentialsPath(cfg.Miner)
+	if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runConnect(t, cfgPath, nil, "-force")
+	if code == exitOK {
+		t.Fatal("connect -force replaced an expired registration without a verifiable credential")
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
+	if !strings.Contains(errOut, "cannot safely verify") || !strings.Contains(errOut, "platform credential") {
+		t.Fatalf("missing actionable missing-credential diagnostic: %q", errOut)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-expired" || reg.Status != "expired" {
+		t.Fatalf("expired registration changed: %+v ok=%v", reg, ok)
+	}
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Fatalf("missing credential was unexpectedly written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "registration_pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("replacement journal was unexpectedly created: %v", err)
+	}
+}
+
+func TestExpiredRegistrationStatusFailureRefusesForceReplacement(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgentRegistration(auth.AgentRegistration{
+		AgentID: "agent-expired", Status: "expired", ClaimURL: platform.srv.URL + "/claim/OLD", ClaimCode: "OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoadConfig(t, cfgPath)
+	credPath := credentialsPath(cfg.Miner)
+	if err := writeCredentials(credPath, credentials{APIKey: "sr-old-key"}); err != nil { // #nosec G101 -- canned test credential
+		t.Fatal(err)
+	}
+	platform.setStatusError(true)
+
+	code, _, errOut := runConnect(t, cfgPath, nil, "-force")
+	if code == exitOK {
+		t.Fatal("connect -force replaced an expired registration after status verification failed")
+	}
+	if !strings.Contains(errOut, "could not safely verify") || !strings.Contains(errOut, "-force") {
+		t.Fatalf("missing actionable status-failure diagnostic: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
+		t.Fatalf("Register calls = %d, want 0", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-expired" || reg.Status != "expired" {
+		t.Fatalf("expired registration changed: %+v ok=%v", reg, ok)
+	}
+	if raw, err := os.ReadFile(credPath); err != nil || !strings.Contains(string(raw), "sr-old-key") { // #nosec G304 -- test controls its credential path
+		t.Fatalf("existing credential changed: err=%v contents=%q", err, raw)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "registration_pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("replacement journal was unexpectedly created: %v", err)
 	}
 }
 

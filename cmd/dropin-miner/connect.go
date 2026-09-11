@@ -408,16 +408,12 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 				case errors.Is(statusErr, platform.ErrAgentNotFound):
 					fmt.Fprintln(stderr, "dropin-miner: expired registration is no longer known to the platform; refusing automatic replacement")
 					return exitTransport
-				case *force:
-					replace = true
 				default:
-					fmt.Fprintln(stderr, "dropin-miner: could not verify the expired registration before replacement:", statusErr)
+					fmt.Fprintln(stderr, "dropin-miner: could not safely verify the expired registration before replacement, even with -force:", statusErr)
 					return exitTransport
 				}
-			} else if *force {
-				replace = true
 			} else {
-				fmt.Fprintln(stderr, "dropin-miner: expired registration has no verifiable platform credential; refusing replacement. Pass -force if you mean to replace this installation")
+				fmt.Fprintln(stderr, "dropin-miner: cannot safely verify the expired registration without its platform credential; refusing replacement even with -force")
 				return exitTransport
 			}
 
