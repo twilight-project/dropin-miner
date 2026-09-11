@@ -280,6 +280,37 @@ func TestSuccessfulCurrentTargetClearsOnlyTargetResolutionHealth(t *testing.T) {
 	}
 }
 
+func TestSuccessfulCurrentTargetDoesNotClearUnrelatedSubmissionFailure(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable = 1042, false })
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const detail = "observation delivery failed: provider rejected the submission"
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, detail); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("successful-target flush exit %d: %s", code, stderr.String())
+	}
+	if as.currentCalls.Load() == 0 {
+		t.Fatal("flush did not perform current-target resolution")
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok {
+		t.Fatalf("unrelated submission health was cleared: record=%+v ok=%v err=%v", record, ok, err)
+	}
+	if record.Component != auth.HealthFlush || record.Reason != auth.HealthSubmissionFailed || record.Detail != detail {
+		t.Fatalf("unrelated submission health changed: %+v, want flush/submission_failed/%q", record, detail)
+	}
+}
+
 func TestFlushNoOpenTargetIsNormalAndKeepsIntake(t *testing.T) {
 	as := newFakeAS(t)
 	f := newFlushFixture(t, as)
