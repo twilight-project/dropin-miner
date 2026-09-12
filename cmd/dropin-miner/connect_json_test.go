@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -490,5 +491,118 @@ agents_api_url = "` + platformURL + `"
 	}
 	if string(raw) != corruptRegistrationBytes {
 		t.Errorf("ordinary connect rewrote the corrupt registration: %q", raw)
+	}
+}
+
+// ── an invalid command is not a lifecycle state ─────────────────────────
+//
+// The human-decision pre-check runs before connectRun parses anything, so
+// it has to know whether there is a command to check. With a parse failure
+// there is no -config, and the gate would answer about the DEFAULT config
+// and state directory — on a fresh machine, "undecided, nothing
+// registered", which is exactly the shape that returns true. A mistyped
+// flag would come back as human_decision_required.
+//
+// Every case below is run in an environment where the gate WOULD return
+// true for a valid command, so a green result is the pre-parser refusing
+// to answer rather than the gate happening to say no.
+func TestMalformedMachineFlagsAreAUsageErrorNotALifecycleState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"unknown flag", []string{"-not-a-real-flag"}},
+		{"config with no value", []string{"-config"}},
+		{"malformed boolean", []string{"-force=notbool"}},
+		{"malformed json boolean", []string{"-json=maybe"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath, stateDir := connectFixture(t, "")
+			platformURL, calls := countingPlatformStub(t)
+			_ = platformURL
+
+			// Sanity: with a well-formed command this environment is
+			// exactly the one the gate answers true for.
+			if !connectNeedsHumanDecision(cfgPath, false, noEnv) {
+				t.Fatal("the fixture is not a state the gate would answer; this case would prove nothing")
+			}
+
+			args := append([]string{"-json"}, tc.args...)
+			var out, errOut bytes.Buffer
+			code := cmdConnect(args, strings.NewReader(""), &out, &errOut, noEnv)
+
+			if code != exitUsage {
+				t.Fatalf("exit %d, want %d: %s", code, exitUsage, out.String())
+			}
+			env := decodeCommandEnvelope(t, out.String(), "connect")
+			if env["code"] == "human_decision_required" {
+				t.Errorf("an invalid command was reported as a lifecycle state: %s", out.String())
+			}
+			if env["code"] != "invalid_flags" {
+				t.Errorf("code %v, want invalid_flags", env["code"])
+			}
+			if env["action"] != actionFixInput {
+				t.Errorf("action %v, want %q", env["action"], actionFixInput)
+			}
+			if n := calls.Load(); n != 0 {
+				t.Errorf("the platform was called %d time(s) for an invalid command", n)
+			}
+			if store, err := auth.OpenStoreExisting(stateDir); err == nil {
+				if d := store.ReadMiningDecision(); d.State != auth.MiningUndecided {
+					t.Errorf("an invalid command persisted a mining decision: %s", d.State)
+				}
+			}
+			// An invalid command says nothing about this installation, so
+			// nothing about it is reported.
+			if _, ok := env["data"]; ok {
+				t.Errorf("the envelope carries installation data for an invalid command: %s", out.String())
+			}
+		})
+	}
+}
+
+// The other half: a well-formed command still reaches the gate.
+func TestValidMachineFlagsStillReachTheHumanDecisionGate(t *testing.T) {
+	cfgPath, _ := connectFixture(t, "")
+	for _, args := range [][]string{
+		{"-config", cfgPath, "-json"},
+		{"-json", "-config", cfgPath},
+		{"-json", "-config", cfgPath, "-name", "my agent"},
+		{"-json", "-config", cfgPath, "-force"},
+	} {
+		var out, errOut bytes.Buffer
+		code := cmdConnect(args, strings.NewReader(""), &out, &errOut, noEnv)
+		if code != exitUsage {
+			t.Fatalf("%v: exit %d", args, code)
+		}
+		env := decodeCommandEnvelope(t, out.String(), "connect")
+		if env["code"] != "human_decision_required" {
+			t.Errorf("%v: code %v, want human_decision_required", args, env["code"])
+		}
+	}
+}
+
+// The pre-parser and connectRun must accept the same grammar, or a command
+// one of them rejects is handled by the other's rules.
+func TestThePreParserAcceptsExactlyWhatConnectRunDoes(t *testing.T) {
+	cfgPath, _ := connectFixture(t, "")
+	for _, args := range [][]string{
+		{"-config", cfgPath},
+		{"-config", cfgPath, "-json"},
+		{"-config", cfgPath, "-resume"},
+		{"-config", cfgPath, "-force", "-name", "x"},
+		{"-not-a-real-flag"},
+		{"-force=notbool"},
+		{"-config"},
+	} {
+		_, _, preErr := connectMachineFlags(args)
+		// connectRun's own parse, observed through its exit code: it
+		// returns exitUsage for exactly the arguments it cannot parse.
+		var narration bytes.Buffer
+		runCode := connectRun(args, strings.NewReader(""), io.Discard, &narration, noEnv)
+		runRejected := runCode == exitUsage
+		if (preErr != nil) != runRejected {
+			t.Errorf("%v: pre-parser err=%v, connectRun rejected=%v", args, preErr, runRejected)
+		}
 	}
 }

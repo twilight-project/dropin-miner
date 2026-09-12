@@ -253,14 +253,22 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	if !jsonRequested(args) {
 		return connectRun(args, stdin, stdout, stderr, getenv)
 	}
-	cfgPath, force := connectMachineFlags(args)
+	cfgPath, force, parseErr := connectMachineFlags(args)
 	// Selecting an output format must not select an answer. Machine mode
 	// is not a terminal, so the ask-before-registering step would take its
 	// non-interactive branch and write a first mining decision from
 	// whatever mining.enabled happens to default to — a participant
 	// decision manufactured by a flag about formatting. Where that would
 	// happen, stop before Register and say so structurally instead.
-	if connectNeedsHumanDecision(cfgPath, force, getenv) {
+	//
+	// Only when the command itself parsed. An invalid command is not a
+	// lifecycle state: with a parse failure there is no -config to speak
+	// of, so the gate would answer about the DEFAULT config and state
+	// directory, and on a fresh machine a mistyped flag would come back as
+	// human_decision_required. A pre-check that exists to choose an output
+	// format must never reinterpret a broken command as a state of the
+	// installation.
+	if parseErr == nil && connectNeedsHumanDecision(cfgPath, force, getenv) {
 		emitMachine(stdout, commandEnvelope{
 			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
 			Error: &machineError{
@@ -274,6 +282,18 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 	var narration bytes.Buffer
 	code := connectRun(args, stdin, io.Discard, &narration, getenv)
+	if parseErr != nil {
+		// connectRun's own parser has now produced the real usage
+		// failure, and the caller still gets exactly one envelope. No
+		// store is read for it: an invalid command says nothing about
+		// this installation, and reporting some default installation's
+		// registration against it would be worse than reporting nothing.
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", code, "invalid_flags", false, actionFixInput),
+			Error:         clientMessage(parseErr),
+		})
+		return code
+	}
 	emitMachine(stdout, connectEnvelope(cfgPath, getenv, code, narration.String()))
 	return code
 }
@@ -351,9 +371,15 @@ func connectNeedsHumanDecision(cfgPath string, force bool, getenv func(string) s
 // run starts: -config for the envelope's own store lookup, and -force
 // because whether a fresh registration is even possible depends on it.
 // Parsing twice is cheaper than threading them out of a function with
-// thirty exit points, and connectRun's own flag set is the one that
-// validates them.
-func connectMachineFlags(args []string) (cfgPath string, force bool) {
+// thirty exit points.
+//
+// It declares the same flags as connectRun — one grammar, not two — and it
+// reports a parse failure rather than swallowing it. Swallowing it was the
+// bug: zero values look exactly like "no -config given", so a mistyped
+// flag was answered as if it were a question about the default
+// installation. The caller must be able to tell "the command is invalid"
+// from "the command is valid and says nothing".
+func connectMachineFlags(args []string) (cfgPath string, force bool, err error) {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	cfg := fs.String("config", "", "")
@@ -362,9 +388,9 @@ func connectMachineFlags(args []string) (cfgPath string, force bool) {
 	forced := fs.Bool("force", false, "")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
-		return "", false
+		return "", false, err
 	}
-	return *cfg, *forced
+	return *cfg, *forced, nil
 }
 
 func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
