@@ -27,13 +27,17 @@ package main
 // name rather than reading as failures.
 //
 // It opens only existing state and spool paths and creates no state
-// directory, DPoP key, wallet or enrollment to diagnose one. There is
-// exactly one local write: `intake writable` puts a short-lived probe file
-// in the intake directory the client already owns, named so a flush can
-// never mistake it for a record, and removes it — reporting the pathname
-// if it could not. The intake directory itself is created when its parent
-// already exists and it does not, because that is what the first search
-// would create anyway; nothing above it ever is.
+// directory, DPoP key, wallet or enrollment to diagnose one. There is one
+// bounded local probe operation, and only when `intake writable` is active:
+// it may create the intake directory, publishes at most one inert probe
+// file there — named so a flush can never mistake it for a record, since
+// it does not end in .json — and then attempts cleanup, reporting the
+// pathname if the removal failed. "One write" would be the wrong claim:
+// the mkdir, the atomic publication and the removal are separate
+// filesystem operations, and each can fail on its own and is reported on
+// its own. The intake directory is created only when its parent already
+// exists and it does not, because that is what the first search would
+// create anyway; nothing above it ever is.
 
 import (
 	"context"
@@ -812,7 +816,10 @@ type intakeProbeResult struct {
 // never tested.
 func (p intakeProbeResult) ok() bool { return p.Ran && p.Stage == "" && p.Leftover == "" }
 
-// probeIntakeWritable writes and removes one file in the intake directory.
+// probeIntakeWritable publishes one file in the intake directory and
+// attempts to remove it. Not "writes and removes": the removal is an
+// attempt, which is what Leftover exists to report, and the paragraph
+// below already says so — the summary line said otherwise.
 //
 // The name deliberately does not end in .json. readIntake considers only
 // .json files, so a probe that somehow outlives this process — a crash

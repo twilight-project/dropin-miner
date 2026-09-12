@@ -19,7 +19,9 @@
 - [ ] `pkg/mining/*` — spool, promote, collector, draw derivation
 - [ ] `pkg/wire` / `testdata/fixtures` — the frozen AS wire contract (**conform upward, see AGENTS.md — never edit a mirrored fixture**)
 - [ ] `pkg/redact` — trace redaction
+- [ ] `pkg/fsx` — the durable writer (atomic rename, fsync, Windows write-through)
 - [ ] `cmd/dropin-miner` — CLI commands (search, hook, flush, connect, mining enable/disable, wallet, agents, doctor, status)
+- [ ] machine protocol (`search --stdin` / `-json` envelope) — a change to the mandatory header or to what `ok`, `status`, `code`, `retryable`, `action` or `exit_code` mean is a protocol version change (`machineVersion`); a command-specific payload addition that preserves the header is not
 - [ ] `pkg/config` / install scripts (`setup.sh`, `install.ps1`)
 - [ ] docs / CHANGELOG
 
@@ -28,7 +30,10 @@
 - [ ] `make verify` passes locally (build, test, race, vet, lint, vuln, tidy, cross-compile)
 - [ ] Tests added/updated for the change
 - [ ] Commit messages carry the reasoning (what was rejected and why), no `Co-Authored-By`/`Claude-Session` trailers (AGENTS.md convention)
-- [ ] Docs/CHANGELOG updated if participant- or operator-visible behavior changed
+- [ ] Docs updated where the behavior is described, each ticked or marked N/A:
+      `README.md` · `npm/README.md` (byte-mirrors the top-level README — `TestNPMReadmeMirrorsRootREADME`) ·
+      `docs/PARTICIPANT.md` · `cmd/dropin-miner/skill.md` · `usageText` (`main.go`) ·
+      `AGENTS.md` · `CHANGELOG.md`
 - [ ] State-directory change, if any (a new or changed file under a participant's state dir): named below with its writer and its reader — N/A otherwise
 
 State-directory notes:

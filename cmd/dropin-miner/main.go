@@ -84,13 +84,19 @@ connect): enroll -> payout -> join -> login
              arrival; a change waits for a Slot operator to approve it
   join       join the configured slot and the open target epoch (flush does
              this too; run it once after enrolling so the first hour counts)
+  provider   register a participant provider verification key from stdin, or
+             provider -status; only when the Slot accepts OPENROUTER_V1
 
 is it working, was I paid:
-  doctor     checks in a participant's terms — connected, enrolled, joined,
-             payout address in force, earning, intake writable, recording —
-             each saying what to do. "intake writable" writes and removes one
-             short-lived probe file to prove the directory a search records
-             into is usable; "recording" flags recent miner activity with
+  doctor     checks in a participant's terms — authorization server,
+             enrolled, joined this epoch, payout address, earning, intake
+             writable, recording — each saying what to do. Exits non-zero
+             only when every check came back UNKNOWN: a NO is a successful
+             diagnosis. "intake writable", when that check is active, runs
+             one bounded probe operation using at most one inert non-.json
+             file in the directory a search records into; cleanup is
+             attempted and a leftover is reported by pathname.
+             "recording" flags recent miner activity with
              nothing queued locally or verified at the AS. -json reports as
              one JSON object instead of text
   earnings   what the chain has paid to your payout address
@@ -105,8 +111,11 @@ wallet (a reward address this installation controls):
 
 Every command takes -config <file>, falling back to TOKENDROP_CONFIG, then
 ./tokendrop.toml. The [mining] block names the AS, chain and slot; the
-[miner] block turns the drop-in miner on; [platform] names the search
-platform connect talks to (defaults to platform.nyks.dev). Searches take
+[miner] block says router intake is configured (whether mining is ON is the
+persisted decision, not a config key); [platform] names two hosts — base_url,
+the portal a printed claim URL is checked against and nothing dials
+(platform.nyks.dev), and agents_api_url, where connect and mining enable
+actually send register/status/enroll (agents-v1.nyks.dev). Searches take
 your sr- key from TOKENDROP_API_KEY if it is set, else from the file
 login (or connect) wrote. Otherwise run connect or login to set up search.
 `
