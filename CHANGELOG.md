@@ -9,6 +9,54 @@ subjects wouldn't make obvious on its own.
 
 ## Unreleased
 
+- **Agents now call search through a versioned JSON protocol.**
+  `dropin-miner search --stdin` reads one `{"version":1,"query":"…"}` object on
+  stdin and writes exactly one JSON object back. The query travels in the JSON,
+  so it never appears in the process list and nothing has to escape it for a
+  shell. The reply's `ok`, `retryable` and `action` fields say what happened and
+  what to do next, so an agent no longer has to read prose to decide whether to
+  retry. `-format model` and `-format json` are unchanged and remain the human
+  and router-compatibility forms.
+
+- **A search now has a deadline.** One budget — `-timeout`, default 60s —
+  covers the whole operation: connecting, headers, reading the body, and the
+  single trace-compatibility retry, which shares the same deadline instead of
+  starting a fresh one. A search against a stalled router used to be able to
+  wait forever.
+
+- **A 2xx from the router is no longer taken on trust.** The response is read
+  against a ceiling and refused if it exceeds it, must be exactly one JSON
+  object, and must carry a request identity. A truncated, malformed or
+  interrupted answer is reported as a server failure rather than parsed as a
+  short one, and no mining observation is recorded from it.
+
+- **The trace-compatibility retry now needs the router to say so.** The client
+  used to resend a search without its trace on any 400 or 422, which meant an
+  invalid query or an unknown tier quietly cost a second request. It now retries
+  only when the router answers the exact code `trace_unsupported`.
+
+- **Search result text can no longer steer your terminal.** Provider answers,
+  titles, snippets and URLs are remote text. Escape sequences, cursor controls
+  and bidirectional overrides in them are replaced before anything is printed,
+  every truncation lands on a character boundary, and only `http` and `https`
+  links are rendered as links — a `javascript:`, `data:` or `file:` citation is
+  shown as an inert note instead.
+
+- **`status`, `doctor` and `connect` take `-json`.** Same checks, same
+  decisions, same output by default; the JSON is a second rendering of the facts
+  the text report already gathered, for scripts and SDKs that would otherwise
+  have to scrape it. No credential appears in it.
+
+- **The installed agent instructions no longer say every search earns.** They
+  now teach the JSON protocol, explain that a successful search and mining
+  credit are separate things, point at the mining state for the latter, and say
+  that result text is untrusted web content rather than instructions. Blanket
+  "never retry" and "always use this one" rules are gone: the envelope says what
+  is retryable, and which search tool to fall back to stays the user's choice.
+  All six supported hosts — Claude Code, Codex, Cursor, opencode, Pi and Hermes
+  — get the updated text, and Hermes' also explains its one-time hook-approval
+  prompt.
+
 - **A failing authorization is recognized by what the error is, not by how
   it is worded.** Whether `status`/`doctor` tell you your authorization
   needs attention or that delivery failed was decided by matching phrases

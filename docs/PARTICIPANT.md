@@ -84,6 +84,23 @@ dropin-miner search -format model "what is proof of authority consensus"
 dropin-miner flush
 ```
 
+Your agent does not use that form. It uses the machine path, which takes the
+query as JSON on stdin so nothing has to escape it and it never reaches the
+process list:
+
+```bash
+dropin-miner search --stdin <<'JSON'
+{"version":1,"query":"what is proof of authority consensus"}
+JSON
+```
+
+That prints exactly one JSON object: `ok`, `exit_code`, `status`, `code`,
+`retryable` and `action` say what happened and what to do about it, `result`
+carries the answer and its citations, and `mining` carries the mining state.
+`status`, `doctor` and `connect` take `-json` and answer the same way.
+
+A search is bounded by `-timeout`, default 60s, covering the whole operation.
+
 ## Making it the default, or not
 
 Out of the box the skill tells your agent to prefer this search over its

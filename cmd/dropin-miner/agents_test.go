@@ -376,7 +376,10 @@ func TestAgentsRefusesToWriteWithoutATerminalOrYes(t *testing.T) {
 func TestAgentsPrintsRulesWhenNoAgentIsFoundAndClientOverridesDetection(t *testing.T) {
 	m, ops := newFakeMachine()
 	code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
-	if code != exitOK || !strings.Contains(out, "no coding agent found") || !strings.Contains(out, "For public-web search, run:") {
+	// The snippet a participant pastes into AGENTS.md now teaches the
+	// structured path, so the phrase asserted here moved with it.
+	if code != exitOK || !strings.Contains(out, "no coding agent found") ||
+		!strings.Contains(out, "send one JSON request on stdin") || !strings.Contains(out, "--stdin") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	code, out, _ = runAgents(t, ops, nil, "install", "-config", testCfg, "-yes", "-client", "codex")
