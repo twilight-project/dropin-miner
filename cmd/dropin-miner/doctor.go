@@ -748,7 +748,9 @@ var _ asClient = (*auth.MiningClient)(nil)
 // These two checks answer #21: "searches are running but nothing is being
 // recorded" had no line of its own, because every other check reads the AS
 // or the store and neither can see the one thing that breaks — the intake
-// directory the hook writes to not being the one the flush reads from.
+// intake directory the `search` command writes into not being the one the
+// flush reads from. (The record is written by search itself, through
+// writeIntake; the hooks maintain lineage and start flushes.)
 
 // intakeProbeOps is the seam for the one write doctor performs.
 //
@@ -801,7 +803,14 @@ type intakeProbeResult struct {
 	Leftover string
 }
 
-func (p intakeProbeResult) ok() bool { return p.Stage == "" && p.Leftover == "" }
+// ok means the probe ran AND every stage succeeded.
+//
+// Ran is part of it because a probe that was deliberately skipped has
+// established nothing. Reading "no failure recorded" as success is how a
+// check reports OK for a directory it never touched, and how `recording`
+// would go on to call a state suspicious on the strength of writability it
+// never tested.
+func (p intakeProbeResult) ok() bool { return p.Ran && p.Stage == "" && p.Leftover == "" }
 
 // probeIntakeWritable writes and removes one file in the intake directory.
 //
@@ -884,8 +893,15 @@ func doctorIntakeCheck(f doctorFacts) doctorCheck {
 	}
 	p := f.IntakeProbe
 	if p.ParentMissing {
-		c.Verdict = verdictOK
-		c.Detail = fmt.Sprintf("not created yet; the first search creates %s", p.Dir)
+		// Nothing was tried, so nothing is known. The bounded-creation
+		// rule is what stopped it — doctor will not build a directory
+		// tree to diagnose one — and saying OK here would report a
+		// writable intake directory on the strength of never having
+		// looked.
+		c.Verdict = verdictUnknown
+		c.Detail = fmt.Sprintf("could not determine — %s and its parent do not exist, "+
+			"and doctor does not create the parent tree merely to test it; "+
+			"the first search creates the directory", p.Dir)
 		return c
 	}
 	if p.ok() {
@@ -1012,7 +1028,9 @@ func doctorRecordingCheck(f doctorFacts) doctorCheck {
 		// Never "recent": a clock that disagrees with the stamp makes
 		// every window comparison below meaningless.
 		return undetermined("the flush stamp is in the future")
-	case !f.IntakeProbe.ok() && !f.IntakeProbe.ParentMissing:
+	case f.IntakeProbe.ParentMissing:
+		return undetermined("intake writability was not tested; see intake writable")
+	case !f.IntakeProbe.ok():
 		return undetermined("the intake probe failed; see intake writable")
 	}
 
@@ -1052,6 +1070,16 @@ func doctorRecordingCheck(f doctorFacts) doctorCheck {
 		return undetermined("the AS did not report this epoch's activity")
 	}
 	a := f.Activity
+	if a.VerifiedActivity && a.VerifiedObservationCount == 0 &&
+		a.PendingObservationCount == 0 && a.RejectedObservationCount == 0 {
+		// The AS owns the eligibility verdict and also reports the count
+		// it was derived from; pkg/auth keeps both rather than
+		// recomputing one, precisely so a disagreement stays visible.
+		// Concluding "nothing reached the AS" from an answer that says
+		// there was verified activity would resolve that contradiction in
+		// the participant's disfavor, so it is reported instead.
+		return undetermined("the AS reports verified activity for this epoch but a verified count of zero; the two disagree")
+	}
 	if a.VerifiedObservationCount > 0 || a.PendingObservationCount > 0 || a.RejectedObservationCount > 0 {
 		c.Verdict = verdictOK
 		c.Detail = fmt.Sprintf("the AS has %d verified, %d pending and %d rejected for this epoch",
@@ -1061,8 +1089,9 @@ func doctorRecordingCheck(f doctorFacts) doctorCheck {
 
 	c.Verdict = verdictUnknown
 	c.Detail = fmt.Sprintf("recent miner activity, but nothing is queued locally or verified at the AS; "+
-		"if searches have been running, check that %s is the directory the agent's hook writes to", f.IntakeDir)
-	c.Fix = "dropin-miner agents status, then re-run `dropin-miner agents install` if the hook points somewhere else"
+		"if searches have been running, check that %s is the mining intake directory used by "+
+		"the agent's `dropin-miner search` command", f.IntakeDir)
+	c.Fix = "dropin-miner agents status; re-run `dropin-miner agents install` if the agent is using another config or lacks sandbox access"
 	return c
 }
 

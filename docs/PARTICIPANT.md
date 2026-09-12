@@ -237,16 +237,25 @@ still are not earning.
 locally or verified at the AS" means the mining plane ran recently — a search,
 a session hook, or a manual flush — and yet nothing is waiting in your intake
 directory, nothing is in the spool, and the AS has nothing for this epoch.
-There is one thing to check: that the directory your agent's hook writes into
-is the same `miner.intake_dir` the flush reads from. `dropin-miner agents
-status` shows what is installed; re-running `dropin-miner agents install`
-rewrites the hooks to point at the configured directory. This check is a
-heuristic and says so — it never reports a failure, because none of the
-evidence it reads can prove one.
+There is one thing to check: that `miner.intake_dir` is the mining intake
+directory the agent's own `dropin-miner search` command writes into. The record
+is written by `search` itself; the session hooks maintain lineage and start
+flushes, they do not write it. So the usual cause is an agent running with a
+different config — or, under a sandbox, one that cannot write there at all.
+`dropin-miner agents status` shows what is installed; re-run `dropin-miner
+agents install` if the agent is using another config or lacks sandbox access.
+This check is a heuristic and says so — it never reports a failure, because
+none of the evidence it reads can prove one.
 
 `recording` can also say **`could not determine — …`**. That is not a
 failure either; it means one of the things it reads was unreadable, or the AS
 did not answer, so it declined to guess. The reason is on the line.
+
+`intake writable` can say **`could not determine`** too, when neither the
+intake directory nor its parent exists yet. That is not a fault: `doctor` will
+not build a directory tree merely to test one, so it reports that it did not
+look rather than guessing. Your first search creates the directory, and the
+check answers properly from then on.
 
 **`intake writable`** speaks only for the process that ran `doctor` — usually
 you, at a terminal. A search runs inside your agent's sandbox, which may have

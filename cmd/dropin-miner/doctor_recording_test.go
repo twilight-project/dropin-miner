@@ -320,14 +320,38 @@ func TestDirectoryCreationIsBoundedToTheIntakeDirectoryItself(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, "missing-parent")); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("doctor created a directory above the intake directory: %v", err)
 		}
+		// Nothing was tried, so nothing is known. A skipped probe that
+		// reported OK would be claiming a writable directory it never
+		// touched — and would let `recording` go on to call the state
+		// suspicious on writability it never tested.
 		f := minerFacts(dir)
 		f.IntakeProbe = res
 		c := doctorIntakeCheck(f)
-		if c.Verdict != verdictOK {
-			t.Errorf("verdict %s, want OK — nothing is wrong yet", c.Verdict)
+		if c.Verdict != verdictUnknown {
+			t.Errorf("verdict %s, want UNKNOWN — the probe established nothing", c.Verdict)
 		}
-		if !strings.Contains(c.Detail, "not created yet") || !strings.Contains(c.Detail, dir) {
-			t.Errorf("detail %q, want 'not created yet' naming %s", c.Detail, dir)
+		if !strings.HasPrefix(c.Detail, "could not determine — ") {
+			t.Errorf("detail %q does not say why it could not determine", c.Detail)
+		}
+		for _, want := range []string{dir, "do not exist", "does not create the parent tree"} {
+			if !strings.Contains(c.Detail, want) {
+				t.Errorf("detail %q is missing %q", c.Detail, want)
+			}
+		}
+
+		// And the heuristic refuses to conclude anything from it.
+		rf := suspiciousFacts()
+		rf.IntakeDir, rf.IntakeProbe = dir, res
+		rc := doctorRecordingCheck(rf)
+		if rc.Verdict != verdictUnknown {
+			t.Errorf("recording verdict %s, want UNKNOWN", rc.Verdict)
+		}
+		if !strings.HasPrefix(rc.Detail, "could not determine — ") ||
+			!strings.Contains(rc.Detail, "intake writable") {
+			t.Errorf("recording detail %q should defer to the intake check", rc.Detail)
+		}
+		if strings.Contains(rc.Detail, "recent miner activity") {
+			t.Error("the suspicious advice is reachable with writability untested")
 		}
 	})
 }
@@ -394,7 +418,7 @@ func TestTheAdviceAppearsOnlyInTheSuspiciousState(t *testing.T) {
 	for _, want := range []string{
 		"recent miner activity",
 		"nothing is queued locally or verified at the AS",
-		"the directory the agent's hook writes to",
+		"the mining intake directory used by the agent's `dropin-miner search` command",
 		"/fictional/tokendrop/intake",
 	} {
 		if !strings.Contains(c.Detail, want) {
@@ -711,5 +735,87 @@ func TestTheDoctorStampReaderSeparatesAbsentFromUnreadable(t *testing.T) {
 	path := filepath.Join(dir, "malformed-JSON.json")
 	if st := readFlushStamp(path); st.V != 0 {
 		t.Errorf("readFlushStamp changed behavior: %+v", st)
+	}
+}
+
+// A probe that was never run has established nothing, and ok() has to say
+// so. "No failure recorded" and "succeeded" are different statements, and
+// collapsing them is what let a skipped probe read as a writable directory.
+func TestASkippedProbeIsNotASuccessfulOne(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		res  intakeProbeResult
+		want bool
+	}{
+		{"ran and succeeded", intakeProbeResult{Ran: true}, true},
+		{"never ran", intakeProbeResult{}, false},
+		{"parent missing", intakeProbeResult{ParentMissing: true}, false},
+		{"ran and failed", intakeProbeResult{Ran: true, Stage: probeStageWrite}, false},
+		{"ran, left a file", intakeProbeResult{Ran: true, Leftover: "/x/.doctor-probe.tmp"}, false},
+	} {
+		if got := tc.res.ok(); got != tc.want {
+			t.Errorf("%s: ok() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The AS reports both an eligibility verdict and the count it came from,
+// and pkg/auth keeps them apart rather than recomputing one. When they
+// disagree, concluding "nothing reached the AS" resolves the contradiction
+// against the participant, so the check declines instead.
+func TestAContradictoryASActivityAnswerIsNotTheSuspiciousState(t *testing.T) {
+	f := suspiciousFacts()
+	f.Activity = &auth.EpochActivity{VerifiedActivity: true} // counts all zero
+	c := doctorRecordingCheck(f)
+
+	if c.Verdict != verdictUnknown {
+		t.Fatalf("verdict %s, want UNKNOWN", c.Verdict)
+	}
+	if strings.Contains(c.Detail, "recent miner activity") {
+		t.Errorf("a contradictory AS answer reached the suspicious advice: %q", c.Detail)
+	}
+	if !strings.HasPrefix(c.Detail, "could not determine — ") {
+		t.Errorf("detail %q does not say why", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "disagree") {
+		t.Errorf("detail %q does not name the disagreement", c.Detail)
+	}
+
+	// The consistent answers are unaffected: a real zero still means the
+	// AS has nothing, and any positive count still proves delivery.
+	consistentZero := suspiciousFacts()
+	if got := doctorRecordingCheck(consistentZero); !strings.Contains(got.Detail, "recent miner activity") {
+		t.Errorf("a consistent zero no longer reaches the advice: %q", got.Detail)
+	}
+	for _, a := range []*auth.EpochActivity{
+		{VerifiedActivity: true, VerifiedObservationCount: 1},
+		{PendingObservationCount: 1},
+		{RejectedObservationCount: 1},
+	} {
+		g := suspiciousFacts()
+		g.Activity = a
+		if got := doctorRecordingCheck(g); got.Verdict != verdictOK {
+			t.Errorf("activity %+v gave %s/%q, want OK", a, got.Verdict, got.Detail)
+		}
+	}
+}
+
+// Hooks do not write the intake record; `search` does, through writeIntake.
+// Telling a participant otherwise sends them to re-install hooks for a
+// problem that lives in the agent's config or its sandbox.
+func TestTheAdviceDoesNotClaimHooksWriteIntake(t *testing.T) {
+	c := doctorRecordingCheck(suspiciousFacts())
+	for _, forbidden := range []string{"hook writes", "hook writes to", "the hook points"} {
+		if strings.Contains(c.Detail, forbidden) || strings.Contains(c.Fix, forbidden) {
+			t.Errorf("the advice claims hooks write intake (%q):\n detail %q\n fix %q", forbidden, c.Detail, c.Fix)
+		}
+	}
+	if !strings.Contains(c.Detail, "dropin-miner search") {
+		t.Errorf("the advice does not name the command that writes the record: %q", c.Detail)
+	}
+	for _, want := range []string{"agents status", "another config", "sandbox access"} {
+		if !strings.Contains(c.Fix, want) {
+			t.Errorf("fix %q is missing %q", c.Fix, want)
+		}
 	}
 }
