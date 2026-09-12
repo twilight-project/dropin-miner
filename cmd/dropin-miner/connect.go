@@ -253,11 +253,14 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 // is the same run with its narration captured and one envelope emitted
 // from what the run persisted.
 //
-// The flow itself is untouched: the same single-flight lock, the same
-// pending-registration recovery, the same poll loop, the same decisions.
-// Machine mode changes where the words go, not what happens — a JSON mode
-// that took a different path through registration would be a second,
-// less-tested registration client.
+// The registration implementation is shared: the same single-flight lock,
+// the same pending-registration recovery, the same poll loop, the same
+// decisions. Machine mode adds only safety gates at the points where a
+// participant decision would otherwise be required — connectNeedsHumanDecision
+// before this run starts, and the mid-run gate inside connectRun for the one
+// case that pre-check cannot see ahead of time (below) — and never
+// substitutes an answer of its own; a JSON mode that took a different path
+// through registration would be a second, less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if !jsonRequested(args) {
 		return connectRun(args, stdin, stdout, stderr, getenv, false)
@@ -296,9 +299,11 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		// only learn a recovered identity is expired AFTER calling
 		// /v1/agents/me, which this pre-check deliberately never does (it
 		// is a pure disk read). The signal is structural — a sentinel exit
-		// code, never a prose match — and the envelope is byte-identical
-		// to the pre-check's own, since it is the same refusal reached by
-		// a different door.
+		// code, never a prose match — and the public classification is
+		// identical to the pre-check's own (exitUsage, human_decision_required,
+		// action=connect); only the explanatory message differs, naming the
+		// recovered-expired case specifically rather than reusing the
+		// pre-check's generic "no mining decision on file" wording.
 		emitMachine(stdout, commandEnvelope{
 			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
 			Error: &machineError{
@@ -367,13 +372,16 @@ func connectNeedsHumanDecision(cfgPath string, force bool, getenv func(string) s
 	reg, ok, rerr := store.LoadAgentRegistration()
 	switch {
 	case errors.Is(rerr, auth.ErrAgentRegistrationCorrupt):
-		// The one that matters. connectRun's recovery treats a corrupt
-		// agent.json as no usable registration — reg, existed = {}, false
-		// — and falls through to the fresh-registration branch, which is
-		// where the mining question lives. "Cannot be read" therefore has
-		// to mean the same thing here as it means there: absent. Reading
-		// it as "let the run decide" is what let this path mint a fresh
-		// registration and persist an implicit mining default.
+		// A corrupt agent.json beside a stored platform credential, with no
+		// -force, now attempts a /v1/agents/me reconstruction before fresh
+		// registration (B.3) — this pre-check cannot make that call itself,
+		// being a pure disk read. In that exact starting state,
+		// preflightFreshRegistration below still refuses (the credential
+		// already exists), so this pre-check correctly answers false either
+		// way: nothing is asked here. If the rebuild instead succeeds and
+		// reveals an expired identity, the mid-run machine gate inside
+		// connectRun (guarded on its own explicit machine flag) is what
+		// handles the resulting participant decision — not this pre-check.
 	case rerr != nil:
 		// Any other read failure stops connectRun before it asks
 		// anything, so there is no decision to guard.
