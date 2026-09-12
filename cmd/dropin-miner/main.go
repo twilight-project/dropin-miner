@@ -25,10 +25,15 @@ var version = "dev"
 const usageText = `usage: dropin-miner <command> [flags]
 
 the tool (what an agent runs):
-  search     one web search through the router: dropin-miner search
-             [-tier fast] [-format json|model] <query words>. Records the
-             served request for mining and starts a flush. Exit: 0=2xx,
-             1=transport, 2=usage, 3=HTTP 4xx, 4=HTTP 5xx.
+  search     one web search through the router, two forms: dropin-miner
+             search [-tier fast] [-format json|model] <query words> for a
+             person, or dropin-miner search --stdin for an agent (one
+             version-1 JSON request object on stdin, one JSON envelope on
+             stdout; -format is ignored, the envelope is always JSON).
+             -timeout bounds the whole search in either form, default
+             1m0s. Records the served request for mining and starts a
+             flush. Exit: 0=2xx, 1=transport, 2=usage, 3=HTTP 4xx, 4=HTTP
+             5xx.
   agents     agents install|status|uninstall — find Claude Code, Codex,
              Cursor, opencode, Pi and Hermes on this machine and give each
              the search skill and the hooks it supports. -dry-run previews,
@@ -51,7 +56,9 @@ unattended once claimed.
   connect    ask whether to mine, then register [-name …] (the answer hints
              the claim page's mining pre-tick); prints the claim URL and
              code and polls (bounded) until claimed. A second run resumes;
-             so does the next search, automatically
+             so does the next search, automatically. -json runs the same
+             flow non-interactively and emits one JSON envelope instead
+             of narration
   mining enable  turn mining on for an already-connected agent: asks for a
              payout address (empty creates a wallet — passphrase, mnemonic
              once, exactly like wallet init) or re-prints the claim URL if
@@ -60,7 +67,8 @@ unattended once claimed.
              family, best-effort — never blocks on the network. The
              platform's granted scope survives it; only a human at the
              console revokes that. mining enable mints a fresh family
-  status     report what this installation has and has not completed
+  status     report what this installation has and has not completed.
+             -json reports as one JSON object instead of text
 
 manual enrollment (the portal's older path; still works, coexists with
 connect): enroll -> payout -> join -> login
@@ -79,7 +87,8 @@ connect): enroll -> payout -> join -> login
 
 is it working, was I paid:
   doctor     checks in a participant's terms — connected, enrolled, joined,
-             payout address in force, earning — each saying what to do
+             payout address in force, earning — each saying what to do.
+             -json reports as one JSON object instead of text
   earnings   what the chain has paid to your payout address
 
 wallet (a reward address this installation controls):
