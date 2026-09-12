@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -550,6 +551,16 @@ func TestMeRejectsOversizedBodyAsReadErrorNotRefusal(t *testing.T) {
 	var refusal *RefusalError
 	if errors.As(err, &refusal) {
 		t.Fatalf("an oversized body was classified as a RefusalError, want a plain read/protocol error: %v", err)
+	}
+	// Not just "some error": a plain io.LimitReader(maxBodyBytes) read (the
+	// truncating read this deliberately isn't) would silently cut the body
+	// instead of detecting the oversize, and the resulting mid-string
+	// truncation would surface as a JSON syntax error with no mention of
+	// the size limit — a coincidentally-non-nil, non-refusal error that
+	// would otherwise pass the two checks above without proving anything
+	// about WHY it failed.
+	if !strings.Contains(err.Error(), "exceeds the size limit") {
+		t.Fatalf("err = %v, want it to name the size limit specifically (not merely be non-nil)", err)
 	}
 }
 
