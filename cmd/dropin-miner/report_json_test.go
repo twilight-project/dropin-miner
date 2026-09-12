@@ -350,43 +350,6 @@ func TestConnectJSONOutcomeFollowsTheStoredStatus(t *testing.T) {
 	}
 }
 
-// The parked recovery path must not have been started here. A source-level
-// guard, because the point is that no code for it exists at all.
-func TestTheParkedAgentsMeRecoveryIsAbsent(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(".", e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if bytes.Contains(raw, []byte("/v1/agents/me")) {
-			t.Errorf("%s references the parked GET /v1/agents/me recovery path", e.Name())
-		}
-	}
-	pkgEntries, err := os.ReadDir("../../pkg/platform")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range pkgEntries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join("../../pkg/platform", e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if bytes.Contains(raw, []byte("/v1/agents/me")) {
-			t.Errorf("pkg/platform/%s references the parked GET /v1/agents/me recovery path", e.Name())
-		}
-	}
-}
-
 // Nothing in this client opens a URL. The claim URL is printed for a
 // person, in both renderers.
 func TestNothingOpensAClaimURL(t *testing.T) {

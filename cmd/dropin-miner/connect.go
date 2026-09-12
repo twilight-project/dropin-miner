@@ -83,6 +83,15 @@ var (
 func connectLockPath(stateDir string) string { return filepath.Join(stateDir, "connect.lock") }
 func resumeStampPath(stateDir string) string { return filepath.Join(stateDir, "connect_resume.json") }
 
+// unclaimedNoLinkMessage (B.3) is what a foreground run prints in place
+// of the ordinary print-and-wait narration when the stored registration
+// is unclaimed but carries no claim link — a rebuild that recovered an
+// identity from GET /v1/agents/me before the platform served the claim
+// bootstrap fields for it (B.1's known gap), or any later run against
+// that same durable state. Never printed alongside the bare (empty) URL.
+const unclaimedNoLinkMessage = "registration recovered but it is unclaimed and its claim link is not retrievable " +
+	"from the platform; run `dropin-miner connect -force` to register a fresh agent, or wait for this one to expire"
+
 // resumeStamp records the last time -resume was attempted (successfully
 // spawned or not — the point is pacing attempts, not counting successes).
 type resumeStamp struct {
@@ -510,6 +519,7 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	} else {
 		var loadErr error
 		reg, existed, loadErr = store.LoadAgentRegistration()
+		wasCorrupt := false
 		if loadErr != nil {
 			if !errors.Is(loadErr, auth.ErrAgentRegistrationCorrupt) {
 				fmt.Fprintln(stderr, "dropin-miner:", loadErr)
@@ -520,7 +530,81 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			// below enforces that rule before any new Register call.
 			fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be decoded; checking for a credential conflict:", loadErr)
 			reg, existed = auth.AgentRegistration{}, false
+			wasCorrupt = true
 		}
+
+		// B.3: a corrupt or absent record beside a stored platform
+		// credential can now be rebuilt from the platform itself
+		// (GET /v1/agents/me — pkg/platform's Me, added by the router
+		// team specifically so this no longer has to mint a whole new
+		// agent) rather than refused outright, amending agent onboarding
+		// design rule 8. Observe first: nothing local changes before /me
+		// answers. -resume never attempts this (or a fresh Register) —
+		// it is the unattended background poll, not the place to
+		// originate a new registration or decide a corrupt one is dead.
+		// -force bypasses it deliberately, the same "replace, don't
+		// recover" signal it already is for the expired-replacement path
+		// below.
+		if !existed {
+			if *resume {
+				fmt.Fprintln(stdout, "connect -resume: no usable registration on file; run `dropin-miner connect` to register")
+				return exitOK
+			}
+			if !*force {
+				if credKey, keyErr := platformKey(cfg.Miner); keyErr == nil {
+					identity, meErr := client.Me(ctx, credKey)
+					if meErr != nil {
+						// ErrAgentNotFound and any other /me failure are both
+						// treated as "nothing to rebuild": preflightFreshRegistration
+						// gives the exact refusal a plain Register attempt would
+						// have given today (a stored platform key without -force),
+						// naming -force, with agent.json (corrupt or absent) left
+						// byte-identical — nothing is renamed on a refusal.
+						if !errors.Is(meErr, platform.ErrAgentNotFound) {
+							fmt.Fprintln(stderr, "dropin-miner: could not rebuild the registration from the platform:", meErr)
+						}
+						if perr := preflightFreshRegistration(cfg.Miner, *force); perr != nil {
+							fmt.Fprintln(stderr, "dropin-miner:", perr)
+						}
+						return exitTransport
+					}
+
+					if wasCorrupt {
+						if perr := store.PreserveCorruptAgentRegistration(); perr != nil {
+							fmt.Fprintln(stderr, "dropin-miner:", perr)
+							return exitTransport
+						}
+					}
+					rebuilt := auth.AgentRegistration{
+						AgentID:            identity.AgentID,
+						Status:             identity.Status,
+						Scopes:             identity.Scopes,
+						ClaimExpiresAt:     identity.ClaimExpiresAt,
+						LastEnrollmentSlot: identity.LastEnrollmentSlot,
+						LastEnrollmentAt:   identity.LastEnrollmentAt,
+					}
+					if identity.Status == "unclaimed" {
+						rebuilt.ClaimURL = identity.ClaimURL
+						rebuilt.ClaimCode = identity.ClaimCode
+					}
+					if serr := store.SaveAgentRegistration(rebuilt); serr != nil {
+						// The next run retries the rebuild from scratch — this
+						// is why an absent record is handled identically to a
+						// corrupt one above; there is nothing else to persist
+						// that would make the retry redundant.
+						fmt.Fprintln(stderr, "dropin-miner: rebuilt registration from the platform but could not persist it:", serr)
+						return exitTransport
+					}
+					reg, existed = rebuilt, true
+
+					if identity.Status == "unclaimed" && identity.ClaimURL == "" {
+						fmt.Fprintln(stdout, unclaimedNoLinkMessage)
+						return exitOK
+					}
+				}
+			}
+		}
+
 		if existed && !*resume && reg.Status == "unclaimed" {
 			// A foreground connect must discover a live expiry before it
 			// prints or follows the old claim target. Detached resume keeps
@@ -668,10 +752,18 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// the stored record (pollOnce does the clearing) and this print is
 	// skipped from then on.
 	if !*resume && reg.Status == "unclaimed" {
-		fmt.Fprintln(stdout, "claim this agent:")
-		fmt.Fprintln(stdout, "  "+reg.ClaimURL)
-		if reg.ClaimCode != "" {
-			fmt.Fprintln(stdout, "code:", reg.ClaimCode)
+		// B.3: a registration recovered without a claim link is durable —
+		// this never falls back into printing the bare (empty) URL, on
+		// this run or any later one, until the platform reports claimed
+		// or expired or -force replaces it.
+		if reg.ClaimURL == "" {
+			fmt.Fprintln(stdout, unclaimedNoLinkMessage)
+		} else {
+			fmt.Fprintln(stdout, "claim this agent:")
+			fmt.Fprintln(stdout, "  "+reg.ClaimURL)
+			if reg.ClaimCode != "" {
+				fmt.Fprintln(stdout, "code:", reg.ClaimCode)
+			}
 		}
 	}
 

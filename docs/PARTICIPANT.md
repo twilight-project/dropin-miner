@@ -63,9 +63,17 @@ the new platform identity. An unclaimed registration that expires is replaced
 by a foreground `dropin-miner connect`; the replacement changes only the
 platform agent and its key, preserving the wallet, payout choice, auth state
 and mining evidence. A detached `connect -resume` records the expiry but does
-not create a new identity. If local registration metadata is unreadable while
-a platform key exists, connect stops with a local-state conflict; use
+not create a new identity. If local registration metadata is lost or
+unreadable while a platform key still exists, connect rebuilds it from the
+platform itself rather than minting a new agent — nothing local changes until
+that lookup answers. If the platform no longer recognizes the key (revoked,
+or genuinely unknown), connect stops with a local-state conflict instead; use
 `dropin-miner connect -force` only when you mean to replace that credential.
+A rebuilt registration that is still unclaimed but whose claim link the
+platform did not return prints a one-line notice instead of a link — wait for
+it to be claimed or expire, or `connect -force` to start over. `-resume`
+never attempts a rebuild (or a fresh registration): it is the unattended
+background poll, not the place a new identity gets decided.
 
 ## Then check
 

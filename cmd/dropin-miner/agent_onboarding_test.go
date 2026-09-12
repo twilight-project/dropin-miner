@@ -21,7 +21,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,6 +52,7 @@ type stubPlatform struct {
 	registerCalls           int
 	statusCalls             int
 	enrollCalls             int
+	meCalls                 int
 	lastRequestedScopes     []string
 	lastRequestedScopesSeen bool
 	failNextRegisters       int
@@ -58,15 +61,21 @@ type stubPlatform struct {
 	statusError             bool
 	statusByAgent           map[string]string
 	scopesByAgent           map[string][]string
+	agentByKey              map[string]string // bearer key -> agent id, for /v1/agents/me
+	claimCodeByAgent        map[string]string
+	meError                 bool // every /v1/agents/me call answers 500
+	meOmitClaimFields       bool // /v1/agents/me never sends claim_url/claim_code, modeling B.1's known gap
 }
 
 func newStubPlatform(t *testing.T) *stubPlatform {
 	t.Helper()
 	f := &stubPlatform{
-		status:        "unclaimed",
-		slots:         []string{"twilight-slot-3"},
-		statusByAgent: make(map[string]string),
-		scopesByAgent: make(map[string][]string),
+		status:           "unclaimed",
+		slots:            []string{"twilight-slot-3"},
+		statusByAgent:    make(map[string]string),
+		scopesByAgent:    make(map[string][]string),
+		agentByKey:       make(map[string]string),
+		claimCodeByAgent: make(map[string]string),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +112,8 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 		}
 		f.statusByAgent[agentID] = registrationStatus
 		f.scopesByAgent[agentID] = registrationScopes
+		f.agentByKey[key] = agentID
+		f.claimCodeByAgent[agentID] = claimCode
 		drop := f.dropNextRegisterBodies > 0
 		if drop {
 			f.dropNextRegisterBodies--
@@ -171,6 +182,47 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 			writeStubJSON(w, http.StatusOK, map[string]any{"token": "enroll-jwt-1"}) // #nosec G101 -- a canned stub response, not a credential
 		}
 	})
+	// GET /v1/agents/me (B.2): a by-key self-lookup, keyed on the bearer
+	// the register handler above minted for that agent. 404 for a key
+	// this stub never issued (or one it does not recognize as current —
+	// modeling a revoked key, which the design gives the same answer as
+	// an unknown one).
+	mux.HandleFunc("GET /v1/agents/me", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.meCalls++
+		meError := f.meError
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		id, known := f.agentByKey[key]
+		var st string
+		var scopes, slots []string
+		var claimCode string
+		if known {
+			st = f.statusByAgent[id]
+			scopes = f.scopesByAgent[id]
+			slots = f.slots
+			claimCode = f.claimCodeByAgent[id]
+		}
+		omitClaim := f.meOmitClaimFields
+		f.mu.Unlock()
+		if meError {
+			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "internal"}})
+			return
+		}
+		if !known {
+			writeStubJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "not_found"}})
+			return
+		}
+		body := map[string]any{
+			"agent_id": id,
+			"status":   st, "scopes": scopes,
+			"mining": map[string]any{"available": len(slots) > 0, "slots": slots},
+		}
+		if st == "unclaimed" && !omitClaim {
+			body["claim_url"] = f.srv.URL + "/claim/" + claimCode
+			body["claim_code"] = claimCode
+		}
+		writeStubJSON(w, http.StatusOK, body)
+	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -230,6 +282,28 @@ func (f *stubPlatform) counts() (register, status, enroll int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registerCalls, f.statusCalls, f.enrollCalls
+}
+
+func (f *stubPlatform) meCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.meCalls
+}
+
+// setMeError makes every /v1/agents/me call answer 500, modeling a
+// transient platform failure during a rebuild attempt.
+func (f *stubPlatform) setMeError(fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.meError = fail
+}
+
+// setMeOmitsClaimFields models B.1's known gap: /v1/agents/me answering
+// for a still-unclaimed agent without claim_url/claim_code.
+func (f *stubPlatform) setMeOmitsClaimFields(omit bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.meOmitClaimFields = omit
 }
 
 // requestedScopes returns the requested_scopes the most recent register
@@ -2034,9 +2108,14 @@ func TestConnectPreservesCorruptRegistrationWithoutPlatformCredential(t *testing
 	}
 }
 
-// A corrupt registration beside a platform credential is a local identity
-// conflict. Re-registering would create a second identity before the client
-// knows whether the existing key belongs to the unreadable record.
+// A corrupt registration beside a platform credential the platform does not
+// recognize (revoked, or never actually registered — /v1/agents/me answers
+// 404 either way, §5.2's deliberate no-oracle answer) is refused exactly as
+// a plain fresh-registration attempt would refuse it, naming -force. B.3
+// added the /me rebuild attempt in between, but a 404 leaves this test's
+// outcome unchanged: still zero Register calls, still the credential
+// conflict message, still the corrupt bytes and the existing credential
+// both untouched until -force authorizes a replacement.
 func TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential(t *testing.T) {
 	withShortConnectTimings(t)
 	platform := newStubPlatform(t)
@@ -2080,6 +2159,9 @@ func TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential(t *test
 	if registerCalls, _, _ := platform.counts(); registerCalls != 0 {
 		t.Fatalf("Register calls = %d, want 0", registerCalls)
 	}
+	if platform.meCallCount() != 1 {
+		t.Fatalf("/v1/agents/me calls = %d, want exactly 1 (the rebuild attempt, which came back 404)", platform.meCallCount())
+	}
 	if !strings.Contains(errOut, "credentials.json already holds a platform key") {
 		t.Fatalf("missing credential-conflict diagnostic: %q", errOut)
 	}
@@ -2099,6 +2181,9 @@ func TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential(t *test
 	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
 		t.Fatalf("Register calls after -force = %d, want 1", registerCalls)
 	}
+	if platform.meCallCount() != 1 {
+		t.Fatalf("/v1/agents/me calls after -force = %d, want still exactly 1 (-force bypasses the rebuild entirely)", platform.meCallCount())
+	}
 	reg, ok := loadAgent(t, stateDir)
 	if !ok || reg.AgentID != "agent-1" {
 		t.Fatalf("fresh registration was not persisted after -force: %+v ok=%v", reg, ok)
@@ -2114,6 +2199,319 @@ func TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential(t *test
 	}
 	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || !ok {
 		t.Fatalf("-force cleared flush health: ok=%v err=%v", ok, err)
+	}
+}
+
+// ── B.3: rebuilding a lost or unreadable registration from the platform ──
+
+// registerAgent drives a real Register call against the stub, independent
+// of connectRun, so a rebuild test can start from a credential the
+// platform genuinely recognizes (agentByKey/statusByAgent both populated)
+// rather than one hand-inserted into the stub's maps.
+func registerAgent(t *testing.T, platform *stubPlatform) (agentID, key string) {
+	t.Helper()
+	c := platformapi.New(platform.srv.URL, platform.srv.URL)
+	reg, err := c.Register(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg.AgentID, reg.Key
+}
+
+// setupLostRegistration writes key to credentials.json and, when corrupt
+// is true, an undecodable agent.json beside it (returning those bytes for
+// the caller to assert against later); when corrupt is false, agent.json
+// is simply absent. Either way this models "a platform credential is
+// stored, but the local registration is gone."
+func setupLostRegistration(t *testing.T, cfg *config.Config, key string, corrupt bool) []byte {
+	t.Helper()
+	stateDir := cfg.Mining.StateDir
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credPath := credentialsPath(cfg.Miner)
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentials(credPath, credentials{APIKey: key}); err != nil {
+		t.Fatal(err)
+	}
+	if !corrupt {
+		return nil
+	}
+	corruptBytes := []byte("{not json")
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return corruptBytes
+}
+
+// A claimed-with-mining identity, rebuilt from /v1/agents/me, continues
+// straight into the ordinary enrollment flow — no Register, and (for the
+// corrupt case) the undecodable bytes are preserved only after /me
+// actually answered, never before.
+func TestConnectRebuildsClaimedRegistrationFromThePlatform(t *testing.T) {
+	for _, corrupt := range []bool{true, false} {
+		corrupt := corrupt
+		name := "absent"
+		if corrupt {
+			name = "corrupt"
+		}
+		t.Run(name, func(t *testing.T) {
+			withShortConnectTimings(t)
+			platform := newStubPlatform(t)
+			as := newStubAS(t)
+			cfgPath, stateDir := connectConfig(t, platform.srv.URL, as.srv.URL)
+			cfg := mustLoadConfig(t, cfgPath)
+
+			agentID, key := registerAgent(t, platform)
+			platform.claim("mining")
+			setupLostRegistration(t, cfg, key, corrupt)
+			// This installation already decided to mine on a prior run
+			// (the same run that originally registered, before agent.json
+			// was lost) — the rebuild resumes an existing decision, it
+			// does not re-ask it.
+			store, err := auth.OpenStore(cfg.Mining.StateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveMiningEnabled(true); err != nil {
+				t.Fatal(err)
+			}
+			corruptBytes, _ := os.ReadFile(filepath.Join(cfg.Mining.StateDir, "agent.json")) // #nosec G304 -- test controls its temporary state directory
+			registerCallsBefore, _, _ := platform.counts()
+
+			code, out, errOut := runConnect(t, cfgPath, nil)
+			if code != exitOK {
+				t.Fatalf("connect did not rebuild: code=%d stderr=%s", code, errOut)
+			}
+			if !strings.Contains(out, "enrolled for mining on") {
+				t.Fatalf("did not continue into enrollment: stdout=%q", out)
+			}
+			reg, ok := loadAgent(t, stateDir)
+			if !ok || reg.AgentID != agentID || reg.Status != "claimed" || reg.LastEnrollmentSlot == "" {
+				t.Fatalf("rebuilt registration not as expected: %+v ok=%v", reg, ok)
+			}
+			if registerCalls, _, enrollCalls := platform.counts(); registerCalls != registerCallsBefore || enrollCalls != 1 {
+				t.Fatalf("register calls = %d (want unchanged from %d), enroll calls = %d (want 1)", registerCalls, registerCallsBefore, enrollCalls)
+			}
+			if platform.meCallCount() == 0 {
+				t.Fatal("expected a /v1/agents/me call")
+			}
+			if corrupt {
+				got, err := os.ReadFile(filepath.Join(stateDir, "agent.json.corrupt")) // #nosec G304 -- test controls its temporary state directory
+				if err != nil || string(got) != string(corruptBytes) {
+					t.Fatalf("corrupt registration evidence was not preserved: err=%v contents=%q", err, got)
+				}
+			}
+		})
+	}
+}
+
+// An unclaimed identity whose claim bootstrap the platform still returns
+// rebuilds and continues the ordinary unclaimed flow: it prints the claim
+// URL/code exactly as a fresh Register's response would.
+func TestConnectRebuildsUnclaimedRegistrationWithClaimLink(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+
+	agentID, key := registerAgent(t, platform)
+	setupLostRegistration(t, cfg, key, true)
+	registerCallsBefore, _, _ := platform.counts()
+
+	code, out, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("connect did not rebuild: code=%d stderr=%s", code, errOut)
+	}
+	if !strings.Contains(out, "claim this agent:") || !strings.Contains(out, "AB12-CD34") {
+		t.Fatalf("did not print the recovered claim link: stdout=%q", out)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != agentID || reg.Status != "unclaimed" || reg.ClaimURL == "" || reg.ClaimCode != "AB12-CD34" {
+		t.Fatalf("rebuilt registration not as expected: %+v ok=%v", reg, ok)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+		t.Fatalf("Register calls = %d, want unchanged from %d", registerCalls, registerCallsBefore)
+	}
+}
+
+// The one documented gap (B.1): /v1/agents/me answering for a still-
+// unclaimed agent without the claim bootstrap fields. Rebuild persists
+// the identity anyway, prints the fallback (never a bare empty URL),
+// exits 0 without polling, and — on any later run, including `status` —
+// the durable state keeps printing the same fallback rather than ever
+// falling back into the ordinary print-and-wait narration.
+func TestConnectRebuildsUnclaimedRegistrationWithoutClaimLink(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	platform.setMeOmitsClaimFields(true)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+
+	agentID, key := registerAgent(t, platform)
+	setupLostRegistration(t, cfg, key, true)
+	registerCallsBefore, statusCallsBefore, _ := platform.counts()
+
+	code, out, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("connect exited %d, stderr=%s", code, errOut)
+	}
+	if !strings.Contains(out, "run `dropin-miner connect -force`") {
+		t.Fatalf("missing the recovered-without-link fallback: stdout=%q", out)
+	}
+	if strings.Contains(out, "claim this agent:") {
+		t.Fatalf("printed the ordinary print-and-wait narration despite no claim link: stdout=%q", out)
+	}
+	if strings.Contains(out, "  \n") {
+		t.Fatalf("printed a bare empty claim link: stdout=%q", out)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != agentID || reg.Status != "unclaimed" || reg.ClaimURL != "" {
+		t.Fatalf("rebuilt registration not as expected: %+v ok=%v", reg, ok)
+	}
+	if registerCalls, statusCalls, _ := platform.counts(); registerCalls != registerCallsBefore || statusCalls != statusCallsBefore {
+		t.Fatalf("register calls = %d (want unchanged from %d), status(poll) calls = %d (want unchanged from %d — no poll on the rebuild run)",
+			registerCalls, registerCallsBefore, statusCalls, statusCallsBefore)
+	}
+
+	// Second run: an ordinary load (not a rebuild — agent.json now decodes
+	// fine) must still never enter the print-and-wait narration.
+	code, out, errOut = runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("second connect exited %d, stderr=%s", code, errOut)
+	}
+	if !strings.Contains(out, "run `dropin-miner connect -force`") {
+		t.Fatalf("second run dropped the recovered-without-link fallback: stdout=%q", out)
+	}
+	if strings.Contains(out, "claim this agent:") {
+		t.Fatalf("second run printed the ordinary print-and-wait narration despite no claim link: stdout=%q", out)
+	}
+
+	// `status` reports the same durable state the same way — never a bare
+	// "claim at " followed by nothing.
+	statusOut := captureStdout(t, func() {
+		printAgentIdentityStatus([]string{"-config", cfgPath}, os.Stdout, os.Stderr, noEnv)
+	})
+	if !strings.Contains(statusOut, "recovered from the platform") {
+		t.Fatalf("status did not report the recovered-without-link state: %q", statusOut)
+	}
+	if strings.Contains(statusOut, "claim at \n") || strings.Contains(statusOut, "claim at\n") {
+		t.Fatalf("status printed a bare empty claim link: %q", statusOut)
+	}
+}
+
+// An identity that comes back expired from the rebuild flows into the
+// existing expired-replacement path unchanged — the same client.Status
+// re-verification and Register-a-replacement flow a normally-loaded
+// expired registration already takes.
+func TestConnectRebuildExpiredRegistrationFlowsIntoReplacementPath(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+
+	_, key := registerAgent(t, platform)
+	platform.setStatus("expired")
+	setupLostRegistration(t, cfg, key, true)
+	registerCallsBefore, _, _ := platform.counts()
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("connect did not replace the expired rebuild: code=%d stderr=%s", code, errOut)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != "agent-2" || reg.Status != "unclaimed" {
+		t.Fatalf("did not register a replacement after the expired rebuild: %+v ok=%v", reg, ok)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore+1 {
+		t.Fatalf("Register calls = %d, want %d (exactly one replacement Register)", registerCalls, registerCallsBefore+1)
+	}
+}
+
+// A transient /v1/agents/me failure (or a 404 for a genuinely unknown
+// key — TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential
+// covers that case directly) refuses the same way a plain fresh-Register
+// attempt would, and never renames the corrupt evidence: preserving it is
+// conditioned on /me actually answering, not merely being attempted.
+func TestConnectMeErrorRefusesWithoutRenamingCorruptRecord(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+
+	_, key := registerAgent(t, platform)
+	platform.setMeError(true)
+	corruptBytes := setupLostRegistration(t, cfg, key, true)
+	registerCallsBefore, _, _ := platform.counts()
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code == exitOK {
+		t.Fatal("connect succeeded despite a failing /v1/agents/me")
+	}
+	if !strings.Contains(errOut, "-force") {
+		t.Fatalf("missing -force guidance: %q", errOut)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+		t.Fatalf("Register calls = %d, want unchanged from %d", registerCalls, registerCallsBefore)
+	}
+	got, err := os.ReadFile(filepath.Join(stateDir, "agent.json")) // #nosec G304 -- test controls its temporary state directory
+	if err != nil || string(got) != string(corruptBytes) {
+		t.Fatalf("corrupt registration was renamed or modified despite the refusal: err=%v contents=%q", err, got)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "agent.json.corrupt")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("agent.json.corrupt should not exist after a refusal: err=%v", err)
+	}
+}
+
+// `-resume` never attempts the rebuild (or a fresh Register) on a lost or
+// unreadable registration: it is the unattended background poll, not the
+// place to originate a new registration or decide a corrupt one is dead.
+func TestConnectResumeNeverRebuildsOrRegistersOnLostRegistration(t *testing.T) {
+	for _, corrupt := range []bool{true, false} {
+		corrupt := corrupt
+		name := "absent"
+		if corrupt {
+			name = "corrupt"
+		}
+		t.Run(name, func(t *testing.T) {
+			withShortConnectTimings(t)
+			platform := newStubPlatform(t)
+			cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+			cfg := mustLoadConfig(t, cfgPath)
+
+			_, key := registerAgent(t, platform)
+			setupLostRegistration(t, cfg, key, corrupt)
+			registerCallsBefore, _, _ := platform.counts()
+
+			code, _, errOut := runConnect(t, cfgPath, nil, "-resume")
+			if code != exitOK {
+				t.Fatalf("-resume on a lost registration exited %d, stderr=%s", code, errOut)
+			}
+			if platform.meCallCount() != 0 {
+				t.Fatalf("/v1/agents/me calls = %d, want 0 (-resume must never rebuild)", platform.meCallCount())
+			}
+			if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+				t.Fatalf("Register calls = %d, want unchanged from %d (-resume must never register)", registerCalls, registerCallsBefore)
+			}
+			if _, err := os.Stat(filepath.Join(stateDir, "agent.json.corrupt")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("-resume must write nothing: agent.json.corrupt err=%v", err)
+			}
+			// loadAgent itself fails the test on ErrAgentRegistrationCorrupt,
+			// so check directly: the point here is "unchanged", not "decodes."
+			store, err := auth.OpenStore(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, rerr := store.LoadAgentRegistration(); corrupt {
+				if !errors.Is(rerr, auth.ErrAgentRegistrationCorrupt) {
+					t.Fatalf("-resume must write nothing: agent.json is no longer corrupt: ok=%v err=%v", ok, rerr)
+				}
+			} else if ok {
+				t.Fatal("-resume must write nothing: a registration now exists")
+			}
+		})
 	}
 }
 
