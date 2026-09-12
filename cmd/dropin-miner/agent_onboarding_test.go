@@ -2823,6 +2823,65 @@ func TestPendingRegistrationRecoveryPublishesWithoutRegister(t *testing.T) {
 	}
 }
 
+// B.3 review correction §3: the pending journal is checked BEFORE the
+// registration-load branch where the rebuild lives (connectRun's
+// `if hasPending {...} else {...}` — untouched by B.3), so a valid pending
+// journal must win outright even when a corrupt agent.json and a stored
+// platform credential are also present — exactly the combination that
+// would otherwise route into the /v1/agents/me rebuild.
+func TestPendingJournalRecoveryNeverCallsMeEvenWithACorruptRegistrationAndCredentialPresent(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := platformapi.New(cfg.Platform.AgentsAPIURL, cfg.Platform.BaseURL)
+	fresh, err := client.Register(context.Background(), "journal-plus-corrupt", nil)
+	if err != nil {
+		t.Fatalf("completed Register response: %v", err)
+	}
+	pending := pendingRegistrationFromPlatform(fresh)
+	if err := store.SavePendingRegistration(pending); err != nil {
+		t.Fatal(err)
+	}
+
+	// A platform credential is on file and agent.json is corrupt — the
+	// exact combination that, absent a pending journal, would route into
+	// the B.3 rebuild instead of a plain refusal.
+	if err := writeCredentials(credentialsPath(cfg.Miner), credentials{APIKey: pending.Key}); err != nil {
+		t.Fatal(err)
+	}
+	corruptBytes := []byte("{not json")
+	if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runConnect(t, cfgPath, nil)
+	if code != exitOK {
+		t.Fatalf("pending recovery with a corrupt registration and credential present failed: %d %s", code, errOut)
+	}
+	if platform.meCallCount() != 0 {
+		t.Fatalf("/v1/agents/me calls = %d, want 0 — the pending journal must win before any rebuild is considered", platform.meCallCount())
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != 1 {
+		t.Fatalf("Register calls = %d, want 1 (the journal's own completed Register, no fresh one)", registerCalls)
+	}
+	reg, ok := loadAgent(t, stateDir)
+	if !ok || reg.AgentID != pending.AgentID || reg.ClaimURL != pending.ClaimURL {
+		t.Fatalf("journaled registration was not published: %+v ok=%v", reg, ok)
+	}
+	if got, err := os.ReadFile(filepath.Join(stateDir, "agent.json.corrupt")); err != nil || string(got) != string(corruptBytes) { // #nosec G304 -- test controls its temporary state directory
+		t.Fatalf("the pre-existing corrupt registration evidence was not preserved as PR3 already does: err=%v contents=%q", err, got)
+	}
+	if _, ok, err := store.LoadPendingRegistration(); err != nil || ok {
+		t.Fatalf("journal was not cleared after recovery: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestPendingExpiredReplacementRecoveryCompletesAcrossRestart(t *testing.T) {
 	withShortConnectTimings(t)
 	platform := newStubPlatform(t)
