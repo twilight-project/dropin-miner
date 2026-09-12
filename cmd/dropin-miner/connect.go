@@ -260,7 +260,7 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 // less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if !jsonRequested(args) {
-		return connectRun(args, stdin, stdout, stderr, getenv)
+		return connectRun(args, stdin, stdout, stderr, getenv, false)
 	}
 	cfgPath, force, parseErr := connectMachineFlags(args)
 	// Selecting an output format must not select an answer. Machine mode
@@ -290,7 +290,27 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitUsage
 	}
 	var narration bytes.Buffer
-	code := connectRun(args, stdin, io.Discard, &narration, getenv)
+	code := connectRun(args, stdin, io.Discard, &narration, getenv, true)
+	if code == exitHumanDecisionRequired {
+		// Reached mid-run, past the pre-check above: a rebuild (B.3) can
+		// only learn a recovered identity is expired AFTER calling
+		// /v1/agents/me, which this pre-check deliberately never does (it
+		// is a pure disk read). The signal is structural — a sentinel exit
+		// code, never a prose match — and the envelope is byte-identical
+		// to the pre-check's own, since it is the same refusal reached by
+		// a different door.
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
+			Error: &machineError{
+				Message: "this installation's stored registration could not be read, and rebuilding it from " +
+					"the platform found an expired identity; replacing it needs a mining decision this run " +
+					"cannot invent. Run `dropin-miner connect` at a terminal, or set mining.enabled explicitly, " +
+					"then run this again.",
+				Source: "client",
+			},
+		})
+		return exitUsage
+	}
 	if parseErr != nil {
 		// connectRun's own parser has now produced the real usage
 		// failure, and the caller still gets exactly one envelope. No
@@ -402,7 +422,12 @@ func connectMachineFlags(args []string) (cfgPath string, force bool, err error) 
 	return *cfg, *forced, nil
 }
 
-func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+// machine is explicit, never inferred from stdout == io.Discard: the one
+// place inside this function that needs to know is the expired-replacement
+// branch below, and detecting it from the writer would be guessing the
+// caller's intent from an implementation detail of how cmdConnect happens
+// to capture narration today.
+func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, machine bool) int {
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
@@ -658,6 +683,22 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			}
 
 			if replace {
+				// Machine mode only: the pre-check in cmdConnect (see
+				// connectNeedsHumanDecision) cannot know this branch would
+				// be reached at all when the starting record was corrupt or
+				// absent — that conclusion only exists after the B.3
+				// rebuild's own /v1/agents/me call answered "expired" for a
+				// key the pre-check never dials. Ask the identical question
+				// here, mid-run, before decideRegistrationOutcome would
+				// otherwise take its non-interactive branch and persist an
+				// implicit decision. Interactive connect is untouched: this
+				// whole block is skipped when machine is false.
+				if machine {
+					decision := store.ReadMiningDecision()
+					if decision.State == auth.MiningUndecided && !cfg.MiningEnabledExplicit {
+						return exitHumanDecisionRequired
+					}
+				}
 				outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
 				if code != exitOK {
 					return code

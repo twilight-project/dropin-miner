@@ -24,6 +24,18 @@ const exitChainRejected = 3
 // wallet send resolves the same journal instead of building a new one.
 const exitOutcomeUnknown = 5
 
+// exitHumanDecisionRequired is connectRun's internal signal, in machine
+// mode only, that it reached a point mid-run where answering would mean
+// inventing a participant's mining decision (B.3 rebuild PR: a rebuilt
+// identity turning out to be expired, discovered only after the /v1/agents/me
+// call connectNeedsHumanDecision's own pre-check cannot make). It is never
+// a real process exit code — cmdConnect's JSON wrapper always translates it
+// to exitUsage, with the same code/action the ordinary pre-check gate uses,
+// before anything reaches main(). Deliberately out of the exit-code range
+// so a bug that let it leak unmapped would be obvious rather than silently
+// plausible.
+const exitHumanDecisionRequired = -1
+
 func orDefaults(cfgSource string) string {
 	if cfgSource == "" {
 		return "defaults/env, no config file found"
