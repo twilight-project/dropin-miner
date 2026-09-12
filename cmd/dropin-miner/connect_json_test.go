@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,12 +84,30 @@ func connectFixture(t *testing.T, explicitMining string) (cfgPath, stateDir stri
 	root := t.TempDir()
 	stateDir = filepath.Join(root, "state")
 	cfgPath = filepath.Join(root, "tokendrop.toml")
+
+	// The platform host is pinned at a local stub that refuses everything.
+	//
+	// Without this the config falls back to the real platform.nyks.dev,
+	// and the gate under test is the only thing standing between this test
+	// and a live registration attempt — so the moment a mutation disables
+	// the gate, the test dials a real host. A fixture whose safety depends
+	// on the code under test being correct is not a fixture. It also makes
+	// the mutation's red arrive in milliseconds instead of three minutes.
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"this test must never register"}`, http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(platform.Close)
+
 	toml := "[mining]\n"
 	if explicitMining != "" {
 		toml += "enabled = " + explicitMining + "\n"
 	}
 	toml += `state_dir = "` + filepath.ToSlash(stateDir) + `"
 spool_dir = "` + filepath.ToSlash(filepath.Join(root, "spool")) + `"
+
+[platform]
+base_url = "` + platform.URL + `"
+agents_api_url = "` + platform.URL + `"
 `
 	if err := os.WriteFile(cfgPath, []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
