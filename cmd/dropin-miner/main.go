@@ -32,8 +32,8 @@ the tool (what an agent runs):
              stdout; -format is ignored, the envelope is always JSON).
              -timeout bounds the whole search in either form, default
              1m0s. Records the served request for mining and starts a
-             flush. Exit: 0=2xx, 1=transport, 2=usage, 3=HTTP 4xx, 4=HTTP
-             5xx.
+             flush. Exit: 0=valid search response, 1=transport/timeout/
+             cancel, 2=usage, 3=HTTP 4xx, 4=HTTP 5xx or invalid server response.
   agents     agents install|status|uninstall — find Claude Code, Codex,
              Cursor, opencode, Pi and Hermes on this machine and give each
              the search skill and the hooks it supports. -dry-run previews,
@@ -56,9 +56,9 @@ unattended once claimed.
   connect    ask whether to mine, then register [-name …] (the answer hints
              the claim page's mining pre-tick); prints the claim URL and
              code and polls (bounded) until claimed. A second run resumes;
-             so does the next search, automatically. -json runs the same
-             flow non-interactively and emits one JSON envelope instead
-             of narration
+             so does the next search, automatically. -json emits one
+             JSON envelope instead of narration; if a participant
+             decision is required it reports that rather than prompting
   mining enable  turn mining on for an already-connected agent: asks for a
              payout address (empty creates a wallet — passphrase, mnemonic
              once, exactly like wallet init) or re-prints the claim URL if

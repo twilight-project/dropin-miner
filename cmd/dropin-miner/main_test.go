@@ -24,7 +24,7 @@ func section(t *testing.T, from, to string) string {
 func TestUsageTextSearchSection(t *testing.T) {
 	s := section(t, "\n  search ", "\n  agents ")
 
-	for _, want := range []string{"--stdin", "-tier", "-format"} {
+	for _, want := range []string{"--stdin", "-tier", "-format", "valid search response", "invalid server response"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("search section: missing %q\n%s", want, s)
 		}
@@ -54,6 +54,9 @@ func TestUsageTextConnectSection(t *testing.T) {
 
 	if !strings.Contains(s, "-json") {
 		t.Errorf("connect section: missing -json\n%s", s)
+	}
+	if !strings.Contains(s, "rather than prompting") {
+		t.Errorf("connect section: missing rather than prompting\n%s", s)
 	}
 }
 
