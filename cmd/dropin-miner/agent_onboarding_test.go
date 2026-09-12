@@ -65,6 +65,14 @@ type stubPlatform struct {
 	claimCodeByAgent        map[string]string
 	meError                 bool // every /v1/agents/me call answers 500
 	meOmitClaimFields       bool // /v1/agents/me never sends claim_url/claim_code, modeling B.1's known gap
+	// meHook, when set, runs synchronously right before a successful
+	// /v1/agents/me answer is written — a deterministic seam for timing a
+	// filesystem side effect (review correction §4) exactly between "the
+	// platform answered" and "the client persists what it learned",
+	// without a POSIX permission-bit assumption that behaves differently
+	// under a root test runner. Runs on the httptest handler's own
+	// goroutine: must not call testing.T methods directly.
+	meHook func()
 }
 
 func newStubPlatform(t *testing.T) *stubPlatform {
@@ -203,6 +211,7 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 			claimCode = f.claimCodeByAgent[id]
 		}
 		omitClaim := f.meOmitClaimFields
+		hook := f.meHook
 		f.mu.Unlock()
 		if meError {
 			writeStubJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"code": "internal"}})
@@ -220,6 +229,9 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 		if st == "unclaimed" && !omitClaim {
 			body["claim_url"] = f.srv.URL + "/claim/" + claimCode
 			body["claim_code"] = claimCode
+		}
+		if hook != nil {
+			hook()
 		}
 		writeStubJSON(w, http.StatusOK, body)
 	})
@@ -304,6 +316,16 @@ func (f *stubPlatform) setMeOmitsClaimFields(omit bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.meOmitClaimFields = omit
+}
+
+// setMeHook installs (or, with nil, removes) the synchronous hook run
+// right before a successful /v1/agents/me answer is written. See the
+// field's own doc comment: it executes on the handler's goroutine, so it
+// must not call testing.T methods directly.
+func (f *stubPlatform) setMeHook(hook func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.meHook = hook
 }
 
 // requestedScopes returns the requested_scopes the most recent register
@@ -2519,6 +2541,95 @@ func TestConnectResumeNeverRebuildsOrRegistersOnLostRegistration(t *testing.T) {
 				}
 			} else if ok {
 				t.Fatal("-resume must write nothing: a registration now exists")
+			}
+		})
+	}
+}
+
+// B.3 review correction §4: a transient local write failure right after
+// /v1/agents/me answers must not corrupt state or double-mint an agent.
+// The run fails loudly (non-zero, no Register), and once the obstruction
+// is gone the next foreground connect's rebuild reconstructs the exact
+// same identity from the platform — never a second one.
+//
+// The obstruction is a deterministic filesystem seam, not a POSIX
+// permission-bit assumption (chmod 0444 behaves differently, or not at
+// all, under a root test runner): the state directory is replaced by a
+// plain file at the exact moment the stub answers /v1/agents/me, so
+// whatever this run next tries to persist there (PreserveCorruptAgentRegistration
+// and/or SaveAgentRegistration, both plain os-level file operations under
+// that same path) fails structurally on every OS, root or not.
+func TestConnectRebuildRetriesAfterATransientPersistFailure(t *testing.T) {
+	for _, corrupt := range []bool{true, false} {
+		corrupt := corrupt
+		name := "absent"
+		if corrupt {
+			name = "corrupt"
+		}
+		t.Run(name, func(t *testing.T) {
+			withShortConnectTimings(t)
+			platform := newStubPlatform(t)
+			cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+			cfg := mustLoadConfig(t, cfgPath)
+
+			agentID, key := registerAgent(t, platform)
+			corruptBytes := setupLostRegistration(t, cfg, key, corrupt)
+			registerCallsBefore, _, _ := platform.counts()
+
+			// Armed for exactly the first successful /v1/agents/me answer.
+			armed := true
+			platform.setMeHook(func() {
+				if !armed {
+					return
+				}
+				armed = false
+				_ = os.RemoveAll(stateDir)
+				_ = os.WriteFile(stateDir, []byte("obstruction"), 0o600) // #nosec G306 -- test fixture, not a secret
+			})
+
+			code, _, errOut := runConnect(t, cfgPath, nil)
+			if code == exitOK {
+				t.Fatalf("connect succeeded despite an obstructed state directory: %s", errOut)
+			}
+			if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+				t.Fatalf("Register calls = %d, want unchanged from %d — a failed persist must never fall through to Register", registerCalls, registerCallsBefore)
+			}
+
+			// Remove the obstruction and restore an ordinary state directory.
+			// The corrupt starting bytes (when this case has any) were never
+			// reached by the failed run's persist step, since the
+			// obstruction landed before Preserve or Save could run — restore
+			// them so the retry starts from the same state a real second
+			// invocation would see.
+			if err := os.Remove(stateDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corruptBytes, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			platform.setMeHook(nil)
+
+			code, _, errOut = runConnect(t, cfgPath, nil)
+			if code != exitOK {
+				t.Fatalf("retry after the obstruction was removed failed: %d %s", code, errOut)
+			}
+			if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+				t.Fatalf("the retry minted a Register call: %d, want unchanged from %d — no second agent", registerCalls, registerCallsBefore)
+			}
+			reg, ok := loadAgent(t, stateDir)
+			if !ok || reg.AgentID != agentID {
+				t.Fatalf("the retry did not reconstruct the same identity: %+v ok=%v want agent_id=%s", reg, ok, agentID)
+			}
+			if corrupt {
+				got, err := os.ReadFile(filepath.Join(stateDir, "agent.json.corrupt")) // #nosec G304 -- test controls its temporary state directory
+				if err != nil || string(got) != string(corruptBytes) {
+					t.Fatalf("corrupt evidence was not preserved by the successful retry: err=%v contents=%q", err, got)
+				}
 			}
 		})
 	}
