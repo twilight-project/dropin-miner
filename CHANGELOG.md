@@ -42,6 +42,14 @@ subjects wouldn't make obvious on its own.
   links are rendered as links — a `javascript:`, `data:` or `file:` citation is
   shown as an inert note instead.
 
+- **`connect -json` will not answer the mining question for you.** The
+  first-run "enable mining rewards?" question is answered by a terminal, or by
+  an explicit `mining.enabled` in the config, or by a decision already on file.
+  Asking for JSON output is none of those, so where that question would come up
+  unanswered, `connect -json` now stops before registering and says so in the
+  envelope rather than quietly taking the default. Scripted installs that set
+  `mining.enabled` explicitly are unaffected.
+
 - **`status`, `doctor` and `connect` take `-json`.** Same checks, same
   decisions, same output by default; the JSON is a second rendering of the facts
   the text report already gathered, for scripts and SDKs that would otherwise

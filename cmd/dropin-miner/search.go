@@ -152,6 +152,15 @@ type searchOutcome struct {
 	RetryAfterMS  int64
 	HasRetryAfter bool
 
+	// ResponseComplete is true only when headers arrived AND the body was
+	// read to its end. It is what the detached connect -resume is gated
+	// on, and it exists as a field rather than a guess because before
+	// PR6 the search returned early on a transport or body-read failure
+	// and never reached shouldResume at all. A 4xx or 5xx that arrived
+	// whole is complete; a stalled, cut or oversized body is not,
+	// whatever its headers said.
+	ResponseComplete bool
+
 	Success  routerSuccess
 	RawBody  []byte
 	Started  time.Time
@@ -292,7 +301,13 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	// is a cheap local disk check (agent onboarding design §5.5) — it
 	// costs nothing and spawns nothing when there is no stored
 	// registration to resume.
-	if ops.spawnConnectResume != nil && shouldResume(cfg) {
+	// Gated on a completed response, which is the boundary this command
+	// had before the outcome was made structured: a transport failure or a
+	// body that never finished used to return before this line was
+	// reached. shouldResume itself is unchanged — it is still the cheap
+	// local disk check — but it is not consulted for a search that never
+	// got an answer.
+	if out.ResponseComplete && ops.spawnConnectResume != nil && shouldResume(cfg) {
 		_ = ops.spawnConnectResume(*cfgPath) // best effort; the next search resumes it if this one could not even start
 	}
 
@@ -333,9 +348,15 @@ func renderSearchForHuman(out searchOutcome, format string, keySrc keySource, st
 			out.HTTPStatus, out.Err)
 		return exitServerErr
 	}
-	// A router status. The body is the router's own, echoed as it always
-	// was for the compatibility path.
-	_, _ = stdout.Write(out.RawBody)
+	// A router status. -format json keeps the documented raw-router
+	// compatibility output; -format model must not, because the body is
+	// remote text and model output goes to a terminal. renderRouterFailure
+	// is the sanitized, bounded summary instead.
+	if format == "model" {
+		fmt.Fprint(stdout, renderRouterFailure(out))
+	} else {
+		_, _ = stdout.Write(out.RawBody)
+	}
 	switch {
 	case out.HTTPStatus >= 500:
 		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %d\n", out.HTTPStatus)
@@ -486,6 +507,19 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 		out.RetryAfterMS, out.HasRetryAfter = ms, true
 	}
 
+	// Headers arriving is not a response arriving. If the body read ended
+	// because the shared search context expired or was canceled, that is
+	// what happened — regardless of what the status line said. A 401 whose
+	// body stalled until the deadline is a timeout the caller may retry,
+	// not an authorization failure to send them to `login` over.
+	if attempt.BodyErr != nil {
+		if f := contextFault(ctx, attempt.BodyErr, faultNone); f != faultNone {
+			out.Err, out.Fault = attempt.BodyErr, f
+			return out
+		}
+	}
+	out.ResponseComplete = attempt.BodyErr == nil
+
 	if attempt.Status < 200 || attempt.Status > 299 {
 		out.Fault = faultRouterStatus
 		if attempt.BodyErr == nil {
@@ -497,13 +531,10 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	}
 	if attempt.BodyErr != nil {
 		out.Err = attempt.BodyErr
-		switch {
-		case errors.Is(attempt.BodyErr, errBodyOversized):
+		if errors.Is(attempt.BodyErr, errBodyOversized) {
 			out.Fault = faultOversized
-		default:
-			// A body read that died on the deadline is a timeout, not a
-			// malformed router: §19's "the body read is covered by it".
-			out.Fault = contextFault(ctx, attempt.BodyErr, faultInvalidResponse)
+		} else {
+			out.Fault = faultInvalidResponse
 		}
 		return out
 	}

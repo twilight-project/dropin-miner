@@ -46,7 +46,7 @@ const (
 //	none         nothing to do
 //	retry        the same call may succeed later
 //	fix_input    the request itself was wrong
-//	connect      this installation is not registered (dropin-miner connect)
+//	connect      the registration/setup/claim workflow needs attention
 //	login        the search credential needs attention (dropin-miner login)
 //	check_access authorization exists but does not cover this
 //	report       neither retrying nor editing the request will help

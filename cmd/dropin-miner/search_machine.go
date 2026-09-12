@@ -300,7 +300,8 @@ func classifyRouterStatus(out searchOutcome) searchClassification {
 		// 401 means this key is not accepted. It does NOT mean "never
 		// registered" — a registered installation with an expired or
 		// rotated key gets exactly this, and sending it to connect would
-		// start a second registration for one participant.
+		// start a second registration for one participant. connect is for
+		// the registration/claim workflow; this is a credential.
 		c.ExitCode, c.Retryable, c.Action = exitClientErr, false, actionLogin
 	case out.HTTPStatus == 403:
 		c.ExitCode, c.Retryable, c.Action = exitClientErr, false, actionCheckAccess
@@ -318,11 +319,19 @@ func classifyRouterStatus(out searchOutcome) searchClassification {
 	return c
 }
 
-// requestFixable lists the statuses that name something about the request
-// itself. Everything else 4xx is reported rather than blamed on the input.
+// requestFixable lists the statuses that name something the SEARCH CALLER
+// can actually change: the request it composed.
+//
+// 400, 413 and 422 are about the query, the tier, or how much of them
+// there is — a caller can send a different one. The rest of the 4xx range
+// is not. A 405, 406, 411, 414, 415 or 431 is about the method, the Accept
+// header, the framing, the endpoint URI or the headers, and every one of
+// those is chosen by this client, not by its caller. Telling an agent to
+// fix_input for them sends it round a loop editing a query that was never
+// the problem, so they report instead.
 func requestFixable(status int) bool {
 	switch status {
-	case 400, 405, 406, 411, 413, 414, 415, 422, 431:
+	case 400, 413, 422:
 		return true
 	default:
 		return false

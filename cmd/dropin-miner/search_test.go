@@ -361,20 +361,41 @@ func TestSearchModelFormatIsCompactAndChosenFirst(t *testing.T) {
 	}
 }
 
+// The exit mapping, and the two output formats' different contracts.
+//
+// This used to assert that -format model echoed the router's error body
+// verbatim. It no longer does, and must not: that body is remote text and
+// model output goes to a terminal. -format json keeps the raw passthrough,
+// which is the whole point of asking for the router's JSON.
 func TestSearchMapsRouterErrorsToExitCodesAndRecordsNothing(t *testing.T) {
+	const body = `{"code":"fictional_refusal","error":"fictional"}`
 	for _, tc := range []struct {
 		status int
 		exit   int
 	}{{401, exitClientErr}, {429, exitClientErr}, {503, exitServerErr}} {
 		_, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.status)
-			_, _ = w.Write([]byte(`{"error":"fictional"}`))
+			_, _ = w.Write([]byte(body))
 		})
 		h := fixedSearchOps(root)
+
 		code, out, _ := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfg, "-format", "model", "q")
-		if code != tc.exit || out != `{"error":"fictional"}` {
-			t.Errorf("HTTP %d: exit %d out %q", tc.status, code, out)
+		if code != tc.exit {
+			t.Errorf("HTTP %d: exit %d", tc.status, code)
 		}
+		if out == body {
+			t.Errorf("HTTP %d: -format model echoed the router's error body verbatim: %q", tc.status, out)
+		}
+		if !strings.Contains(out, "search failed: HTTP") || !strings.Contains(out, "fictional_refusal") {
+			t.Errorf("HTTP %d: -format model did not summarize the failure: %q", tc.status, out)
+		}
+
+		codeJSON, outJSON, _ := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfg, "-format", "json", "q")
+		if codeJSON != tc.exit || outJSON != body {
+			t.Errorf("HTTP %d: -format json no longer passes the router's bytes through: exit %d out %q",
+				tc.status, codeJSON, outJSON)
+		}
+
 		if recs, _, _ := readIntake(filepath.Join(root, "intake")); len(recs) != 0 {
 			t.Errorf("HTTP %d: a failed search was recorded for mining", tc.status)
 		}

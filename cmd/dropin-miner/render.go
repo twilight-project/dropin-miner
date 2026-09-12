@@ -193,6 +193,39 @@ func (c *cappedBuilder) printf(format string, args ...any) {
 
 func (c *cappedBuilder) String() string { return c.b.String() }
 
+// renderRouterFailure is what -format model prints when the router
+// refused the search.
+//
+// The router's error body is remote text exactly as an answer is, and it
+// arrives on the one path where remote text is most likely to be hostile.
+// Model output goes to a terminal, so it gets the same treatment
+// everything else does: bounded, sanitized, and never echoed raw. The
+// compatibility path (-format json) still prints the router's own bytes,
+// which is what a caller asking for the router's JSON is asking for.
+//
+// A valid flat envelope contributes its code and message, sanitized. A
+// malformed or oversized one contributes nothing but its own description
+// — there is no safe way to quote bytes that did not parse, and a caller
+// who wants them has -format json.
+func renderRouterFailure(out searchOutcome) string {
+	b := newCappedBuilder(renderTotalCap)
+	b.printf("search failed: HTTP %d\n", out.HTTPStatus)
+	if out.HasRouterErr {
+		if code := oneLine(out.RouterErr.Code, renderProviderCap); code != "" {
+			b.printf("  code: %s\n", code)
+		}
+		if msg := oneLine(out.RouterErr.Error, renderAnswerCap); msg != "" {
+			b.printf("  router: %s\n", msg)
+		}
+		return b.String()
+	}
+	if len(out.RawBody) > 0 {
+		b.writeString("  the router's error body was not a JSON object this client understands;\n" +
+			"  re-run with -format json to see it verbatim\n")
+	}
+	return b.String()
+}
+
 // renderForModel is the compact text an agent reads: the chosen candidate
 // first, then the rest, each with its citations. Budgets keep one search
 // inside what a host shows of a command's output; `search --stdin` is the

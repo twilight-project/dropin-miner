@@ -101,6 +101,18 @@ nothing has to escape it for a shell. `action` is one of `none`, `retry`,
 `retryable` is true, and honor `retry_after_ms` when it is present. Recovery is
 decided from those fields, never from the text of a message.
 
+`connect` means the registration/setup/claim workflow needs attention — no
+registration, an unclaimed one, an expired one, or a step only a person can
+answer. `login` means a search credential exists and was not accepted. A router
+401 is `login`, never `connect`: a registered installation with a rotated key
+gets the same status, and re-registering would mint a second agent for one
+participant.
+
+`-format model` prints a bounded, sanitized summary when the router refuses a
+search; it never echoes the router's error body, because that body is remote
+text and model output goes to a terminal. `-format json` still passes the
+router's bytes through verbatim.
+
 `-format model` is the readable form for a person at a terminal, and
 `-format json` still prints the router's own bytes verbatim for compatibility.
 Neither is the versioned client envelope — that is `--stdin` only.

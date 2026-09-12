@@ -48,7 +48,7 @@ contract.
 | `none` | nothing to do |
 | `retry` | the same call may work later; if `retry_after_ms` is set, wait that long first |
 | `fix_input` | the request was wrong — fix it before sending anything again |
-| `connect` | this installation is not registered: tell the user to run `dropin-miner connect` |
+| `connect` | the registration/setup/claim workflow needs attention: run `dropin-miner connect`, or present the human step it asks for |
 | `login` | the search credential needs attention: `dropin-miner login` |
 | `check_access` | authorization exists but does not cover this; the user has to sort it out |
 | `report` | neither retrying nor editing the request will help; show the user what happened |
@@ -56,10 +56,20 @@ contract.
 Retry only when `retryable` is true. Do not retry anything else, and do not
 infer that something is retryable because its message sounds temporary.
 
-`connect` and `login` are different. `connect` means there is no registration
-here at all. `login` means there is one and the key was not accepted — a 401
-alone does not mean "never registered", so do not send the user to `connect` on
-the strength of a 401.
+`connect` and `login` are different, and the difference is which thing needs
+attention.
+
+`connect` means the registration/setup/claim workflow does — this installation
+may have no registration, or one that is not claimed yet, or one that expired,
+or it may have reached a step only a person can answer. It does not tell you
+which of those; run `dropin-miner connect` (or `dropin-miner status -json`) to
+find out.
+
+`login` means a search credential exists and was not accepted. A router 401 maps
+to `login`, never to `connect`: a 401 on its own does not mean this installation
+has never registered — a registered installation with a rotated or expired key
+gets exactly the same status — and sending the user to `connect` over one risks
+registering a second agent for one participant.
 
 If `dropin-miner connect` prints a claim URL, show it to the user exactly as
 printed: never open it yourself, and never shorten, paraphrase or summarize it

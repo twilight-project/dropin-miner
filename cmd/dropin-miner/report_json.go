@@ -353,7 +353,9 @@ func connectOutcome(exitCode int, status string) (code string, retryable bool, a
 		return "registration_expired", false, actionConnect
 	case status == "unclaimed":
 		// The registration exists and search already works; what is
-		// outstanding is a human visiting the claim URL.
+		// outstanding is a human visiting the claim URL. Still action
+		// connect: that action names the registration/claim workflow, not
+		// the absence of a registration.
 		return "unclaimed", false, actionConnect
 	default:
 		return "ok", false, actionNone
