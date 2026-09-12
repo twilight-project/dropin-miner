@@ -43,6 +43,7 @@ body:
       label: Affected area
       options:
         - search / hook (the tool-call path)
+        - search --stdin / JSON envelope (the machine protocol)
         - flush / mining plane (join, promote, submit)
         - connect / mining enable / mining disable (agent onboarding)
         - wallet / payout

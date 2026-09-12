@@ -252,8 +252,11 @@ func (e binEntry) preferCommand() string {
 // should not have to say so every turn, nor uninstall the miner. The
 // choice is one file beside the config, and the skill text is rendered
 // from it: "on" tells the agent to prefer this search, "off" tells it to
-// use its own unless the user names this one. Every agent reads the same
-// rendered text, so the choice holds across Claude Code, Codex and Cursor.
+// use its own unless the user names this one. Every host that gets a skill
+// reads the same rendered text, so the choice holds across all five of
+// them — Claude Code, Codex, Cursor, Pi and Hermes. opencode is the sixth
+// supported host and the exception: it has no skill directory, only a
+// plugin and an AGENTS.md line, neither of which carries preference text.
 
 const (
 	preferFile = "search-default"

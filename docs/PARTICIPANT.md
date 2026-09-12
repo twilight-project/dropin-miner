@@ -81,8 +81,9 @@ background poll, not the place a new identity gets decided.
 dropin-miner status          # what this installation has and has not completed
 dropin-miner payout show     # ACTIVE, and the address as the chain renders it
 dropin-miner agents status   # which agents are set up
-dropin-miner doctor          # connected, enrolled, joined, paid, earning,
-                             # intake writable, recording
+dropin-miner doctor          # authorization server, enrolled, joined this
+                             # epoch, payout address, earning, intake
+                             # writable, recording
 ```
 
 Restart any agent that was already open, and search as you normally would.
@@ -103,9 +104,12 @@ dropin-miner search --stdin <<'JSON'
 JSON
 ```
 
-That prints exactly one JSON object: `ok`, `exit_code`, `status`, `code`,
-`retryable` and `action` say what happened and what to do about it, `result`
+That prints exactly one JSON object. Eight fields are always there —
+`version`, `command`, `ok`, `exit_code`, `status`, `code`, `retryable` and
+`action` — and they say what happened and what to do about it; `result`
 carries the answer and its citations, and `mining` carries the mining state.
+`exit_code` is the process's own status: 0 for a valid answer, 1 transport,
+2 usage, 3 a 4xx, 4 a 5xx or a response the client could not use.
 `status`, `doctor` and `connect` take `-json` and answer the same way.
 
 A search is bounded by `-timeout`, default 60s, covering the whole operation.
@@ -117,14 +121,17 @@ built-in one. If you would rather your agent use its own search unless you
 ask for this one, say so once:
 
 ```
-/dropin-miner off      # in Claude Code, Codex or Cursor
+/dropin-miner off      # in any agent that got a skill: Claude Code, Codex,
+                       # Cursor, Pi or Hermes
 /dropin-miner on       # back to this search as the default
 /dropin-miner status
 ```
 
 or, from a shell, `dropin-miner agents prefer off|on|status`. Either way the
-choice is recorded beside your config and the installed skills are rewritten,
-so it holds in every agent, from its next start, and across reinstalls.
+choice is recorded beside your config and every installed skill is rewritten
+from it, so it holds in each of those agents from its next start, and across
+reinstalls. opencode is the exception: it has no skill directory, so its
+AGENTS.md line carries no preference and the choice does not reach it.
 While it is off, "search through dropin-miner" or "use the router" in a
 request still routes that one search here. Searches that do not come here
 earn nothing.
@@ -149,16 +156,23 @@ export TOKENDROP_TRACE=off
 
 Searches are metered and earn exactly the same either way.
 
-The query itself rides in the command's arguments, so it is visible in `ps`
-and your shell history on your own machine. It is not a credential.
+The query itself travels differently in the two forms. Typed by hand,
+`dropin-miner search "<query>"` puts it in the command's arguments, so it is
+visible in `ps` and your shell history on your own machine. Your agent does
+not use that form: `search --stdin`, which every installed skill teaches,
+takes the query as JSON on stdin, and it never reaches the process list. It
+is not a credential either way, and the key is in neither form — that is
+read from the environment or the owner-only credentials file.
 
 ## Per agent
 
 **Claude Code** gets a skill and five hook entries in `~/.claude/settings.json`:
 one on Bash that threads each search into the current turn, three that track
-context compaction, and one on Stop that flushes. It also adds a permission
-rule for the search command, so Claude Code runs it without asking each
-time; nothing else the binary does is allowed by that rule.
+context compaction, and one on Stop that flushes. It also adds two
+`permissions.allow` rules for the search command — the quoted and the bare
+spelling of the same command, because a shell may strip the quotes — so
+Claude Code runs it without asking each time; nothing else the binary does is
+allowed by those rules.
 
 **Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
 cannot rewrite a command, so its hooks maintain the lineage file and the
@@ -167,9 +181,11 @@ prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
 block in `~/.codex/config.toml` that widens its sandbox just enough: network
-on, and the tokendrop intake, sessions, state and spool directories made
-writable, so the mining observation can be recorded and the detached claim
-resume can write there after every search. Deliberately those directories and
+on, and a short list of writable directories. The state directory is always
+on that list, because the detached claim resume writes there after every
+search whether you mine or not; the intake, sessions and spool directories
+join it when `[miner] enabled` is set, which is where the mining observation
+is recorded. Deliberately those directories and
 never the home itself: `tokendrop.toml`, `credentials.json` and `wallet/`
 stay read-only to sandboxed commands, so a command that goes wrong inside
 Codex cannot rewrite where your credentials are sent. Without the block,
@@ -248,14 +264,26 @@ This check is a heuristic and says so — it never reports a failure, because
 none of the evidence it reads can prove one.
 
 `recording` can also say **`could not determine — …`**. That is not a
-failure either; it means one of the things it reads was unreadable, or the AS
-did not answer, so it declined to guess. The reason is on the line.
+failure either; it means something it depends on could not settle the
+question, so it declined to guess. The reason is on the line, and it is one
+of: an input it could not read (the health records, the flush stamp, the
+intake directory, the spool), a flush stamp dated in the future — which would
+make "recent" meaningless — an intake probe that was skipped or failed (see
+`intake writable`), an AS that did not report this epoch's activity, or an AS
+answer that contradicts itself by claiming verified activity and a verified
+count of zero. What it never says is `NO`: nothing it reads could prove a
+fault, so it does not assert one. "No recent activity" stays `OK` even when
+the AS is unreachable, because with nothing recorded and nothing having run
+there is nothing to explain.
 
 `intake writable` can say **`could not determine`** too, when neither the
 intake directory nor its parent exists yet. That is not a fault: `doctor` will
 not build a directory tree merely to test one, so it reports that it did not
-look rather than guessing. Your first search creates the directory, and the
-check answers properly from then on.
+look rather than guessing. On the default layout the parent always exists, so
+this only comes up when `miner.intake_dir` names a custom path somewhere that
+has not been created — a fresh default install gets `OK`, and `doctor` creates
+the intake directory itself, which is what the first search would have done
+anyway.
 
 **`intake writable`** speaks only for the process that ran `doctor` — usually
 you, at a terminal. A search runs inside your agent's sandbox, which may have
@@ -296,9 +324,15 @@ balances and confirmations; it does not independently verify the chain the
 way a light client would. That node must be `https`, or plain `http` only on
 your own machine (loopback) — pass `-insecure-node` to override this and
 accept the risk if you really mean to point it at a plain-http node
-elsewhere. `wallet.lock` is a third small file this creates, held only for
-the moment a wallet key is generated or repaired, so two commands started at
-the same time can never both create one.
+elsewhere.
+
+`wallet.lock` is a third small file this creates. It is held while a wallet
+key is generated or repaired, so two commands started at the same time can
+never both create one — and also by `wallet send`, from the moment it reads
+the pending record through to knowing what its first broadcast did, so a
+second `send` started alongside it waits and then finds the journal the
+first one wrote rather than racing past an empty one. `wallet balance` takes
+it too, for as long as it spends resolving a pending send.
 
 ## Manual enrollment
 
@@ -307,6 +341,18 @@ The portal's older path — `dropin-miner enroll -assertion`, `login`, `join`,
 for the rare case scripting against those specific commands directly is what
 you want. `dropin-miner help` describes each. Everything above this line is
 the path setup actually takes; this one it does not.
+
+One command on that path depends on which Slot you are on. `dropin-miner
+provider` reads a zero-spend provider verification key from stdin and
+registers it with the authorization server, and `provider -status` reports
+what is bound. **It applies only when the Slot's profile is
+`OPENROUTER_V1`.** On the default `SEARCH_ROUTER_V1` profile — the one
+everything above describes — you hold no provider credential at all:
+verification runs on the Slot operator's own, and you supply nothing.
+If you run `provider` there it tells you so and stops, rather than failing
+somewhere further in. `join` names it as the next step only after asking the
+AS whether this Slot accepts that profile; if it does not, `join` says the
+next step is nothing.
 
 ## Removing it, and coming back
 
