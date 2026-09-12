@@ -329,28 +329,47 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 	if resp.StatusCode != http.StatusOK {
 		return nil, refusal(resp.StatusCode, data)
 	}
-	var wire struct {
-		Status         string   `json:"status"`
-		Scopes         []string `json:"scopes"`
-		ClaimExpiresAt string   `json:"claim_expires_at"`
-		ClaimedAt      string   `json:"claimed_at"`
-		ConsoleURL     string   `json:"console_url"`
-		Mining         struct {
-			Available      bool     `json:"available"`
-			Slots          []string `json:"slots"`
-			LastEnrollment *struct {
-				Slot     string `json:"slot"`
-				MintedAt string `json:"minted_at"`
-			} `json:"last_enrollment"`
-			// ParticipantHasOtherAgent: see AgentStatus's own doc comment.
-			ParticipantHasOtherAgent bool `json:"participant_has_other_agent"`
-		} `json:"mining"`
+	out, err := decodeAgentStatusWire(data, c.portalBaseURL)
+	if err != nil {
+		return nil, err
 	}
+	return &out, nil
+}
+
+// agentStatusWire is the status-poll body's wire shape (§5.2): what
+// Status decodes, and what Me's own response carries in addition to
+// agent_id and the claim bootstrap fields. Factored out so the two
+// decode identically — see decodeAgentStatusWire's own doc comment.
+type agentStatusWire struct {
+	Status         string   `json:"status"`
+	Scopes         []string `json:"scopes"`
+	ClaimExpiresAt string   `json:"claim_expires_at"`
+	ClaimedAt      string   `json:"claimed_at"`
+	ConsoleURL     string   `json:"console_url"`
+	Mining         struct {
+		Available      bool     `json:"available"`
+		Slots          []string `json:"slots"`
+		LastEnrollment *struct {
+			Slot     string `json:"slot"`
+			MintedAt string `json:"minted_at"`
+		} `json:"last_enrollment"`
+		// ParticipantHasOtherAgent: see AgentStatus's own doc comment.
+		ParticipantHasOtherAgent bool `json:"participant_has_other_agent"`
+	} `json:"mining"`
+}
+
+// decodeAgentStatusWire normalizes a status-poll body (§5.2) into an
+// AgentStatus: status enum validation, the mining block, slot control
+// characters, and console_url's origin-lock all happen here once, so
+// Status and Me — which answers with the same body plus agent_id/claim
+// fields — cannot drift on how they interpret otherwise-identical bytes.
+func decodeAgentStatusWire(data []byte, portalBaseURL string) (AgentStatus, error) {
+	var wire agentStatusWire
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, fmt.Errorf("platform: parse status response: %w", err)
+		return AgentStatus{}, fmt.Errorf("platform: parse status response: %w", err)
 	}
 	if wire.Status == "" {
-		return nil, errors.New("platform: status response carried no status")
+		return AgentStatus{}, errors.New("platform: status response carried no status")
 	}
 	// WP2-adversarial-review finding 13: an unrecognized status (a typo,
 	// a future value this build predates, or a hostile response) must
@@ -368,7 +387,7 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 	}
 	for _, slot := range wire.Mining.Slots {
 		if hasControlChar(slot) {
-			return nil, errors.New("platform: a slot name in the status response contains a control character; refusing")
+			return AgentStatus{}, errors.New("platform: a slot name in the status response contains a control character; refusing")
 		}
 	}
 	// console_url gets the same origin-lock and control-character check
@@ -380,10 +399,10 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 	// still worth having even if a hostile or buggy console_url arrived
 	// alongside them.
 	consoleURL := wire.ConsoleURL
-	if consoleURL != "" && validatePlatformURL(consoleURL, c.portalBaseURL) != nil {
+	if consoleURL != "" && validatePlatformURL(consoleURL, portalBaseURL) != nil {
 		consoleURL = ""
 	}
-	out := &AgentStatus{
+	out := AgentStatus{
 		Status:                         wire.Status,
 		Scopes:                         wire.Scopes,
 		ClaimExpiresAt:                 wire.ClaimExpiresAt,
@@ -398,6 +417,85 @@ func (c *Client) Status(ctx context.Context, agentID, key string) (*AgentStatus,
 		out.LastEnrollmentAt = wire.Mining.LastEnrollment.MintedAt
 	}
 	return out, nil
+}
+
+// AgentIdentity is what the key alone can recover: the agent's id and
+// the same status body the poll returns, plus the claim bootstrap when
+// the platform includes it for a still-unclaimed agent (B.1's known
+// gap — /me does not carry these today, so ClaimURL/ClaimCode are only
+// ever populated when the platform actually sends them).
+type AgentIdentity struct {
+	AgentID   string
+	ClaimURL  string // present only while unclaimed, and only once the platform serves it
+	ClaimCode string
+	AgentStatus
+}
+
+// Me answers GET /v1/agents/me with the key alone (added by the router
+// team so a lost or corrupt local registration can be rebuilt without a
+// human re-approving, agent onboarding design rule 8 amendment; see
+// AGENTS.md/PR-B doc for the design escalation this closes). ErrAgentNotFound
+// on 404 (an unknown or revoked key, same no-oracle answer Status gives);
+// RefusalError otherwise.
+func (c *Client) Me(ctx context.Context, key string) (*AgentIdentity, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBaseURL+"/v1/agents/me", nil)
+	if err != nil {
+		return nil, fmt.Errorf("platform: build self-lookup request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("platform: self-lookup request failed: %w", err)
+	}
+	defer drainAndClose(resp.Body)
+	// Deliberately not Status's io.LimitReader(maxBodyBytes): an oversized
+	// 200 here is a read/protocol error (max+1 lets us tell "exactly at
+	// the limit" from "truncated silently at the limit" apart), not a
+	// bounded non-success HTTP answer, so it must not decode into a
+	// RefusalError.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("platform: read self-lookup response: %w", err)
+	}
+	if len(data) > maxBodyBytes {
+		return nil, errors.New("platform: self-lookup response exceeds the size limit; refusing")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrAgentNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, refusal(resp.StatusCode, data)
+	}
+	status, err := decodeAgentStatusWire(data, c.portalBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	var wire struct {
+		AgentID   string `json:"agent_id"`
+		ClaimURL  string `json:"claim_url"`
+		ClaimCode string `json:"claim_code"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, fmt.Errorf("platform: parse self-lookup response: %w", err)
+	}
+	if wire.AgentID == "" {
+		return nil, errors.New("platform: self-lookup response carried no agent_id")
+	}
+	if hasControlChar(wire.ClaimCode) {
+		return nil, errors.New("platform: claim_code contains a control character; refusing")
+	}
+	if wire.ClaimURL != "" {
+		if err := validatePlatformURL(wire.ClaimURL, c.portalBaseURL); err != nil {
+			return nil, err
+		}
+	}
+	return &AgentIdentity{
+		AgentID:     wire.AgentID,
+		ClaimURL:    wire.ClaimURL,
+		ClaimCode:   wire.ClaimCode,
+		AgentStatus: status,
+	}, nil
 }
 
 // Enroll calls POST /v1/agents/enroll, returning the enrollment token
@@ -473,15 +571,28 @@ func (e *RefusalError) Error() string {
 	return fmt.Sprintf("platform: refused with status %d", e.Status)
 }
 
+// refusal classifies a bounded non-success HTTP answer. The router's
+// error envelope carries a top-level code as well as the nested
+// error.code this package originally expected; per B.2, the top-level
+// one wins when both are present, and classification never reads the
+// message (the message is prose for a human, not something to branch
+// on).
 func refusal(status int, raw []byte) error {
 	var env struct {
+		Code  string `json:"code"`
 		Error struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &env); err == nil && env.Error.Code != "" {
-		return &RefusalError{Status: status, Code: env.Error.Code, Message: env.Error.Message}
+	if err := json.Unmarshal(raw, &env); err == nil {
+		code := env.Code
+		if code == "" {
+			code = env.Error.Code
+		}
+		if code != "" {
+			return &RefusalError{Status: status, Code: code, Message: env.Error.Message}
+		}
 	}
 	return &RefusalError{Status: status}
 }

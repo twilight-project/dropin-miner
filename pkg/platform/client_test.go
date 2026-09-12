@@ -1,11 +1,13 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -18,6 +20,7 @@ type stubPlatform struct {
 	register func(w http.ResponseWriter, r *http.Request)
 	status   func(w http.ResponseWriter, r *http.Request)
 	enroll   func(w http.ResponseWriter, r *http.Request)
+	me       func(w http.ResponseWriter, r *http.Request)
 }
 
 func newStubPlatform(t *testing.T) *stubPlatform {
@@ -41,6 +44,13 @@ func newStubPlatform(t *testing.T) *stubPlatform {
 	mux.HandleFunc("POST /v1/agents/enroll", func(w http.ResponseWriter, r *http.Request) {
 		if f.enroll != nil {
 			f.enroll(w, r)
+			return
+		}
+		http.Error(w, "not configured", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("GET /v1/agents/me", func(w http.ResponseWriter, r *http.Request) {
+		if f.me != nil {
+			f.me(w, r)
 			return
 		}
 		http.Error(w, "not configured", http.StatusInternalServerError)
@@ -474,5 +484,147 @@ func TestStatusRejectsValueOutsideTheEnum(t *testing.T) {
 	}
 	if st.HasScope("mining") {
 		t.Fatal("an unrecognized status must not be trusted to carry real scopes either")
+	}
+}
+
+// ── B.2: Me (GET /v1/agents/me) ──────────────────────────────────────────
+
+// Me and Status must decode an otherwise-identical body into the same
+// AgentStatus — they share one private decoder (decodeAgentStatusWire)
+// precisely so status normalization, the mining block, and console_url
+// validation cannot drift between the two routes.
+func TestMeAndStatusDecodeIdenticalBodiesIdentically(t *testing.T) {
+	stub := newStubPlatform(t)
+	shared := map[string]any{
+		"status": "claimed", "scopes": []string{"mining"},
+		"claim_expires_at": "2026-09-16T00:00:00Z", "claimed_at": "2026-09-10T00:00:00Z",
+		"console_url": stub.srv.URL + "/console/agent-1",
+		"mining": map[string]any{
+			"available": true, "slots": []string{"slot-a"},
+			"last_enrollment":             map[string]any{"slot": "slot-a", "minted_at": "2026-09-11T00:00:00Z"},
+			"participant_has_other_agent": true,
+		},
+	}
+	stub.status = func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, shared) }
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		withID := map[string]any{"agent_id": "agent-1"}
+		for k, v := range shared {
+			withID[k] = v
+		}
+		writeJSON(w, http.StatusOK, withID)
+	}
+	c := New(stub.srv.URL, stub.srv.URL)
+	st, err := c.Status(context.Background(), "agent-1", "sr-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := c.Me(context.Background(), "sr-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.AgentID != "agent-1" {
+		t.Fatalf("agent_id = %q, want agent-1", identity.AgentID)
+	}
+	if !reflect.DeepEqual(identity.AgentStatus, *st) {
+		t.Fatalf("Me's status decode diverged from Status's:\n me:     %+v\n status: %+v", identity.AgentStatus, *st)
+	}
+}
+
+// Me reads with max+1 semantics: an oversized 200 is a read/protocol
+// error, not a RefusalError (that type means a bounded non-success HTTP
+// answer) — unlike Status, which uses a plain io.LimitReader(maxBodyBytes)
+// read and simply truncates.
+func TestMeRejectsOversizedBodyAsReadErrorNotRefusal(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"agent_id":"a","status":"unclaimed","padding":"`))
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxBodyBytes+10))
+		_, _ = w.Write([]byte(`"}`))
+	}
+	_, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key")
+	if err == nil {
+		t.Fatal("an oversized 200 response was accepted")
+	}
+	var refusal *RefusalError
+	if errors.As(err, &refusal) {
+		t.Fatalf("an oversized body was classified as a RefusalError, want a plain read/protocol error: %v", err)
+	}
+}
+
+func TestMeRejectsEmptyAgentID(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unclaimed"})
+	}
+	if _, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key"); err == nil {
+		t.Fatal("an empty agent_id was accepted")
+	}
+}
+
+func TestMeRejectsClaimCodeControlCharacter(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"agent_id": "agent-1", "status": "unclaimed",
+			"claim_url": stub.srv.URL + "/claim/X", "claim_code": "AB\r\nCD",
+		})
+	}
+	if _, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key"); err == nil {
+		t.Fatal("a claim_code with a control character was accepted")
+	}
+}
+
+func TestMeRejectsForeignOriginClaimURL(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"agent_id": "agent-1", "status": "unclaimed",
+			"claim_url": "https://evil.example/claim/X",
+		})
+	}
+	if _, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key"); err == nil {
+		t.Fatal("an off-origin claim_url was accepted")
+	}
+}
+
+func TestMeReturnsErrAgentNotFoundOn404(t *testing.T) {
+	stub := newStubPlatform(t)
+	stub.me = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "not_found"}})
+	}
+	_, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key")
+	if !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("err = %v, want ErrAgentNotFound", err)
+	}
+}
+
+// refusal (shared by every client method) reads the top-level code first,
+// falling back to the nested error.code; when both are present and
+// disagree, the top-level one wins.
+func TestRefusalPrefersTopLevelCode(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"nested code only", map[string]any{"error": map[string]any{"code": "nested_code"}}, "nested_code"},
+		{"top-level code only", map[string]any{"code": "top_code"}, "top_code"},
+		{"both present and disagree: top-level wins", map[string]any{"code": "top_code", "error": map[string]any{"code": "nested_code"}}, "top_code"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := newStubPlatform(t)
+			stub.me = func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusForbidden, tc.body) }
+			_, err := New(stub.srv.URL, stub.srv.URL).Me(context.Background(), "sr-key")
+			var refusal *RefusalError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("err = %v, want *RefusalError", err)
+			}
+			if refusal.Code != tc.want {
+				t.Fatalf("code = %q, want %q", refusal.Code, tc.want)
+			}
+		})
 	}
 }
