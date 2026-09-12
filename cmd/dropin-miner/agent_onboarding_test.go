@@ -2377,7 +2377,10 @@ func TestConnectRebuildsUnclaimedRegistrationWithoutClaimLink(t *testing.T) {
 	}
 
 	// Second run: an ordinary load (not a rebuild — agent.json now decodes
-	// fine) must still never enter the print-and-wait narration.
+	// fine) must still never enter the print-and-wait narration, including
+	// the poll loop's own timeout message — a poll may still run (to
+	// discover claimed/expired), but nothing it prints may assume a claim
+	// URL exists.
 	code, out, errOut = runConnect(t, cfgPath, nil)
 	if code != exitOK {
 		t.Fatalf("second connect exited %d, stderr=%s", code, errOut)
@@ -2387,6 +2390,12 @@ func TestConnectRebuildsUnclaimedRegistrationWithoutClaimLink(t *testing.T) {
 	}
 	if strings.Contains(out, "claim this agent:") {
 		t.Fatalf("second run printed the ordinary print-and-wait narration despite no claim link: stdout=%q", out)
+	}
+	if strings.Contains(out, "  \n") {
+		t.Fatalf("second run printed a bare empty claim link: stdout=%q", out)
+	}
+	if strings.Contains(out, "URL above") {
+		t.Fatalf("second run's poll-timeout narration assumed a claim URL was printed above it: stdout=%q", out)
 	}
 
 	// `status` reports the same durable state the same way — never a bare

@@ -824,7 +824,17 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return code
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintln(stdout, "\nnot claimed yet. Approve it at the URL above, then run `dropin-miner connect` again")
+			// B.3: this must never say "the URL above" when nothing was
+			// ever printed above it. pollOnce takes reg by pointer and
+			// re-reads the store on every call (see its own doc comment),
+			// so this local reg is already current — a registration
+			// recovered without a claim link stays durable through the
+			// timeout narration too, not just the initial print.
+			if reg.Status == "unclaimed" && reg.ClaimURL == "" {
+				fmt.Fprintln(stdout, "\n"+unclaimedNoLinkMessage)
+			} else {
+				fmt.Fprintln(stdout, "\nnot claimed yet. Approve it at the URL above, then run `dropin-miner connect` again")
+			}
 			fmt.Fprintln(stdout, "(or just keep using `search` — it resumes this automatically once network is available).")
 			return exitOK
 		}
