@@ -109,7 +109,7 @@ func main() {
 func dispatch(name string, args []string) int {
 	switch name {
 	case "search":
-		return cmdSearch(args, os.Stdout, os.Stderr, os.Getenv)
+		return cmdSearch(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "agents":
 		return cmdAgents(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "hook":

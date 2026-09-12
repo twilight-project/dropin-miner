@@ -32,9 +32,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -238,12 +240,49 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 	return verifiedReg, nil
 }
 
+// cmdConnect is the text path unless -json is asked for, in which case it
+// is the same run with its narration captured and one envelope emitted
+// from what the run persisted.
+//
+// The flow itself is untouched: the same single-flight lock, the same
+// pending-registration recovery, the same poll loop, the same decisions.
+// Machine mode changes where the words go, not what happens — a JSON mode
+// that took a different path through registration would be a second,
+// less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	if !jsonRequested(args) {
+		return connectRun(args, stdin, stdout, stderr, getenv)
+	}
+	var narration bytes.Buffer
+	code := connectRun(args, stdin, io.Discard, &narration, getenv)
+	emitMachine(stdout, connectEnvelope(connectConfigPath(args), getenv, code, narration.String()))
+	return code
+}
+
+// connectConfigPath re-reads -config for the envelope's own store lookup.
+// Parsing twice is cheaper than threading the value out of a function with
+// thirty exit points, and the flag set below is the one that validates it.
+func connectConfigPath(args []string) string {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cfgPath := fs.String("config", "", "")
+	fs.String("name", "", "")
+	fs.Bool("resume", false, "")
+	fs.Bool("force", false, "")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil {
+		return ""
+	}
+	return *cfgPath
+}
+
+func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
 	resume := fs.Bool("resume", false, "internal: exactly one poll, act, exit — used by the detached resume search spawns")
 	force := fs.Bool("force", false, "overwrite an existing credentials.json even though it already holds a different platform key")
+	fs.Bool("json", false, "report as one JSON object instead of text")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

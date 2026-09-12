@@ -896,7 +896,7 @@ func TestConnectStoresKeyAndSearchWorksBeforeClaim(t *testing.T) {
 	code := searchMain(searchOps{
 		getppid: func() int { return 1 }, hostname: func() (string, error) { return "h", nil },
 		getwd: func() (string, error) { return t.TempDir(), nil }, now: time.Now, hook: hook,
-	}, []string{"-config", routerCfg, "-no-flush", "hello"}, &out, &errOut, noEnv)
+	}, []string{"-config", routerCfg, "-no-flush", "hello"}, strings.NewReader(""), &out, &errOut, noEnv)
 	if code != exitOK {
 		t.Fatalf("search exited %d: %s", code, errOut.String())
 	}

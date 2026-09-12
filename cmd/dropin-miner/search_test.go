@@ -120,7 +120,7 @@ func runSearch(t *testing.T, h *searchHarness, env map[string]string, args ...st
 	var out, errOut bytes.Buffer
 	getenv := envOf(env)
 	h.ops.hook.getenv = getenv
-	code := searchMain(h.ops, args, &out, &errOut, getenv)
+	code := searchMain(h.ops, args, strings.NewReader(""), &out, &errOut, getenv)
 	return code, out.String(), errOut.String()
 }
 
