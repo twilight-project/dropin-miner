@@ -20,14 +20,16 @@ package main
 //     up from the working directory); or, with no hook at all, a hashed
 //     per-shell session identity. TOKENDROP_TRACE=off sends none.
 //
-// Two knowing trade-offs, documented rather than hidden: the query rides in
-// process arguments (visible in `ps` and shell history on the user's own
-// machine — it is not a credential; the key comes from the environment or
-// the owner-only credentials file, see credentials.go), and a search with
-// no hook around it has thinner lineage.
+// Two knowing trade-offs, documented rather than hidden: an argv query
+// rides in process arguments (visible in `ps` and shell history on the
+// user's own machine — it is not a credential; the key comes from the
+// environment or the owner-only credentials file, see credentials.go), and
+// a search with no hook around it has thinner lineage. The first of those
+// is why agents are pointed at `search --stdin` instead.
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +46,6 @@ import (
 )
 
 const (
-	searchMaxBody     = 32 << 20
 	searchUserAgent   = "dropin-miner"
 	renderTotalCap    = 64 << 10
 	renderAnswerCap   = 4000
@@ -99,12 +100,76 @@ func cmdSearch(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	return searchMain(ops, args, stdout, stderr, getenv)
 }
 
+// searchFault names, as a value rather than as prose, why a search did not
+// produce a protocol success. The empty value means it did.
+//
+// Every recovery decision the client or an agent makes is derived from one
+// of these plus the HTTP status — never from the text of an error. That is
+// the whole reason the type exists: message wording that classification
+// depends on is an API nobody agreed to, and one rephrasing silently
+// changes what a participant is told to do.
+type searchFault string
+
+const (
+	faultNone            searchFault = ""
+	faultNoCredential    searchFault = "not_connected"
+	faultTransport       searchFault = "transport"
+	faultTimeout         searchFault = "search_timeout"
+	faultCanceled        searchFault = "canceled"
+	faultRouterStatus    searchFault = "router_status"
+	faultOversized       searchFault = "router_response_too_large"
+	faultInvalidResponse searchFault = "invalid_router_response"
+	faultMissingID       searchFault = "missing_request_id"
+)
+
+// routerAttempt is one POST's answer, already bounded.
+type routerAttempt struct {
+	Status  int
+	Header  http.Header
+	Raw     []byte
+	BodyErr error
+}
+
+// searchCall is everything one search sends.
+type searchCall struct {
+	Endpoint string
+	Key      string
+	Query    string
+	Tier     string
+	Trace    *traceEnvelope
+}
+
+// searchOutcome is the structured result of running a search. Both
+// renderers — the human one and the machine envelope — are built from it,
+// so they cannot disagree, and neither is produced by parsing the other.
+type searchOutcome struct {
+	Fault searchFault
+	// Err is diagnostic only. Nothing branches on its text.
+	Err           error
+	HTTPStatus    int
+	RouterErr     searchHostError
+	HasRouterErr  bool
+	RetryAfterMS  int64
+	HasRetryAfter bool
+
+	Success  routerSuccess
+	RawBody  []byte
+	Started  time.Time
+	Finished time.Time
+	Attempts int
+	Traced   bool
+	Retried  bool
+}
+
+func (o searchOutcome) ok() bool { return o.Fault == faultNone }
+
 func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := newFlagSet("search", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	tier := fs.String("tier", "", "search tier accepted by the router, e.g. fast; empty = the router's default")
 	format := fs.String("format", "json", "output: json (the router's bytes, verbatim) or model (compact text for an agent)")
 	noFlush := fs.Bool("no-flush", false, "do not start a flush after this search")
+	timeout := fs.Duration("timeout", defaultSearchTimeout, "whole-search deadline, covering connect, headers, body and the one trace-compatibility retry")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -115,6 +180,13 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 	}
 	if *format != "json" && *format != "model" {
 		fmt.Fprintf(stderr, "dropin-miner search: -format must be json or model, not %q\n", *format)
+		return exitUsage
+	}
+	// Refused rather than treated as "no limit": a zero or negative budget
+	// used to be the only state this command had, and restoring it by
+	// accident is the failure the deadline exists to prevent.
+	if *timeout <= 0 {
+		fmt.Fprintf(stderr, "dropin-miner search: -timeout must be positive, not %s\n", *timeout)
 		return exitUsage
 	}
 
@@ -137,131 +209,21 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 		return exitClientErr
 	}
 
-	ctx, cancel := signalContext()
+	ctx, cancel := searchDeadline(*timeout)
 	defer cancel()
 
-	body := map[string]any{"query": query}
-	if *tier != "" {
-		body["tier"] = *tier
-	}
-	traced := false
-	if env := searchTrace(ops, cfg.Miner, getenv); env != nil {
-		body["trace"] = env
-		traced = true
-	}
-
-	endpoint := strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search"
-	// CheckRedirect: this request carries the participant's sr- key in
-	// Authorization. net/http's default follows up to ten redirects and
-	// replays both the header and the body on a 307/308 — a compromised or
-	// misconfigured router redirecting this request would hand the key to
-	// whatever host it named. Same-origin bounded, not refused outright: a
-	// router legitimately redirecting within its own origin must not break
-	// every search.
-	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects}
-	do := func() (*http.Response, error) {
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", searchUserAgent+"/"+strings.TrimPrefix(buildVersion(), "v"))
-		req.Header.Set("Authorization", "Bearer "+key)
-		return client.Do(req)
+	out := performSearch(ctx, ops.now, searchCall{
+		Endpoint: strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
+		Key:      key,
+		Query:    query,
+		Tier:     *tier,
+		Trace:    searchTrace(ops, cfg.Miner, getenv),
+	})
+	if out.Retried {
+		fmt.Fprintln(stderr, "dropin-miner search: the router answered "+traceUnsupportedCode+"; retrying once without the trace")
 	}
 
-	started := ops.now()
-	resp, err := do()
-	if err == nil && traced && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) {
-		// A schema-strict router refused the traced request: retry once
-		// bare. A trace must never cost a search.
-		_ = resp.Body.Close()
-		fmt.Fprintln(stderr, "dropin-miner search: the router rejected the trace field; retrying without it")
-		delete(body, "trace")
-		resp, err = do()
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner: router:", err)
-		return exitTransport
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, searchMaxBody))
-	finished := ops.now()
-	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner: response interrupted:", err)
-		return exitTransport
-	}
-
-	var parsed routerResponse
-	_ = json.Unmarshal(raw, &parsed)
-
-	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-		requestID := resp.Header.Get("X-Request-Id")
-		if requestID == "" {
-			requestID = parsed.RequestID
-		}
-		// [miner] enabled says intake is configured; the persisted decision
-		// is the only runtime authority. An undecided participant is silent.
-		// An unreadable state is fail-closed for mining but visible as a
-		// concise diagnostic; neither state-store nor health failures may
-		// replace a successful router answer.
-		if cfg.Miner.Enabled && requestID != "" {
-			decision, mstore := inspectMiningState(cfg.Mining.StateDir)
-			if decision.State == auth.MiningDegraded {
-				detail := miningDecisionDetail(decision)
-				if mstore != nil {
-					_ = mstore.MarkHealth(auth.HealthDecision, auth.HealthDecisionUnreadable, detail)
-				}
-				fmt.Fprintf(stderr, "dropin-miner: the search succeeded, but mining capture is unavailable because local mining state cannot be safely trusted%s\n",
-					detail)
-			}
-			if decision.State == auth.MiningEnabled {
-				rec := intakeRecord{
-					RequestID:  requestID,
-					Host:       cfg.Miner.RouterURL.Host,
-					StatusCode: resp.StatusCode,
-					StartedAt:  started,
-					FinishedAt: finished,
-				}
-				if c := parsed.chosen(); c != nil {
-					rec.ChosenProvider = c.Provider
-				}
-				if _, err := writeIntake(cfg.Miner.IntakeDir, rec); err != nil {
-					reason := auth.HealthIntakeUnwritable
-					if intakeWriteBlocked(err) {
-						reason = auth.HealthSandboxRestricted
-						fmt.Fprintf(stderr, "dropin-miner: the search worked, but its mining observation could NOT be\n"+
-							"  recorded — %s is not writable from inside this agent's sandbox, so\n"+
-							"  searches run here earn nothing. Let the agent write to that directory.\n"+
-							"  For Codex, re-run `dropin-miner agents install`, which now configures it.\n",
-							minerRoot(cfg.Miner))
-					} else {
-						fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
-					}
-					if mstore != nil {
-						_ = mstore.MarkHealth(auth.HealthCapture, reason, err.Error())
-					}
-				} else {
-					if mstore != nil {
-						_ = mstore.ClearHealth(auth.HealthCapture)
-					}
-					if !*noFlush && ops.spawnFlush != nil {
-						if err := ops.spawnFlush(*cfgPath); err != nil {
-							if mstore != nil {
-								_ = mstore.MarkHealth(auth.HealthFlush, auth.HealthFlushSpawnFailed, err.Error())
-							}
-							fmt.Fprintln(stderr, "dropin-miner search: could not start mining flush:", err)
-						}
-					}
-				}
-			}
-		}
-	}
+	recordSearchForMining(ops, cfg, out, *cfgPath, *noFlush, stderr)
 
 	// Independent of cfg.Miner.Enabled/-no-flush above: a search-only
 	// unclaimed participant has neither [mining] nor [miner] configured
@@ -273,30 +235,248 @@ func searchMain(ops searchOps, args []string, stdout, stderr io.Writer, getenv f
 		_ = ops.spawnConnectResume(*cfgPath) // best effort; the next search resumes it if this one could not even start
 	}
 
-	switch *format {
-	case "model":
-		if resp.StatusCode >= 200 && resp.StatusCode <= 299 && parsed.RequestID != "" {
-			fmt.Fprint(stdout, renderForModel(parsed))
+	return renderSearchForHuman(out, *format, keySrc, stdout, stderr)
+}
+
+// renderSearchForHuman is the terminal path: the router's own bytes for
+// -format json, compact text for -format model, and a bounded diagnostic
+// on stderr. An invalid success is the one case that prints no body at
+// all — echoing a malformed or oversized router response back is how
+// untrusted bytes reach a terminal unbounded.
+func renderSearchForHuman(out searchOutcome, format string, keySrc keySource, stdout, stderr io.Writer) int {
+	if out.ok() {
+		if format == "model" {
+			fmt.Fprint(stdout, renderForModel(out.Success.Response))
 		} else {
-			_, _ = stdout.Write(raw)
+			_, _ = stdout.Write(out.Success.Raw)
 		}
+		return exitOK
+	}
+	switch out.Fault {
+	case faultTimeout:
+		fmt.Fprintln(stderr, "dropin-miner: the search did not finish within its deadline; retry, or raise -timeout")
+		return exitTransport
+	case faultCanceled:
+		fmt.Fprintln(stderr, "dropin-miner: the search was canceled")
+		return exitTransport
+	case faultTransport:
+		fmt.Fprintln(stderr, "dropin-miner: router:", out.Err)
+		return exitTransport
+	case faultOversized, faultInvalidResponse, faultMissingID:
+		fmt.Fprintf(stderr, "dropin-miner: the router answered HTTP %d, but the answer is not a usable search response: %v\n",
+			out.HTTPStatus, out.Err)
+		return exitServerErr
+	}
+	// A router status. The body is the router's own, echoed as it always
+	// was for the compatibility path.
+	_, _ = stdout.Write(out.RawBody)
+	switch {
+	case out.HTTPStatus >= 500:
+		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %d\n", out.HTTPStatus)
+		return exitServerErr
+	case out.HTTPStatus == http.StatusUnauthorized:
+		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %d — the router refused the key (from %s); store a valid one with: dropin-miner login\n", out.HTTPStatus, keySrc)
+		return exitClientErr
 	default:
-		_, _ = stdout.Write(raw)
+		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %d\n", out.HTTPStatus)
+		return exitClientErr
+	}
+}
+
+// recordSearchForMining is the mining side of a served search, and it is
+// deliberately the only thing between the router's answer and the exit
+// code. Nothing in here can change what the search returned: AGENTS.md
+// invariant 1 — a mining-side write, spawn or state failure must never
+// turn a successful search into a failed one.
+func recordSearchForMining(ops searchOps, cfg *config.Config, out searchOutcome, cfgPath string, noFlush bool, stderr io.Writer) {
+	if !out.ok() || !cfg.Miner.Enabled {
+		return
+	}
+	// [miner] enabled says intake is configured; the persisted decision is
+	// the only runtime authority. An undecided participant is silent. An
+	// unreadable state is fail-closed for mining but visible as a concise
+	// diagnostic; neither state-store nor health failures may replace a
+	// successful router answer.
+	decision, mstore := inspectMiningState(cfg.Mining.StateDir)
+	if decision.State == auth.MiningDegraded {
+		detail := miningDecisionDetail(decision)
+		if mstore != nil {
+			_ = mstore.MarkHealth(auth.HealthDecision, auth.HealthDecisionUnreadable, detail)
+		}
+		fmt.Fprintf(stderr, "dropin-miner: the search succeeded, but mining capture is unavailable because local mining state cannot be safely trusted%s\n",
+			detail)
+	}
+	if decision.State != auth.MiningEnabled {
+		return
+	}
+	rec := intakeRecord{
+		RequestID:  out.Success.RequestID,
+		Host:       cfg.Miner.RouterURL.Host,
+		StatusCode: out.HTTPStatus,
+		StartedAt:  out.Started,
+		FinishedAt: out.Finished,
+	}
+	if c := out.Success.Response.chosen(); c != nil {
+		rec.ChosenProvider = c.Provider
+	}
+	if _, err := writeIntake(cfg.Miner.IntakeDir, rec); err != nil {
+		reason := auth.HealthIntakeUnwritable
+		if intakeWriteBlocked(err) {
+			reason = auth.HealthSandboxRestricted
+			fmt.Fprintf(stderr, "dropin-miner: the search worked, but its mining observation could NOT be\n"+
+				"  recorded — %s is not writable from inside this agent's sandbox, so\n"+
+				"  searches run here earn nothing. Let the agent write to that directory.\n"+
+				"  For Codex, re-run `dropin-miner agents install`, which now configures it.\n",
+				minerRoot(cfg.Miner))
+		} else {
+			fmt.Fprintln(stderr, "dropin-miner search: could not record the request for mining:", err)
+		}
+		if mstore != nil {
+			_ = mstore.MarkHealth(auth.HealthCapture, reason, err.Error())
+		}
+		return
+	}
+	if mstore != nil {
+		_ = mstore.ClearHealth(auth.HealthCapture)
+	}
+	if !noFlush && ops.spawnFlush != nil {
+		if err := ops.spawnFlush(cfgPath); err != nil {
+			if mstore != nil {
+				_ = mstore.MarkHealth(auth.HealthFlush, auth.HealthFlushSpawnFailed, err.Error())
+			}
+			fmt.Fprintln(stderr, "dropin-miner search: could not start mining flush:", err)
+		}
+	}
+}
+
+// performSearch runs the whole protocol operation under one context: at
+// most two POSTs, the second only on an explicit trace_unsupported, and
+// both sharing ctx's single absolute deadline.
+func performSearch(ctx context.Context, now func() time.Time, call searchCall) searchOutcome {
+	body := map[string]any{"query": call.Query}
+	if call.Tier != "" {
+		body["tier"] = call.Tier
+	}
+	out := searchOutcome{Traced: call.Trace != nil}
+	if out.Traced {
+		body["trace"] = call.Trace
 	}
 
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode <= 299:
-		return exitOK
-	case resp.StatusCode >= 500:
-		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s\n", resp.Status)
-		return exitServerErr
-	case resp.StatusCode == http.StatusUnauthorized:
-		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s — the router refused the key (from %s); store a valid one with: dropin-miner login\n", resp.Status, keySrc)
-		return exitClientErr
-	default:
-		fmt.Fprintf(stderr, "\ndropin-miner: HTTP %s\n", resp.Status)
-		return exitClientErr
+	// CheckRedirect: this request carries the participant's sr- key in
+	// Authorization. net/http's default follows up to ten redirects and
+	// replays both the header and the body on a 307/308 — a compromised or
+	// misconfigured router redirecting this request would hand the key to
+	// whatever host it named. Same-origin bounded, not refused outright: a
+	// router legitimately redirecting within its own origin must not break
+	// every search. Timeout stays 0: the deadline is ctx's, so it covers
+	// the body read too, which a client Timeout would also do but could
+	// not share across the two attempts.
+	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects, Transport: searchTransport}
+
+	out.Started = now()
+	attempt, err := postSearch(ctx, client, call, body)
+	out.Attempts++
+	if err == nil && out.Traced && searchTraceUnsupported(attempt.Status, attempt.Raw, attempt.BodyErr) {
+		// The router said, in its own machine code, that it does not
+		// accept the field. One retry without it, on the SAME ctx, so the
+		// fallback gets only what is left of the original budget. Never
+		// recursive: this is the only place a second POST is issued.
+		delete(body, "trace")
+		out.Retried = true
+		attempt, err = postSearch(ctx, client, call, body)
+		out.Attempts++
 	}
+	out.Finished = now()
+
+	if err != nil {
+		out.Err = err
+		out.Fault = contextFault(ctx, err, faultTransport)
+		return out
+	}
+	out.HTTPStatus = attempt.Status
+	out.RawBody = attempt.Raw
+	if ms, ok := retryAfterMS(attempt.Header, now()); ok {
+		out.RetryAfterMS, out.HasRetryAfter = ms, true
+	}
+
+	if attempt.Status < 200 || attempt.Status > 299 {
+		out.Fault = faultRouterStatus
+		if attempt.BodyErr == nil {
+			if e, ok := decodeSearchHostError(attempt.Raw); ok {
+				out.RouterErr, out.HasRouterErr = e, true
+			}
+		}
+		return out
+	}
+	if attempt.BodyErr != nil {
+		out.Err = attempt.BodyErr
+		switch {
+		case errors.Is(attempt.BodyErr, errBodyOversized):
+			out.Fault = faultOversized
+		default:
+			// A body read that died on the deadline is a timeout, not a
+			// malformed router: §19's "the body read is covered by it".
+			out.Fault = contextFault(ctx, attempt.BodyErr, faultInvalidResponse)
+		}
+		return out
+	}
+	success, derr := decodeRouterSuccess(attempt.Raw, attempt.Header.Get("X-Request-Id"))
+	if derr != nil {
+		out.Err = derr
+		if errors.Is(derr, errNoRequestID) {
+			out.Fault = faultMissingID
+		} else {
+			out.Fault = faultInvalidResponse
+		}
+		return out
+	}
+	out.Success = success
+	return out
+}
+
+// contextFault separates a deliberate cancellation from an expired
+// deadline, falling back to otherwise. An agent may retry a timeout; it
+// must not automatically retry something a person interrupted.
+func contextFault(ctx context.Context, err error, otherwise searchFault) searchFault {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return faultTimeout
+	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+		return faultCanceled
+	default:
+		return otherwise
+	}
+}
+
+func postSearch(ctx context.Context, client *http.Client, call searchCall, body map[string]any) (routerAttempt, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return routerAttempt{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, call.Endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return routerAttempt{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", searchUserAgent+"/"+strings.TrimPrefix(buildVersion(), "v"))
+	req.Header.Set("Authorization", "Bearer "+call.Key)
+	resp, err := client.Do(req)
+	if err != nil {
+		return routerAttempt{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	attempt := routerAttempt{Status: resp.StatusCode, Header: resp.Header}
+	if resp.ContentLength > searchMaxBody {
+		// Declared oversized: refuse without draining it. The streaming
+		// max+1 check below stays authoritative — Content-Length is
+		// optional and can lie — but when it is present and honest there
+		// is no reason to read the ceiling to learn what it already said.
+		attempt.BodyErr = errBodyOversized
+		return attempt, nil
+	}
+	attempt.Raw, attempt.BodyErr = readBoundedBody(resp.Body, searchMaxBody)
+	return attempt, nil
 }
 
 // searchTrace picks the envelope for this search: bridge, lineage file,

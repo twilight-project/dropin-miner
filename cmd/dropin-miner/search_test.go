@@ -285,7 +285,16 @@ func TestSearchKillSwitchSendsNoTraceAndStillMines(t *testing.T) {
 	}
 }
 
-func TestSearchRetriesOnceBareWhenTheRouterRejectsTheTrace(t *testing.T) {
+// The compatibility retry, end to end through the command.
+//
+// This supersedes the status-only version of this test. It used to drive a
+// bare 400 whose body said "unknown field trace" and assert a second POST,
+// which encoded the behavior §8 removed: any ordinary 400 or 422 — an
+// invalid query, an unknown tier — bought the participant a second billable
+// POST carrying the same query. The retry is now licensed by the search
+// host's exact machine code and by nothing else, so the old body is
+// asserted here as a one-POST case instead.
+func TestSearchRetriesOnceBareOnAnExactTraceUnsupportedCode(t *testing.T) {
 	calls := 0
 	fr, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -293,14 +302,14 @@ func TestSearchRetriesOnceBareWhenTheRouterRejectsTheTrace(t *testing.T) {
 		_ = body
 		if calls == 1 {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"unknown field trace"}`))
+			_, _ = w.Write([]byte(`{"code":"trace_unsupported","error":"this deployment does not accept trace"}`))
 			return
 		}
 		_, _ = w.Write([]byte(routerBody))
 	})
 	h := fixedSearchOps(root)
 	code, out, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfg, "q")
-	if code != exitOK || out != routerBody || !strings.Contains(errOut, "retrying without it") {
+	if code != exitOK || out != routerBody || !strings.Contains(errOut, "retrying once without the trace") {
 		t.Fatalf("exit %d out %q err %q", code, out, errOut)
 	}
 	if calls != 2 {
@@ -309,6 +318,25 @@ func TestSearchRetriesOnceBareWhenTheRouterRejectsTheTrace(t *testing.T) {
 	_, sent := fr.last(t)
 	if bytes.Contains(sent, []byte(`"trace"`)) {
 		t.Error("the retry still carried the trace")
+	}
+}
+
+func TestSearchDoesNotRetryAnOrdinaryRejectionThroughTheCommand(t *testing.T) {
+	calls := 0
+	_, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		// The exact body the superseded test used to treat as a trace
+		// incompatibility.
+		_, _ = w.Write([]byte(`{"error":"unknown field trace"}`))
+	})
+	h := fixedSearchOps(root)
+	code, _, _ := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfg, "q")
+	if code != exitClientErr {
+		t.Fatalf("exit %d, want %d", code, exitClientErr)
+	}
+	if calls != 1 {
+		t.Errorf("%d POST(s) for an ordinary 400; the query was sent twice", calls)
 	}
 }
 
