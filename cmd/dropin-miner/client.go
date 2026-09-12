@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // describeConfigSource names the file config.Load would have read, for
@@ -34,4 +35,26 @@ func describeConfigSource(cfgPath string, getenv func(string) string) string {
 // person.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// searchDeadline is the whole-search budget, derived from the signal
+// context so Ctrl-C still cancels promptly.
+//
+// One absolute instant, created once and shared by everything the search
+// does: connect, TLS, headers, body read, and the single trace
+// compatibility retry. A fresh timer per attempt would let a search that
+// retries take twice as long as the budget an agent was promised, which is
+// the same unbounded wait in a costume.
+//
+// The two cancellations are also distinguishable on purpose. Expiry leaves
+// context.DeadlineExceeded; a signal leaves context.Canceled through the
+// parent — an agent may retry the first and must not silently retry the
+// second.
+func searchDeadline(timeout time.Duration) (context.Context, context.CancelFunc) {
+	parent, stop := signalContext()
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	return ctx, func() {
+		cancel()
+		stop()
+	}
 }

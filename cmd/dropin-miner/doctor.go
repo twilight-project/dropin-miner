@@ -385,6 +385,7 @@ func plural(n uint64, word string) string {
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("doctor", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
+	asJSON := fs.Bool("json", false, "report as one JSON object instead of text")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -394,34 +395,54 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 	cfg, src, err := loadConfig(*cfgPath, os.Getenv)
 	if err != nil {
+		if *asJSON {
+			emitMachine(stdout, commandEnvelope{
+				machineHeader: newMachineHeader("doctor", exitTransport, "config_unreadable", false, actionFixInput),
+				Error:         clientMessage(err),
+			})
+			return exitTransport
+		}
 		fmt.Fprintf(stderr, "dropin-miner: config (%s): %v\n", orDefaults(src), err)
 		return exitTransport
 	}
 	mining := doctorASClient(ctx, cfg.Mining)
 
+	// Gathered once, rendered either way: the JSON report makes no call
+	// the text report does not make, and neither is produced from the
+	// other's output.
 	f := gatherDoctorFacts(ctx, mining, cfg.Mining)
 	f.ASConfigured = miningASConfigured(cfg.Mining)
 	f.ASConfigKnown = true
 	checks := assembleDoctor(f)
+	if *asJSON {
+		code := doctorExit(checks)
+		emitMachine(stdout, doctorEnvelope(f, checks, code))
+		return code
+	}
 	printDoctor(stdout, checks, f)
+	return doctorExit(checks)
+}
 
-	// The exit status reports whether the DIAGNOSIS succeeded, not whether
-	// the news is good.
-	//
-	// The tempting design is the opposite — non-zero whenever any check is
-	// not OK — and it is wrong for this command in a way that only shows up
-	// in front of a new participant. The first thing anyone runs `doctor`
-	// for is a proxy that has just been installed and not yet enrolled,
-	// which is the state it exists to explain. Exiting 1 there tells a
-	// person, and every script wrapping this, that the command failed, when
-	// what actually happened is that it worked perfectly and the answer is
-	// "not enrolled yet". A diagnostic that reports a correct diagnosis as
-	// its own failure teaches people to stop reading it.
-	//
-	// So `NO` is a successful run: the check ran and the answer is no. Only
-	// a report that could not be produced at all is a failure, and the way
-	// that shows is every check coming back UNKNOWN — nothing was reachable,
-	// so nothing was learned.
+// doctorExit decides the process status.
+//
+// The exit status reports whether the DIAGNOSIS succeeded, not whether the
+// news is good, and it is the same decision whichever renderer ran.
+//
+// The tempting design is the opposite — non-zero whenever any check is
+// not OK — and it is wrong for this command in a way that only shows up
+// in front of a new participant. The first thing anyone runs `doctor`
+// for is a proxy that has just been installed and not yet enrolled,
+// which is the state it exists to explain. Exiting 1 there tells a
+// person, and every script wrapping this, that the command failed, when
+// what actually happened is that it worked perfectly and the answer is
+// "not enrolled yet". A diagnostic that reports a correct diagnosis as
+// its own failure teaches people to stop reading it.
+//
+// So `NO` is a successful run: the check ran and the answer is no. Only
+// a report that could not be produced at all is a failure, and the way
+// that shows is every check coming back UNKNOWN — nothing was reachable,
+// so nothing was learned.
+func doctorExit(checks []doctorCheck) int {
 	for _, c := range checks {
 		if c.Verdict != verdictUnknown {
 			return exitOK

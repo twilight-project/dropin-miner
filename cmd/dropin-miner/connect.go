@@ -32,9 +32,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -238,12 +240,166 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 	return verifiedReg, nil
 }
 
+// cmdConnect is the text path unless -json is asked for, in which case it
+// is the same run with its narration captured and one envelope emitted
+// from what the run persisted.
+//
+// The flow itself is untouched: the same single-flight lock, the same
+// pending-registration recovery, the same poll loop, the same decisions.
+// Machine mode changes where the words go, not what happens — a JSON mode
+// that took a different path through registration would be a second,
+// less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	if !jsonRequested(args) {
+		return connectRun(args, stdin, stdout, stderr, getenv)
+	}
+	cfgPath, force, parseErr := connectMachineFlags(args)
+	// Selecting an output format must not select an answer. Machine mode
+	// is not a terminal, so the ask-before-registering step would take its
+	// non-interactive branch and write a first mining decision from
+	// whatever mining.enabled happens to default to — a participant
+	// decision manufactured by a flag about formatting. Where that would
+	// happen, stop before Register and say so structurally instead.
+	//
+	// Only when the command itself parsed. An invalid command is not a
+	// lifecycle state: with a parse failure there is no -config to speak
+	// of, so the gate would answer about the DEFAULT config and state
+	// directory, and on a fresh machine a mistyped flag would come back as
+	// human_decision_required. A pre-check that exists to choose an output
+	// format must never reinterpret a broken command as a state of the
+	// installation.
+	if parseErr == nil && connectNeedsHumanDecision(cfgPath, force, getenv) {
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
+			Error: &machineError{
+				Message: "this installation has no mining decision on file and the config does not " +
+					"set mining.enabled, so registering would have to invent one. Run `dropin-miner connect` " +
+					"at a terminal, or set mining.enabled explicitly, then run this again.",
+				Source: "client",
+			},
+		})
+		return exitUsage
+	}
+	var narration bytes.Buffer
+	code := connectRun(args, stdin, io.Discard, &narration, getenv)
+	if parseErr != nil {
+		// connectRun's own parser has now produced the real usage
+		// failure, and the caller still gets exactly one envelope. No
+		// store is read for it: an invalid command says nothing about
+		// this installation, and reporting some default installation's
+		// registration against it would be worse than reporting nothing.
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", code, "invalid_flags", false, actionFixInput),
+			Error:         clientMessage(parseErr),
+		})
+		return code
+	}
+	emitMachine(stdout, connectEnvelope(cfgPath, getenv, code, narration.String()))
+	return code
+}
+
+// connectNeedsHumanDecision reports whether a `connect -json` run would
+// reach the ask-before-registering step with nothing to answer it.
+//
+// It mirrors the conditions under which connectRun actually calls
+// decideRegistrationOutcome, rather than refusing on the decision alone: a
+// registration already on file and not expired goes straight to polling,
+// and a pending registration is republished — neither asks anything, and
+// neither should be blocked. The three things that answer the question are
+// an explicit mining.enabled in the config, a persisted decision of any
+// state but undecided, and a registration that does not need minting.
+//
+// It reads; it never writes. Deciding not to decide must not itself
+// persist a decision — and, for a corrupt registration in particular, must
+// not preserve, replace or rewrite the bytes it could not read.
+func connectNeedsHumanDecision(cfgPath string, force bool, getenv func(string) string) bool {
+	cfg, _, err := loadConfig(cfgPath, getenv)
+	if err != nil {
+		return false // connectRun reports the config error itself
+	}
+	if cfg.MiningEnabledExplicit {
+		return false // the file answered: the scripted path stays open
+	}
+	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
+	if err != nil {
+		// No state directory at all is a first run: undecided, and a
+		// fresh Register is exactly what would follow.
+		return errors.Is(err, fs.ErrNotExist) && preflightFreshRegistration(cfg.Miner, force) == nil
+	}
+	if store.ReadMiningDecision().State != auth.MiningUndecided {
+		return false // a persisted decision is authoritative, as always
+	}
+	if _, ok, perr := store.LoadPendingRegistration(); perr == nil && ok {
+		// Register already happened for this one; recovery republishes it
+		// and asks nothing. Blocking it here would break the journal.
+		return false
+	}
+
+	reg, ok, rerr := store.LoadAgentRegistration()
+	switch {
+	case errors.Is(rerr, auth.ErrAgentRegistrationCorrupt):
+		// The one that matters. connectRun's recovery treats a corrupt
+		// agent.json as no usable registration — reg, existed = {}, false
+		// — and falls through to the fresh-registration branch, which is
+		// where the mining question lives. "Cannot be read" therefore has
+		// to mean the same thing here as it means there: absent. Reading
+		// it as "let the run decide" is what let this path mint a fresh
+		// registration and persist an implicit mining default.
+	case rerr != nil:
+		// Any other read failure stops connectRun before it asks
+		// anything, so there is no decision to guard.
+		return false
+	case !ok:
+		// Absent: the fresh-registration branch, same as corrupt.
+	case reg.Status == "expired":
+		// The replace path asks the question too, and reaches Register
+		// without the fresh-registration preflight.
+		return true
+	default:
+		return false // a usable registration is only polled
+	}
+
+	// Absent or corrupt: connectRun runs this exact preflight before
+	// Register, and a refusal there means the run stops with a credential
+	// conflict rather than ever asking. Calling the same helper keeps the
+	// gate honest about where the question actually is, instead of
+	// re-deriving the rule from prose.
+	return preflightFreshRegistration(cfg.Miner, force) == nil
+}
+
+// connectMachineFlags re-reads the two flags machine mode needs before the
+// run starts: -config for the envelope's own store lookup, and -force
+// because whether a fresh registration is even possible depends on it.
+// Parsing twice is cheaper than threading them out of a function with
+// thirty exit points.
+//
+// It declares the same flags as connectRun — one grammar, not two — and it
+// reports a parse failure rather than swallowing it. Swallowing it was the
+// bug: zero values look exactly like "no -config given", so a mistyped
+// flag was answered as if it were a question about the default
+// installation. The caller must be able to tell "the command is invalid"
+// from "the command is valid and says nothing".
+func connectMachineFlags(args []string) (cfgPath string, force bool, err error) {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cfg := fs.String("config", "", "")
+	fs.String("name", "", "")
+	fs.Bool("resume", false, "")
+	forced := fs.Bool("force", false, "")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil {
+		return "", false, err
+	}
+	return *cfg, *forced, nil
+}
+
+func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
 	resume := fs.Bool("resume", false, "internal: exactly one poll, act, exit — used by the detached resume search spawns")
 	force := fs.Bool("force", false, "overwrite an existing credentials.json even though it already holds a different platform key")
+	fs.Bool("json", false, "report as one JSON object instead of text")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

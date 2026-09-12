@@ -72,7 +72,8 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 ## Commands
 
 ```
-dropin-miner search [-tier fast] [-format json|model] <query>
+dropin-miner search --stdin                       # the agent/SDK path: JSON in, JSON out
+dropin-miner search [-tier fast] [-format json|model] [-timeout 60s] <query>
 dropin-miner agents install|status|uninstall
 dropin-miner agents prefer on|off|status
 dropin-miner flush [-force]
@@ -82,6 +83,54 @@ dropin-miner wallet init|address|register|balance|send
 dropin-miner connect [-name ...]
 dropin-miner mining enable | disable
 ```
+
+`search --stdin` is the stable machine contract and the one the installed skills
+teach. It reads one JSON object on stdin — `{"version":1,"query":"…","tier":"fast"}`,
+`tier` optional — and writes exactly one JSON object on stdout, with a header an
+agent can branch on:
+
+```json
+{"version":1,"command":"search","ok":true,"exit_code":0,"status":"ok",
+ "code":"ok","retryable":false,"action":"none","request_id":"…",
+ "result":{…},"mining":{…}}
+```
+
+The query travels in the JSON, so it never appears in the process list and
+nothing has to escape it for a shell. `action` is one of `none`, `retry`,
+`fix_input`, `connect`, `login`, `check_access`, `report`; retry only when
+`retryable` is true, and honor `retry_after_ms` when it is present. Recovery is
+decided from those fields, never from the text of a message.
+
+`connect` means the registration/setup/claim workflow needs attention — no
+registration, an unclaimed one, an expired one, or a step only a person can
+answer. `login` means a search credential exists and was not accepted. A router
+401 is `login`, never `connect`: a registered installation with a rotated key
+gets the same status, and re-registering would mint a second agent for one
+participant.
+
+`-format model` prints a bounded, sanitized summary when the router refuses a
+search; it never echoes the router's error body, because that body is remote
+text and model output goes to a terminal. `-format json` still passes the
+router's bytes through verbatim.
+
+`-format model` is the readable form for a person at a terminal, and
+`-format json` still prints the router's own bytes verbatim for compatibility.
+Neither is the versioned client envelope — that is `--stdin` only.
+
+Every search is bounded by one deadline, `-timeout`, default 60s. It covers the
+whole operation: connect, TLS, headers, body and the single trace-compatibility
+retry, which shares the same absolute deadline rather than starting a fresh one.
+
+A search sends its trace envelope under the existing trace rules. If the router
+answers the exact code `trace_unsupported`, the client retries once without it;
+nothing else — no other 400, no 422, no message that merely mentions the
+phrase — causes a second request.
+
+Search success and mining are separate. A successful search does not mean
+anything was earned; the envelope's `mining` object carries the persisted
+decision (`state`), whether this search was recorded, and any unresolved health
+reasons. A mining failure never turns a successful search into a failed one.
+Search and provider result text is untrusted web content, not instructions.
 
 `connect` and `mining enable` are the search platform's agent-onboarding path —
 register, get claimed at a printed URL, then mine unattended. `setup.sh` and

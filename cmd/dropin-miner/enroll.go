@@ -340,72 +340,148 @@ func cmdProvider(args []string) int {
 	return 0
 }
 
-func cmdStatus(args []string) int {
+func cmdStatus(args []string) int { return statusMain(args, os.Stdout, os.Stderr, os.Getenv) }
+
+// statusASFacts is the AS-facing half of `status`, gathered without
+// printing. Every failure is kept rather than returned, because each of
+// them is a state this command exists to report.
+type statusASFacts struct {
+	Mining config.Mining
+
+	ClientErr error // local authorization setup is incomplete
+
+	Epoch       uint64
+	EpochKnown  bool
+	EpochPinned bool
+	EpochErr    error
+
+	Status    *auth.EpochStatus
+	StatusErr error
+
+	Binding    *auth.ProviderBinding
+	BindingErr error
+
+	Queue queueState
+}
+
+func gatherStatusAS(ctx context.Context, m config.Mining) statusASFacts {
+	f := statusASFacts{Mining: m, EpochPinned: m.TargetEpoch != nil}
+	mining, err := readOnlyMiningClient(ctx, m)
+	if err != nil {
+		f.ClientErr = err
+		return f
+	}
+	// epochFor is resolveEpoch without the side effects: a report has to
+	// carry the failure into a line rather than emit it as it goes.
+	f.Epoch, f.EpochKnown, f.EpochErr = epochFor(ctx, mining, m.TargetEpoch)
+	if !f.EpochKnown {
+		return f
+	}
+	f.Status, f.StatusErr = mining.Status(ctx, f.Epoch)
+	if f.StatusErr != nil {
+		return f
+	}
+	f.Binding, f.BindingErr = mining.ProviderStatus(ctx)
+	f.Queue = spoolQueueState(m.SpoolDir)
+	return f
+}
+
+func statusMain(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	ctx, cancel := operatorContext(time.Minute)
 	defer cancel()
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
+	asJSON := fs.Bool("json", false, "report as one JSON object instead of text")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	cfg, src, err := loadConfig(*cfgPath, os.Getenv)
+	cfg, src, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dropin-miner: config (%s): %v\n", orDefaults(src), err)
+		if *asJSON {
+			emitMachine(stdout, commandEnvelope{
+				machineHeader: newMachineHeader("status", exitTransport, "config_unreadable", false, actionFixInput),
+				Error:         clientMessage(err),
+			})
+			return exitTransport
+		}
+		fmt.Fprintf(stderr, "dropin-miner: config (%s): %v\n", orDefaults(src), err)
 		return exitTransport
+	}
+
+	local, ok := gatherAgentIdentity(args, getenv)
+	if !ok {
+		local = agentIdentityFacts{Mining: cfg.Mining, StoreMissing: true,
+			Decision: auth.MiningDecision{State: auth.MiningUndecided}}
 	}
 
 	// WP2-adversarial-review finding 16: an unclaimed or search-only
 	// agent (no AS configuration, by design) is an ordinary state, not a
 	// failure — authenticated AS checks require mining.as_url and existing
-	// auth material and would otherwise make `status` fail for the two most common
-	// states an agent-onboarding participant is actually in. needsMining
-	// is false for exactly those two; the AS-facing report below is
+	// auth material and would otherwise make `status` fail for the two most
+	// common states an agent-onboarding participant is actually in.
+	// needsMining is false for exactly those two; the AS-facing report is
 	// skipped entirely rather than attempted and its failure suppressed,
-	// since there is nothing for it to say when there is no [mining]
-	// block to ask about.
-	needsMining := printAgentIdentityStatus(args, os.Stdout, os.Stderr, os.Getenv)
-	if !needsMining {
-		return 0
+	// since there is nothing for it to say when there is no [mining] block
+	// to ask about.
+	var as *statusASFacts
+	if local.needsMining() {
+		f := gatherStatusAS(ctx, cfg.Mining)
+		as = &f
 	}
 
-	mining, err := readOnlyMiningClient(ctx, cfg.Mining)
-	if err != nil {
-		fmt.Fprintf(os.Stdout, "auth:    local authorization setup is incomplete (%v); authenticated AS checks skipped\n", redact.Error(err))
+	if *asJSON {
+		emitMachine(stdout, statusEnvelope(local, as))
 		return exitOK
 	}
-	m := cfg.Mining
-
-	fmt.Fprintf(os.Stdout, "as:     %s\nchain:  %s\nslot:   %d\n",
-		m.ASBaseURL, m.ChainID, m.SlotID)
-
-	epoch, ok := resolveEpoch(ctx, mining, m)
-	if !ok {
-		// A report, not a failure: "no target right now" is a state
-		// this command exists to show.
-		fmt.Fprintln(os.Stdout, "epoch:  none")
-		return 0
+	renderAgentIdentity(local, stdout, stderr)
+	if as != nil {
+		renderStatusAS(*as, stdout, stderr)
 	}
-	fmt.Fprintf(os.Stdout, "epoch:  %d%s\n", epoch, epochOrigin(m.TargetEpoch))
+	return exitOK
+}
 
-	st, err := mining.Status(ctx, epoch)
-	if err != nil {
+func renderStatusAS(f statusASFacts, stdout, stderr io.Writer) {
+	if f.ClientErr != nil {
+		fmt.Fprintf(stdout, "auth:    local authorization setup is incomplete (%v); authenticated AS checks skipped\n", redact.Error(f.ClientErr))
+		return
+	}
+	m := f.Mining
+	fmt.Fprintf(stdout, "as:     %s\nchain:  %s\nslot:   %d\n", m.ASBaseURL, m.ChainID, m.SlotID)
+
+	if !f.EpochKnown {
+		if f.EpochErr != nil {
+			fmt.Fprintln(stderr, "dropin-miner: current target:", f.EpochErr)
+			if errors.Is(f.EpochErr, auth.ErrNoCurrentTargetEndpoint) {
+				fmt.Fprintln(stderr, "  set mining.target_epoch in the config to name the epoch yourself")
+			}
+		} else {
+			fmt.Fprintln(stderr, "dropin-miner: the AS reports no open target for this slot right now")
+		}
+		// A report, not a failure: "no target right now" is a state this
+		// command exists to show.
+		fmt.Fprintln(stdout, "epoch:  none")
+		return
+	}
+	fmt.Fprintf(stdout, "epoch:  %d%s\n", f.Epoch, epochOrigin(m.TargetEpoch))
+
+	if f.StatusErr != nil {
 		// Reaching here almost always means "not authorized yet", which
 		// is a state to report, not a failure to shout about.
-		fmt.Fprintf(os.Stdout, "epoch:  unavailable (%v)\n", err)
-		fmt.Fprintln(os.Stdout, "\nnext: dropin-miner enroll -config <file>")
-		return 0
+		fmt.Fprintf(stdout, "epoch:  unavailable (%v)\n", f.StatusErr)
+		fmt.Fprintln(stdout, "\nnext: dropin-miner enroll -config <file>")
+		return
 	}
-	fmt.Fprintf(os.Stdout, "phase=%s mode=%s joinable=%t join_status=%s participation=%s capability_available=%t\n",
+	st := f.Status
+	fmt.Fprintf(stdout, "phase=%s mode=%s joinable=%t join_status=%s participation=%s capability_available=%t\n",
 		st.Phase, st.DistributionMode, st.Joinable, st.JoinStatus, st.ParticipationStatus, st.CapabilityAvailable)
 
-	if b, err := mining.ProviderStatus(ctx); err == nil {
-		printBinding(b)
+	if f.BindingErr == nil {
+		printBindingTo(stdout, f.Binding)
 	} else {
-		fmt.Fprintf(os.Stdout, "provider: none (%v)\n", err)
+		fmt.Fprintf(stdout, "provider: none (%v)\n", f.BindingErr)
 	}
-	printQueue(m)
-	return 0
+	printQueueState(stdout, f.Queue)
 }
 
 func readOnlyMiningClient(ctx context.Context, m config.Mining) (*auth.MiningClient, error) {
@@ -450,38 +526,132 @@ func readOnlyMiningClient(ctx context.Context, m config.Mining) (*auth.MiningCli
 // all — a legacy, pre-connect installation, where the AS-facing report
 // is the WHOLE of what `status` has ever done and must run unchanged.
 func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv func(string) string) bool {
+	f, ok := gatherAgentIdentity(args, getenv)
+	if !ok {
+		// The real parse, in cmdStatus below, reports the usage or config
+		// error; there is nothing this half can say about it.
+		return true
+	}
+	return renderAgentIdentity(f, stdout, stderr)
+}
+
+// agentIdentityFacts is everything the local half of `status` reads, with
+// no interpretation applied yet.
+//
+// Gathering and rendering are separate so the JSON report is built from
+// the same values the human report prints, rather than from the human
+// report itself. A renderer that parsed its own prose back into fields
+// would make every wording change a silent data change.
+//
+// It stays disk-only by design (see printQueue's comment on the same
+// point): nothing here asks the AS or the platform.
+type agentIdentityFacts struct {
+	Mining config.Mining
+
+	// StoreMissing is the ordinary "nothing has decided anything here"
+	// state; StoreErr is a state directory that exists and cannot be read.
+	StoreMissing bool
+	StoreErr     error
+
+	Decision  auth.MiningDecision
+	Health    []auth.HealthRecord
+	HealthErr error
+
+	Registration    auth.AgentRegistration
+	HasRegistration bool
+	RegistrationErr error
+
+	PayoutAddress    string
+	HasPayoutAddress bool
+	PayoutAddressErr error
+
+	Held    auth.PayoutBindingHeld
+	HasHeld bool
+
+	Conflicts []auth.ConflictedEpoch
+}
+
+func gatherAgentIdentity(args []string, getenv func(string) string) (agentIdentityFacts, bool) {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	cfgPath := flags.String("config", "", "path to TOML config file")
+	flags.Bool("json", false, "")
 	if err := flags.Parse(args); err != nil {
-		return true // the real parse, in miningClients below, reports the usage error
+		return agentIdentityFacts{}, false
 	}
 	cfg, _, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
-		return true // ditto: miningClients below reports this config error
+		return agentIdentityFacts{}, false
 	}
+	f := agentIdentityFacts{Mining: cfg.Mining}
 	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			fmt.Fprintln(stdout, "mining: NOT DECIDED")
-			printMiningASConfiguration(stdout, cfg.Mining)
-			return false
+			f.StoreMissing = true
+			f.Decision = auth.MiningDecision{State: auth.MiningUndecided}
+		} else {
+			f.StoreErr = err
+			f.Decision = auth.MiningDecision{State: auth.MiningDegraded, Present: true, Err: err}
 		}
-		fmt.Fprintf(stdout, "mining: DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(auth.MiningDecision{State: auth.MiningDegraded, Err: err}))
-		printMiningASConfiguration(stdout, cfg.Mining)
+		return f, true
+	}
+	f.Decision = store.ReadMiningDecision()
+	f.Health, f.HealthErr = store.HealthRecords()
+	f.Registration, f.HasRegistration, f.RegistrationErr = store.LoadAgentRegistration()
+	if f.RegistrationErr != nil {
+		return f, true
+	}
+	if f.HasRegistration {
+		f.PayoutAddress, f.HasPayoutAddress, f.PayoutAddressErr = store.LoadPayoutAddress()
+	}
+	// WP4b (design f0ddb69 §5.5): both of these are read-before-declare /
+	// conflict bookkeeping the store already has, no AS round trip needed.
+	if held, ok, herr := store.LoadPayoutBindingHeld(); herr == nil && ok {
+		f.Held, f.HasHeld = held, true
+	}
+	if conflicts, cerr := store.EpochConflicts(); cerr == nil {
+		f.Conflicts = conflicts
+	}
+	return f, true
+}
+
+// needsMining reports whether cmdStatus's AS-facing report is worth
+// attempting at all (WP2-adversarial-review finding 16). See
+// printAgentIdentityStatus's doc comment for the three states it is false
+// for.
+func (f agentIdentityFacts) needsMining() bool {
+	if f.StoreMissing || f.StoreErr != nil || f.RegistrationErr != nil {
 		return false
 	}
-	decision := store.ReadMiningDecision()
-	if decision.State == auth.MiningDegraded {
-		fmt.Fprintf(stdout, "mining:  DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(decision))
-	} else {
-		fmt.Fprintf(stdout, "mining:  %s%s\n", miningDecisionText(decision), miningDecisionDetail(decision))
+	if !f.HasRegistration {
+		return true // never ran connect: the legacy AS-facing report is the whole of status
 	}
-	printMiningASConfiguration(stdout, cfg.Mining)
-	records, herr := store.HealthRecords()
-	for _, record := range records {
+	if f.Registration.Status != "claimed" || !hasScope(f.Registration.Scopes, "mining") {
+		return false
+	}
+	return f.Decision.State == auth.MiningEnabled && miningASConfigured(f.Mining)
+}
+
+func renderAgentIdentity(f agentIdentityFacts, stdout, stderr io.Writer) bool {
+	if f.StoreMissing {
+		fmt.Fprintln(stdout, "mining: NOT DECIDED")
+		printMiningASConfiguration(stdout, f.Mining)
+		return false
+	}
+	if f.StoreErr != nil {
+		fmt.Fprintf(stdout, "mining: DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(f.Decision))
+		printMiningASConfiguration(stdout, f.Mining)
+		return false
+	}
+	if f.Decision.State == auth.MiningDegraded {
+		fmt.Fprintf(stdout, "mining:  DEGRADED — stored decision could not be read%s\n", miningDecisionDetail(f.Decision))
+	} else {
+		fmt.Fprintf(stdout, "mining:  %s%s\n", miningDecisionText(f.Decision), miningDecisionDetail(f.Decision))
+	}
+	printMiningASConfiguration(stdout, f.Mining)
+	for _, record := range f.Health {
 		prefix := "health:"
-		if decision.State == auth.MiningDisabled {
+		if f.Decision.State == auth.MiningDisabled {
 			prefix = "health (previous unresolved):"
 		}
 		if record.Detail == "" {
@@ -490,23 +660,22 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 			fmt.Fprintf(stdout, "%-26s %s/%s — %s\n", prefix, record.Component, record.Reason, record.Detail)
 		}
 	}
-	if herr != nil {
-		fmt.Fprintf(stderr, "health: could not read persistent component health: %v\n", redact.Error(herr))
+	if f.HealthErr != nil {
+		fmt.Fprintf(stderr, "health: could not read persistent component health: %v\n", redact.Error(f.HealthErr))
 	}
-	reg, ok, err := store.LoadAgentRegistration()
-	if err != nil {
+	if f.RegistrationErr != nil {
 		// WP2-adversarial-review finding 17: an undecodable agent.json
 		// used to make this function print nothing at all, identical to
 		// "never ran connect" — status is exactly where a participant
 		// would go looking to understand why connect started refusing.
-		fmt.Fprintf(stderr, "agent:  registration on file could not be read: %v\n", err)
+		fmt.Fprintf(stderr, "agent:  registration on file could not be read: %v\n", f.RegistrationErr)
 		return false
 	}
-	if !ok {
+	if !f.HasRegistration {
 		return true // never ran connect: nothing to report here, legacy report proceeds
 	}
 
-	needsMining := false
+	reg := f.Registration
 	switch reg.Status {
 	case "unclaimed":
 		fmt.Fprintf(stdout, "agent:  unclaimed — claim at %s\n", reg.ClaimURL)
@@ -514,19 +683,14 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 		fmt.Fprintln(stdout, "agent:  expired — run `dropin-miner connect` again for a new registration")
 	case "claimed":
 		fmt.Fprintf(stdout, "agent:  claimed (scopes: %s)\n", strings.Join(reg.Scopes, ", "))
-		if hasScope(reg.Scopes, "mining") {
-			needsMining = decision.State == auth.MiningEnabled && miningASConfigured(cfg.Mining)
-		}
 		if reg.LastEnrollmentSlot != "" {
-			address, hasAddr, aerr := store.LoadPayoutAddress()
-			switch {
-			case aerr == nil && hasAddr:
-				fmt.Fprintf(stdout, "        enrolled on %s, payout address %s\n", reg.LastEnrollmentSlot, address)
-			default:
+			if f.PayoutAddressErr == nil && f.HasPayoutAddress {
+				fmt.Fprintf(stdout, "        enrolled on %s, payout address %s\n", reg.LastEnrollmentSlot, f.PayoutAddress)
+			} else {
 				fmt.Fprintf(stdout, "        enrolled on %s, no payout address on file yet\n", reg.LastEnrollmentSlot)
 			}
 		} else if hasScope(reg.Scopes, "mining") {
-			switch decision.State {
+			switch f.Decision.State {
 			case auth.MiningDisabled:
 				printMiningStoppedPair(stdout)
 			case auth.MiningUndecided:
@@ -539,7 +703,7 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 					// a participant discover it only from a resume's silent
 					// no-op.
 					fmt.Fprintln(stdout, "        mining scope granted, but not enrolled: "+reg.SlotRefusal)
-				} else if _, hasAddr, _ := store.LoadPayoutAddress(); !hasAddr {
+				} else if !f.HasPayoutAddress {
 					fmt.Fprintln(stdout, "        mining enabled, no wallet yet (no terminal was available at setup) — "+
 						"run `dropin-miner mining enable` at a terminal, or set mining.payout_address")
 				} else {
@@ -551,27 +715,21 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 		fmt.Fprintf(stderr, "agent:  unrecognized status %q from a previous poll\n", reg.Status)
 	}
 
-	// WP4b (design f0ddb69 §5.5): both notes below are read-before-declare
-	// / conflict bookkeeping the store already has, no AS round trip
-	// needed here — printAgentIdentityStatus stays disk-only by design
-	// (see printQueue's comment on the same point).
-	if held, ok, herr := store.LoadPayoutBindingHeld(); herr == nil && ok {
-		reason := held.HeldFor
+	if f.HasHeld {
+		reason := f.Held.HeldFor
 		if reason == "" {
 			reason = "REPLACES_ACTIVE" // this client's own read-before-declare pre-check, not an AS-returned reason
 		}
 		fmt.Fprintf(stdout, "payout: HELD (%s) — the AS has %s active for this participant; this installation "+
 			"would declare %s. Changing the active binding is an operator-activated change.\n",
-			reason, held.Active, held.Local)
+			reason, f.Held.Active, f.Held.Local)
 	}
-	if conflicts, cerr := store.EpochConflicts(); cerr == nil {
-		for _, c := range conflicts {
-			fmt.Fprintf(stdout, "mining: another installation of this participant holds slot %d epoch %d; "+
-				"this installation's observations for it are queued until the AS's target moves past it, then dropped\n",
-				c.SlotID, c.TargetEpoch)
-		}
+	for _, c := range f.Conflicts {
+		fmt.Fprintf(stdout, "mining: another installation of this participant holds slot %d epoch %d; "+
+			"this installation's observations for it are queued until the AS's target moves past it, then dropped\n",
+			c.SlotID, c.TargetEpoch)
 	}
-	return needsMining
+	return f.needsMining()
 }
 
 func printMiningASConfiguration(w io.Writer, m config.Mining) {
@@ -593,29 +751,53 @@ func printMiningASConfiguration(w io.Writer, m config.Mining) {
 // It uses Count rather than Len deliberately: Len goes through Pending, which
 // quarantines records it cannot parse, and this command must not move files
 // belonging to a running daemon.
-func printQueue(m config.Mining) {
-	sp, err := spool.OpenExisting(m.SpoolDir)
+// queueState is the local backlog as a value, so the text report and the
+// JSON report read the same count rather than each opening the spool.
+type queueState struct {
+	Dir   string `json:"dir"`
+	Known bool   `json:"known"`
+	Count int    `json:"count"`
+	Error string `json:"error,omitempty"`
+}
+
+// spoolQueueState uses Count rather than Len deliberately: Len goes through
+// Pending, which quarantines records it cannot parse, and a read-only
+// report must not move files belonging to a running daemon.
+func spoolQueueState(spoolDir string) queueState {
+	q := queueState{Dir: spoolDir}
+	sp, err := spool.OpenExisting(spoolDir)
 	if err != nil {
-		fmt.Fprintf(os.Stdout, "queued: unknown (%v)\n", redact.Error(err))
-		return
+		q.Error = redact.Error(err).Error()
+		return q
 	}
 	n, err := sp.Count()
 	if err != nil {
-		fmt.Fprintf(os.Stdout, "queued: unknown (%v)\n", redact.Error(err))
+		q.Error = redact.Error(err).Error()
+		return q
+	}
+	q.Known, q.Count = true, n
+	return q
+}
+
+func printQueueState(w io.Writer, q queueState) {
+	if !q.Known {
+		fmt.Fprintf(w, "queued: unknown (%s)\n", q.Error)
 		return
 	}
-	fmt.Fprintf(os.Stdout, "queued: %d observation(s) in %s\n", n, m.SpoolDir)
-	if n > 0 {
-		fmt.Fprintln(os.Stdout,
+	fmt.Fprintf(w, "queued: %d observation(s) in %s\n", q.Count, q.Dir)
+	if q.Count > 0 {
+		fmt.Fprintln(w,
 			"        held locally until the AS accepts them; nothing is lost while it is unreachable")
 	}
 }
 
-func printBinding(b *auth.ProviderBinding) {
-	fmt.Fprintf(os.Stdout, "provider: %s  status=%s  profile=%s  fingerprint=%s\n",
+func printBinding(b *auth.ProviderBinding) { printBindingTo(os.Stdout, b) }
+
+func printBindingTo(w io.Writer, b *auth.ProviderBinding) {
+	fmt.Fprintf(w, "provider: %s  status=%s  profile=%s  fingerprint=%s\n",
 		b.Provider, b.Status, b.SourceProfile, b.KeyFingerprint)
 	if b.LastSuccessfulVerificationAt != "" {
-		fmt.Fprintf(os.Stdout, "          last verified %s\n", b.LastSuccessfulVerificationAt)
+		fmt.Fprintf(w, "          last verified %s\n", b.LastSuccessfulVerificationAt)
 	}
 }
 
