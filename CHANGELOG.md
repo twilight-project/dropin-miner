@@ -9,6 +9,13 @@ subjects wouldn't make obvious on its own.
 
 ## Unreleased
 
+- **A failing authorization is recognized by what the error is, not by how
+  it is worded.** Whether `status`/`doctor` tell you your authorization
+  needs attention or that delivery failed was decided by matching phrases
+  inside error messages; it is now decided by the error's own type and the
+  HTTP status the AS actually answered with. Every message reads exactly as
+  before.
+
 - **Wallet files are now written through the same durable writer as the
   rest of the client.** The wallet's own writer did everything but sync the
   directory, so a crash at the wrong moment could leave a file whose bytes

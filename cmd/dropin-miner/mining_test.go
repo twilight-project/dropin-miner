@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +27,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/mining/scope"
@@ -738,3 +741,46 @@ func TestAPersistingFailureRepeatsOnASlowCadence(t *testing.T) {
 // zero — and the old summary, gated on both being positive, could not fire
 // on this failure however long it lasted. Everything an operator could see
 // said healthy.
+
+// targetAuthFailure decides whether a current-target failure is recorded
+// as an authorization fault the participant must act on, or as an ordinary
+// delivery failure that may clear on its own. It used to decide that by
+// matching substrings of messages built in pkg/auth, which made those
+// messages a contract and made any error that merely QUOTED one of them an
+// authorization failure. The table below is the contract now, and the last
+// row is the one that proves the classification is no longer textual.
+func TestTargetAuthFailureClassifiesByTypeNotText(t *testing.T) {
+	const refusedText = "auth: AS refused with status 401"
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                      {nil, false},
+		"token endpoint refusal":   {&oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusUnauthorized}}, true},
+		"no refresh authorization": {auth.ErrNoRefreshAuthorization, true},
+		// Sentinels and typed errors survive a caller's own wrapping; the
+		// flush sees these several frames from where they were built.
+		"sentinel wrapped twice": {fmt.Errorf("tick: %w", fmt.Errorf("current target: %w", auth.ErrNoRefreshAuthorization)), true},
+		"refused 401":            {&auth.ASRefusedError{Status: http.StatusUnauthorized}, true},
+		"refused 403":            {&auth.ASRefusedError{Status: http.StatusForbidden, Code: "FORBIDDEN", Message: "no"}, true},
+		"refused 401 wrapped":    {fmt.Errorf("current target: %w", &auth.ASRefusedError{Status: http.StatusUnauthorized}), true},
+		// A refusal the participant cannot fix by re-authorizing is not an
+		// authorization fault: saying so would send them to fix a
+		// credential that is fine.
+		"refused 404":      {&auth.ASRefusedError{Status: http.StatusNotFound}, false},
+		"refused 500":      {&auth.ASRefusedError{Status: http.StatusInternalServerError}, false},
+		"transport":        {errors.New("dial tcp: connection refused"), false},
+		"context deadline": {context.DeadlineExceeded, false},
+		// The proof: an unrelated error whose TEXT is exactly what the old
+		// classifier matched on. Under string matching this was an
+		// authorization failure on the strength of its prose.
+		"text only":          {errors.New(refusedText), false},
+		"text only, wrapped": {fmt.Errorf("current target: %w", errors.New("auth: AS refused (403 X): y")), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := targetAuthFailure(tc.err); got != tc.want {
+				t.Errorf("targetAuthFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
