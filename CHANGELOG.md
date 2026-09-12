@@ -9,6 +9,12 @@ subjects wouldn't make obvious on its own.
 
 ## Unreleased
 
+- **Wallet files are now written through the same durable writer as the
+  rest of the client.** The wallet's own writer did everything but sync the
+  directory, so a crash at the wrong moment could leave a file whose bytes
+  were on disk but whose directory entry was not — recoverable only from
+  the 24 words. Nothing about what is written, or where, changes.
+
 - **Pi and Hermes are supported hosts**, each with a skill and its own
   lineage channel: an auto-discovered extension for Pi
   (`~/.pi/agent/extensions/`), a `pre_tool_call` hook in `config.yaml` for
