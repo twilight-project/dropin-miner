@@ -454,6 +454,39 @@ func (s *Spool) Count() (int, error) {
 	return n, nil
 }
 
+// CountQuarantined returns how many records are in the quarantine
+// subdirectory, by the same name filter Count uses and with the same
+// refusal to touch them.
+//
+// It exists because Count deliberately ignores quarantine — the backlog a
+// participant is told about is what can still be delivered — and because a
+// diagnosis asking the opposite question needs the opposite answer. A
+// quarantined record is some of the strongest evidence there is that
+// something WAS recorded: it got as far as the spool and only then failed
+// to parse. A check that concluded "nothing was ever recorded" while a
+// quarantined record sat on disk would be wrong in the one direction that
+// sends a participant looking for a problem they do not have.
+//
+// A missing quarantine directory is zero, not an error: OpenExisting does
+// not create it, and a spool that has never quarantined anything has none.
+func (s *Spool) CountQuarantined() (int, error) {
+	entries, err := os.ReadDir(s.quarantine)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("spool: scan quarantine: %w", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".tmp-") || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *Spool) Len() (int, error) {
 	recs, err := s.Pending()
 	if err != nil {

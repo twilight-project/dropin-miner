@@ -374,3 +374,53 @@ func TestNothingOpensAClaimURL(t *testing.T) {
 		}
 	}
 }
+
+// The two checks added for #21 render through the existing check shape —
+// no new top-level field, so an SDK that already walks `checks` sees them
+// without changing.
+func TestDoctorJSONCarriesTheIntakeAndRecordingChecks(t *testing.T) {
+	f := healthyFacts()
+	f.SpoolDir = t.TempDir()
+	// A failing probe, so `fix` is populated on one of them and the
+	// serializer's handling of it is exercised rather than assumed.
+	f.IntakeProbe = intakeProbeResult{
+		Ran: true, Dir: f.IntakeDir,
+		Stage: probeStageWrite, Err: os.ErrPermission,
+	}
+	checks := assembleDoctor(f)
+
+	var buf bytes.Buffer
+	emitMachine(&buf, doctorEnvelope(f, checks, doctorExit(checks)))
+	data := dataOf(t, decodeCommandEnvelope(t, buf.String(), "doctor"))
+
+	got := map[string]map[string]any{}
+	for _, raw := range data["checks"].([]any) {
+		c, _ := raw.(map[string]any)
+		name, _ := c["name"].(string)
+		got[name] = c
+	}
+	for _, name := range []string{"intake writable", "recording"} {
+		c, ok := got[name]
+		if !ok {
+			t.Fatalf("%q is missing from doctor -json: %s", name, buf.String())
+		}
+		if c["verdict"] == nil || c["verdict"] == "" {
+			t.Errorf("%q has no verdict", name)
+		}
+		if c["detail"] == nil || c["detail"] == "" {
+			t.Errorf("%q has no detail", name)
+		}
+	}
+	if got["intake writable"]["verdict"] != string(verdictNo) {
+		t.Errorf("intake writable verdict = %v, want NO", got["intake writable"]["verdict"])
+	}
+	fix, _ := got["intake writable"]["fix"].(string)
+	if !strings.Contains(fix, "agents install") {
+		t.Errorf("the failing probe's fix did not reach JSON: %v", got["intake writable"]["fix"])
+	}
+	// A failed probe leaves `recording` undetermined, with its reason.
+	detail, _ := got["recording"]["detail"].(string)
+	if !strings.HasPrefix(detail, "could not determine — ") {
+		t.Errorf("recording detail = %q, want a could-not-determine reason", detail)
+	}
+}

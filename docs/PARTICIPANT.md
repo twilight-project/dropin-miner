@@ -81,7 +81,8 @@ background poll, not the place a new identity gets decided.
 dropin-miner status          # what this installation has and has not completed
 dropin-miner payout show     # ACTIVE, and the address as the chain renders it
 dropin-miner agents status   # which agents are set up
-dropin-miner doctor          # connected, enrolled, joined, paid, earning
+dropin-miner doctor          # connected, enrolled, joined, paid, earning,
+                             # intake writable, recording
 ```
 
 Restart any agent that was already open, and search as you normally would.
@@ -225,6 +226,33 @@ people join. That is the design.
 next search or the next agent session. If neither happens before the epoch's
 verification deadline, that epoch's evidence is late. `dropin-miner flush` by
 hand submits whatever is pending.
+
+## When `doctor` says `recording UNKNOWN`
+
+`doctor` ends with two checks about whether searches are actually being
+recorded, and they are the ones to read when everything else says OK and you
+still are not earning.
+
+**`recording UNKNOWN`** with "recent miner activity, but nothing is queued
+locally or verified at the AS" means the mining plane ran recently — a search,
+a session hook, or a manual flush — and yet nothing is waiting in your intake
+directory, nothing is in the spool, and the AS has nothing for this epoch.
+There is one thing to check: that the directory your agent's hook writes into
+is the same `miner.intake_dir` the flush reads from. `dropin-miner agents
+status` shows what is installed; re-running `dropin-miner agents install`
+rewrites the hooks to point at the configured directory. This check is a
+heuristic and says so — it never reports a failure, because none of the
+evidence it reads can prove one.
+
+`recording` can also say **`could not determine — …`**. That is not a
+failure either; it means one of the things it reads was unreadable, or the AS
+did not answer, so it declined to guess. The reason is on the line.
+
+**`intake writable`** speaks only for the process that ran `doctor` — usually
+you, at a terminal. A search runs inside your agent's sandbox, which may have
+different permissions, so `OK` here does not prove a search can write there.
+If it says `NO` and you use Codex, re-run `dropin-miner agents install`: it
+configures the sandbox to allow that directory.
 
 ## Changing the payout address later
 

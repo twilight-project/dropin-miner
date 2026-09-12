@@ -284,3 +284,56 @@ router_url = %q
 		t.Fatalf("doctor issued %d router/provider request(s)", got)
 	}
 }
+
+// The probe is the one write doctor performs, and the read-only promise
+// now reads "one short-lived file in the intake directory, gone before
+// doctor exits". This drives the real command against a real configured
+// miner and asserts the directory is empty afterwards — the snapshot tests
+// above cover the state directory, which the probe must still never touch.
+func TestDoctorLeavesNoProbeFileInTheIntakeDirectory(t *testing.T) {
+	as := newFakeAS(t)
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	spoolDir := filepath.Join(root, "spool")
+	intakeDir := filepath.Join(root, "miner", "intake")
+	if err := os.MkdirAll(filepath.Join(root, "miner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMiningEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeTOML(t, "[mining]\n"+
+		"as_url = "+quoteTOML(as.srv.URL)+"\n"+
+		"chain_id = \"twilight-1\"\nslot_id = 7\n"+
+		"state_dir = "+quoteTOML(stateDir)+"\n"+
+		"spool_dir = "+quoteTOML(spoolDir)+"\n\n"+
+		"[miner]\nenabled = true\n"+
+		"router_url = \"https://router.fictional.test\"\n"+
+		"intake_dir = "+quoteTOML(intakeDir)+"\n")
+
+	var out, stderr bytes.Buffer
+	_ = cmdDoctor([]string{"-config", cfgPath}, &out, &stderr)
+
+	entries, err := os.ReadDir(intakeDir)
+	if err != nil {
+		t.Fatalf("the intake directory is not readable after doctor: %v", err)
+	}
+	if len(entries) != 0 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("doctor left %d file(s) in the intake directory: %v", len(entries), names)
+	}
+	if !strings.Contains(out.String(), "intake writable") {
+		t.Errorf("the report does not carry the intake check:\n%s", out.String())
+	}
+	// And nothing was created above the intake directory.
+	if _, err := os.Stat(filepath.Join(root, "miner", "flush.json")); !os.IsNotExist(err) {
+		t.Errorf("doctor created miner state: %v", err)
+	}
+}
