@@ -83,6 +83,15 @@ var (
 func connectLockPath(stateDir string) string { return filepath.Join(stateDir, "connect.lock") }
 func resumeStampPath(stateDir string) string { return filepath.Join(stateDir, "connect_resume.json") }
 
+// unclaimedNoLinkMessage (B.3) is what a foreground run prints in place
+// of the ordinary print-and-wait narration when the stored registration
+// is unclaimed but carries no claim link — a rebuild that recovered an
+// identity from GET /v1/agents/me before the platform served the claim
+// bootstrap fields for it (B.1's known gap), or any later run against
+// that same durable state. Never printed alongside the bare (empty) URL.
+const unclaimedNoLinkMessage = "registration recovered but it is unclaimed and its claim link is not retrievable " +
+	"from the platform; run `dropin-miner connect -force` to register a fresh agent, or wait for this one to expire"
+
 // resumeStamp records the last time -resume was attempted (successfully
 // spawned or not — the point is pacing attempts, not counting successes).
 type resumeStamp struct {
@@ -244,14 +253,17 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 // is the same run with its narration captured and one envelope emitted
 // from what the run persisted.
 //
-// The flow itself is untouched: the same single-flight lock, the same
-// pending-registration recovery, the same poll loop, the same decisions.
-// Machine mode changes where the words go, not what happens — a JSON mode
-// that took a different path through registration would be a second,
-// less-tested registration client.
+// The registration implementation is shared: the same single-flight lock,
+// the same pending-registration recovery, the same poll loop, the same
+// decisions. Machine mode adds only safety gates at the points where a
+// participant decision would otherwise be required — connectNeedsHumanDecision
+// before this run starts, and the mid-run gate inside connectRun for the one
+// case that pre-check cannot see ahead of time (below) — and never
+// substitutes an answer of its own; a JSON mode that took a different path
+// through registration would be a second, less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if !jsonRequested(args) {
-		return connectRun(args, stdin, stdout, stderr, getenv)
+		return connectRun(args, stdin, stdout, stderr, getenv, false)
 	}
 	cfgPath, force, parseErr := connectMachineFlags(args)
 	// Selecting an output format must not select an answer. Machine mode
@@ -281,7 +293,29 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitUsage
 	}
 	var narration bytes.Buffer
-	code := connectRun(args, stdin, io.Discard, &narration, getenv)
+	code := connectRun(args, stdin, io.Discard, &narration, getenv, true)
+	if code == exitHumanDecisionRequired {
+		// Reached mid-run, past the pre-check above: a rebuild (B.3) can
+		// only learn a recovered identity is expired AFTER calling
+		// /v1/agents/me, which this pre-check deliberately never does (it
+		// is a pure disk read). The signal is structural — a sentinel exit
+		// code, never a prose match — and the public classification is
+		// identical to the pre-check's own (exitUsage, human_decision_required,
+		// action=connect); only the explanatory message differs, naming the
+		// recovered-expired case specifically rather than reusing the
+		// pre-check's generic "no mining decision on file" wording.
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
+			Error: &machineError{
+				Message: "this installation's stored registration could not be read, and rebuilding it from " +
+					"the platform found an expired identity; replacing it needs a mining decision this run " +
+					"cannot invent. Run `dropin-miner connect` at a terminal, or set mining.enabled explicitly, " +
+					"then run this again.",
+				Source: "client",
+			},
+		})
+		return exitUsage
+	}
 	if parseErr != nil {
 		// connectRun's own parser has now produced the real usage
 		// failure, and the caller still gets exactly one envelope. No
@@ -338,13 +372,16 @@ func connectNeedsHumanDecision(cfgPath string, force bool, getenv func(string) s
 	reg, ok, rerr := store.LoadAgentRegistration()
 	switch {
 	case errors.Is(rerr, auth.ErrAgentRegistrationCorrupt):
-		// The one that matters. connectRun's recovery treats a corrupt
-		// agent.json as no usable registration — reg, existed = {}, false
-		// — and falls through to the fresh-registration branch, which is
-		// where the mining question lives. "Cannot be read" therefore has
-		// to mean the same thing here as it means there: absent. Reading
-		// it as "let the run decide" is what let this path mint a fresh
-		// registration and persist an implicit mining default.
+		// A corrupt agent.json beside a stored platform credential, with no
+		// -force, now attempts a /v1/agents/me reconstruction before fresh
+		// registration (B.3) — this pre-check cannot make that call itself,
+		// being a pure disk read. In that exact starting state,
+		// preflightFreshRegistration below still refuses (the credential
+		// already exists), so this pre-check correctly answers false either
+		// way: nothing is asked here. If the rebuild instead succeeds and
+		// reveals an expired identity, the mid-run machine gate inside
+		// connectRun (guarded on its own explicit machine flag) is what
+		// handles the resulting participant decision — not this pre-check.
 	case rerr != nil:
 		// Any other read failure stops connectRun before it asks
 		// anything, so there is no decision to guard.
@@ -393,7 +430,12 @@ func connectMachineFlags(args []string) (cfgPath string, force bool, err error) 
 	return *cfg, *forced, nil
 }
 
-func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+// machine is explicit, never inferred from stdout == io.Discard: the one
+// place inside this function that needs to know is the expired-replacement
+// branch below, and detecting it from the writer would be guessing the
+// caller's intent from an implementation detail of how cmdConnect happens
+// to capture narration today.
+func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, machine bool) int {
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
@@ -510,6 +552,7 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	} else {
 		var loadErr error
 		reg, existed, loadErr = store.LoadAgentRegistration()
+		wasCorrupt := false
 		if loadErr != nil {
 			if !errors.Is(loadErr, auth.ErrAgentRegistrationCorrupt) {
 				fmt.Fprintln(stderr, "dropin-miner:", loadErr)
@@ -520,7 +563,81 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			// below enforces that rule before any new Register call.
 			fmt.Fprintln(stderr, "dropin-miner: agent registration on file could not be decoded; checking for a credential conflict:", loadErr)
 			reg, existed = auth.AgentRegistration{}, false
+			wasCorrupt = true
 		}
+
+		// B.3: a corrupt or absent record beside a stored platform
+		// credential can now be rebuilt from the platform itself
+		// (GET /v1/agents/me — pkg/platform's Me, added by the router
+		// team specifically so this no longer has to mint a whole new
+		// agent) rather than refused outright, amending agent onboarding
+		// design rule 8. Observe first: nothing local changes before /me
+		// answers. -resume never attempts this (or a fresh Register) —
+		// it is the unattended background poll, not the place to
+		// originate a new registration or decide a corrupt one is dead.
+		// -force bypasses it deliberately, the same "replace, don't
+		// recover" signal it already is for the expired-replacement path
+		// below.
+		if !existed {
+			if *resume {
+				fmt.Fprintln(stdout, "connect -resume: no usable registration on file; run `dropin-miner connect` to register")
+				return exitOK
+			}
+			if !*force {
+				if credKey, keyErr := platformKey(cfg.Miner); keyErr == nil {
+					identity, meErr := client.Me(ctx, credKey)
+					if meErr != nil {
+						// ErrAgentNotFound and any other /me failure are both
+						// treated as "nothing to rebuild": preflightFreshRegistration
+						// gives the exact refusal a plain Register attempt would
+						// have given today (a stored platform key without -force),
+						// naming -force, with agent.json (corrupt or absent) left
+						// byte-identical — nothing is renamed on a refusal.
+						if !errors.Is(meErr, platform.ErrAgentNotFound) {
+							fmt.Fprintln(stderr, "dropin-miner: could not rebuild the registration from the platform:", meErr)
+						}
+						if perr := preflightFreshRegistration(cfg.Miner, *force); perr != nil {
+							fmt.Fprintln(stderr, "dropin-miner:", perr)
+						}
+						return exitTransport
+					}
+
+					if wasCorrupt {
+						if perr := store.PreserveCorruptAgentRegistration(); perr != nil {
+							fmt.Fprintln(stderr, "dropin-miner:", perr)
+							return exitTransport
+						}
+					}
+					rebuilt := auth.AgentRegistration{
+						AgentID:            identity.AgentID,
+						Status:             identity.Status,
+						Scopes:             identity.Scopes,
+						ClaimExpiresAt:     identity.ClaimExpiresAt,
+						LastEnrollmentSlot: identity.LastEnrollmentSlot,
+						LastEnrollmentAt:   identity.LastEnrollmentAt,
+					}
+					if identity.Status == "unclaimed" {
+						rebuilt.ClaimURL = identity.ClaimURL
+						rebuilt.ClaimCode = identity.ClaimCode
+					}
+					if serr := store.SaveAgentRegistration(rebuilt); serr != nil {
+						// The next run retries the rebuild from scratch — this
+						// is why an absent record is handled identically to a
+						// corrupt one above; there is nothing else to persist
+						// that would make the retry redundant.
+						fmt.Fprintln(stderr, "dropin-miner: rebuilt registration from the platform but could not persist it:", serr)
+						return exitTransport
+					}
+					reg, existed = rebuilt, true
+
+					if identity.Status == "unclaimed" && identity.ClaimURL == "" {
+						fmt.Fprintln(stdout, unclaimedNoLinkMessage)
+						return exitOK
+					}
+				}
+			}
+		}
+
 		if existed && !*resume && reg.Status == "unclaimed" {
 			// A foreground connect must discover a live expiry before it
 			// prints or follows the old claim target. Detached resume keeps
@@ -574,6 +691,22 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			}
 
 			if replace {
+				// Machine mode only: the pre-check in cmdConnect (see
+				// connectNeedsHumanDecision) cannot know this branch would
+				// be reached at all when the starting record was corrupt or
+				// absent — that conclusion only exists after the B.3
+				// rebuild's own /v1/agents/me call answered "expired" for a
+				// key the pre-check never dials. Ask the identical question
+				// here, mid-run, before decideRegistrationOutcome would
+				// otherwise take its non-interactive branch and persist an
+				// implicit decision. Interactive connect is untouched: this
+				// whole block is skipped when machine is false.
+				if machine {
+					decision := store.ReadMiningDecision()
+					if decision.State == auth.MiningUndecided && !cfg.MiningEnabledExplicit {
+						return exitHumanDecisionRequired
+					}
+				}
 				outcome, code := decideRegistrationOutcome(stdin, br, stdout, stderr, getenv, cfg, store, connectInteractive(stdin, stdout))
 				if code != exitOK {
 					return code
@@ -668,10 +801,18 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// the stored record (pollOnce does the clearing) and this print is
 	// skipped from then on.
 	if !*resume && reg.Status == "unclaimed" {
-		fmt.Fprintln(stdout, "claim this agent:")
-		fmt.Fprintln(stdout, "  "+reg.ClaimURL)
-		if reg.ClaimCode != "" {
-			fmt.Fprintln(stdout, "code:", reg.ClaimCode)
+		// B.3: a registration recovered without a claim link is durable —
+		// this never falls back into printing the bare (empty) URL, on
+		// this run or any later one, until the platform reports claimed
+		// or expired or -force replaces it.
+		if reg.ClaimURL == "" {
+			fmt.Fprintln(stdout, unclaimedNoLinkMessage)
+		} else {
+			fmt.Fprintln(stdout, "claim this agent:")
+			fmt.Fprintln(stdout, "  "+reg.ClaimURL)
+			if reg.ClaimCode != "" {
+				fmt.Fprintln(stdout, "code:", reg.ClaimCode)
+			}
 		}
 	}
 
@@ -691,7 +832,17 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return code
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintln(stdout, "\nnot claimed yet. Approve it at the URL above, then run `dropin-miner connect` again")
+			// B.3: this must never say "the URL above" when nothing was
+			// ever printed above it. pollOnce takes reg by pointer and
+			// re-reads the store on every call (see its own doc comment),
+			// so this local reg is already current — a registration
+			// recovered without a claim link stays durable through the
+			// timeout narration too, not just the initial print.
+			if reg.Status == "unclaimed" && reg.ClaimURL == "" {
+				fmt.Fprintln(stdout, "\n"+unclaimedNoLinkMessage)
+			} else {
+				fmt.Fprintln(stdout, "\nnot claimed yet. Approve it at the URL above, then run `dropin-miner connect` again")
+			}
 			fmt.Fprintln(stdout, "(or just keep using `search` — it resumes this automatically once network is available).")
 			return exitOK
 		}

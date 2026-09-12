@@ -678,7 +678,17 @@ func renderAgentIdentity(f agentIdentityFacts, stdout, stderr io.Writer) bool {
 	reg := f.Registration
 	switch reg.Status {
 	case "unclaimed":
-		fmt.Fprintf(stdout, "agent:  unclaimed — claim at %s\n", reg.ClaimURL)
+		if reg.ClaimURL == "" {
+			// B.3: a registration rebuilt from GET /v1/agents/me before the
+			// platform served the claim bootstrap fields (B.1's known gap)
+			// is durable — status must never fall back to printing the
+			// bare (empty) URL the ordinary branch below prints.
+			fmt.Fprintln(stdout, "agent:  unclaimed — recovered from the platform; its claim link is not "+
+				"retrievable here. Run `dropin-miner connect -force` to register a fresh agent, or wait for "+
+				"this one to expire.")
+		} else {
+			fmt.Fprintf(stdout, "agent:  unclaimed — claim at %s\n", reg.ClaimURL)
+		}
 	case "expired":
 		fmt.Fprintln(stdout, "agent:  expired — run `dropin-miner connect` again for a new registration")
 	case "claimed":

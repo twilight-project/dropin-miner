@@ -338,9 +338,14 @@ func (s *Store) LoadAgentRegistration() (rec AgentRegistration, ok bool, err err
 }
 
 // PreserveCorruptAgentRegistration moves an undecodable agent record aside
-// without deleting it. Callers use this only after deciding that a fresh
-// registration is permitted; an existing platform key must cause a refusal
-// instead, because the unreadable record may be the identity that key serves.
+// without deleting it. Callers use this only after deciding a replacement is
+// permitted: either a fresh Register with no existing platform key to
+// conflict with, or — since the router's GET /v1/agents/me self-lookup let a
+// corrupt record be rebuilt from that key instead of refused (agent
+// onboarding design rule 8 amendment, PR B) — a caller that has already
+// confirmed the key still names a real identity there. An existing platform
+// key no longer forces a refusal on its own; it only means the rename must
+// wait for that confirmation first.
 func (s *Store) PreserveCorruptAgentRegistration() error {
 	path := filepath.Join(s.dir, "agent.json")
 	info, err := os.Lstat(path)

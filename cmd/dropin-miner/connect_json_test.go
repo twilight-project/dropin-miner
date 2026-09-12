@@ -161,6 +161,65 @@ func TestConnectJSONRefusesToInventAFirstMiningDecision(t *testing.T) {
 	}
 }
 
+// ── B.3 rebuild x -json: the pre-check cannot see this one ──────────────
+//
+// connectNeedsHumanDecision is a pure disk read; it never calls
+// /v1/agents/me. A corrupt-or-absent record beside a stored platform
+// credential therefore reaches its "preflightFreshRegistration refuses, so
+// nothing to ask" branch — true before B.3, no longer true after it, since
+// the rebuild can now succeed instead of refusing. If that rebuild reveals
+// an EXPIRED identity, connectRun falls into the existing expired-
+// replacement branch, which (interactively) asks the mining question. Under
+// -json that would be non-interactive and could persist an invented
+// decision and mint a live Register call. The guard lives inside
+// connectRun itself (gated on the explicit machine flag cmdConnect passes),
+// because the pre-check structurally cannot know this branch is even
+// reachable until after the network call it is not allowed to make.
+func TestConnectJSONRefusesToDecideAfterRebuildingAnExpiredIdentity(t *testing.T) {
+	withShortConnectTimings(t)
+	platform := newStubPlatform(t)
+	cfgPath, stateDir := connectConfig(t, platform.srv.URL, "")
+	cfg := mustLoadConfig(t, cfgPath)
+
+	_, key := registerAgent(t, platform)
+	platform.setStatus("expired")
+	setupLostRegistration(t, cfg, key, true) // corrupt agent.json beside a stored platform credential
+	registerCallsBefore, _, _ := platform.counts()
+
+	var out, errOut bytes.Buffer
+	code := cmdConnect([]string{"-config", cfgPath, "-json"}, strings.NewReader(""), &out, &errOut, noEnv)
+
+	if code != exitUsage {
+		t.Fatalf("exit %d, want %d: out=%s err=%s", code, exitUsage, out.String(), errOut.String())
+	}
+	env := decodeCommandEnvelope(t, out.String(), "connect")
+	if env["code"] != "human_decision_required" {
+		t.Errorf("code %v, want human_decision_required", env["code"])
+	}
+	if env["action"] != actionConnect {
+		t.Errorf("action %v, want %q", env["action"], actionConnect)
+	}
+	if env["ok"] != false || env["retryable"] != false {
+		t.Errorf("header: %v", env)
+	}
+	if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
+		t.Fatalf("Register calls = %d, want unchanged from %d — zero Register calls", registerCalls, registerCallsBefore)
+	}
+	store, err := auth.OpenStoreExisting(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := store.ReadMiningDecision(); d.State != auth.MiningUndecided {
+		t.Errorf("a mining decision was persisted: %s", d.State)
+	}
+	// The rebuilt (expired) identity is allowed to remain persisted — only
+	// the decision must stay unmade.
+	reg, ok, rerr := store.LoadAgentRegistration()
+	if rerr != nil || !ok || reg.Status != "expired" {
+		t.Errorf("the recovered expired registration should remain on file: reg=%+v ok=%v err=%v", reg, ok, rerr)
+	}
+}
+
 // connectNeedsHumanDecision is the gate, and it is what the wrapper calls
 // before anything registers. Driving it directly keeps every case network-
 // free while still being the production predicate.
@@ -599,7 +658,7 @@ func TestThePreParserAcceptsExactlyWhatConnectRunDoes(t *testing.T) {
 		// connectRun's own parse, observed through its exit code: it
 		// returns exitUsage for exactly the arguments it cannot parse.
 		var narration bytes.Buffer
-		runCode := connectRun(args, strings.NewReader(""), io.Discard, &narration, noEnv)
+		runCode := connectRun(args, strings.NewReader(""), io.Discard, &narration, noEnv, false)
 		runRejected := runCode == exitUsage
 		if (preErr != nil) != runRejected {
 			t.Errorf("%v: pre-parser err=%v, connectRun rejected=%v", args, preErr, runRejected)
