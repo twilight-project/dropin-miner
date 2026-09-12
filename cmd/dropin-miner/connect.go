@@ -253,14 +253,14 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	if !jsonRequested(args) {
 		return connectRun(args, stdin, stdout, stderr, getenv)
 	}
-	cfgPath := connectConfigPath(args)
+	cfgPath, force := connectMachineFlags(args)
 	// Selecting an output format must not select an answer. Machine mode
 	// is not a terminal, so the ask-before-registering step would take its
 	// non-interactive branch and write a first mining decision from
 	// whatever mining.enabled happens to default to — a participant
 	// decision manufactured by a flag about formatting. Where that would
 	// happen, stop before Register and say so structurally instead.
-	if connectNeedsHumanDecision(cfgPath, getenv) {
+	if connectNeedsHumanDecision(cfgPath, force, getenv) {
 		emitMachine(stdout, commandEnvelope{
 			machineHeader: newMachineHeader("connect", exitUsage, "human_decision_required", false, actionConnect),
 			Error: &machineError{
@@ -290,8 +290,9 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 // state but undecided, and a registration that does not need minting.
 //
 // It reads; it never writes. Deciding not to decide must not itself
-// persist a decision.
-func connectNeedsHumanDecision(cfgPath string, getenv func(string) string) bool {
+// persist a decision — and, for a corrupt registration in particular, must
+// not preserve, replace or rewrite the bytes it could not read.
+func connectNeedsHumanDecision(cfgPath string, force bool, getenv func(string) string) bool {
 	cfg, _, err := loadConfig(cfgPath, getenv)
 	if err != nil {
 		return false // connectRun reports the config error itself
@@ -302,43 +303,68 @@ func connectNeedsHumanDecision(cfgPath string, getenv func(string) string) bool 
 	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
 	if err != nil {
 		// No state directory at all is a first run: undecided, and a
-		// Register is exactly what would follow.
-		return errors.Is(err, fs.ErrNotExist)
+		// fresh Register is exactly what would follow.
+		return errors.Is(err, fs.ErrNotExist) && preflightFreshRegistration(cfg.Miner, force) == nil
 	}
 	if store.ReadMiningDecision().State != auth.MiningUndecided {
 		return false // a persisted decision is authoritative, as always
 	}
-	if pending, ok, perr := store.LoadPendingRegistration(); perr == nil && ok {
-		_ = pending
-		return false // recovery republishes it; nothing is registered afresh
-	}
-	reg, ok, rerr := store.LoadAgentRegistration()
-	if rerr != nil {
-		// Unreadable: connectRun's own preflight decides what to do, and
-		// it may or may not reach Register. Let it run and report.
+	if _, ok, perr := store.LoadPendingRegistration(); perr == nil && ok {
+		// Register already happened for this one; recovery republishes it
+		// and asks nothing. Blocking it here would break the journal.
 		return false
 	}
-	// A registration that exists and has not expired needs no new one, so
-	// the question never comes up. Absent or expired means Register, which
-	// is where the question lives.
-	return !ok || reg.Status == "expired"
+
+	reg, ok, rerr := store.LoadAgentRegistration()
+	switch {
+	case errors.Is(rerr, auth.ErrAgentRegistrationCorrupt):
+		// The one that matters. connectRun's recovery treats a corrupt
+		// agent.json as no usable registration — reg, existed = {}, false
+		// — and falls through to the fresh-registration branch, which is
+		// where the mining question lives. "Cannot be read" therefore has
+		// to mean the same thing here as it means there: absent. Reading
+		// it as "let the run decide" is what let this path mint a fresh
+		// registration and persist an implicit mining default.
+	case rerr != nil:
+		// Any other read failure stops connectRun before it asks
+		// anything, so there is no decision to guard.
+		return false
+	case !ok:
+		// Absent: the fresh-registration branch, same as corrupt.
+	case reg.Status == "expired":
+		// The replace path asks the question too, and reaches Register
+		// without the fresh-registration preflight.
+		return true
+	default:
+		return false // a usable registration is only polled
+	}
+
+	// Absent or corrupt: connectRun runs this exact preflight before
+	// Register, and a refusal there means the run stops with a credential
+	// conflict rather than ever asking. Calling the same helper keeps the
+	// gate honest about where the question actually is, instead of
+	// re-deriving the rule from prose.
+	return preflightFreshRegistration(cfg.Miner, force) == nil
 }
 
-// connectConfigPath re-reads -config for the envelope's own store lookup.
-// Parsing twice is cheaper than threading the value out of a function with
-// thirty exit points, and the flag set below is the one that validates it.
-func connectConfigPath(args []string) string {
+// connectMachineFlags re-reads the two flags machine mode needs before the
+// run starts: -config for the envelope's own store lookup, and -force
+// because whether a fresh registration is even possible depends on it.
+// Parsing twice is cheaper than threading them out of a function with
+// thirty exit points, and connectRun's own flag set is the one that
+// validates them.
+func connectMachineFlags(args []string) (cfgPath string, force bool) {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	cfgPath := fs.String("config", "", "")
+	cfg := fs.String("config", "", "")
 	fs.String("name", "", "")
 	fs.Bool("resume", false, "")
-	fs.Bool("force", false, "")
+	forced := fs.Bool("force", false, "")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
-		return ""
+		return "", false
 	}
-	return *cfgPath
+	return *cfg, *forced
 }
 
 func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
