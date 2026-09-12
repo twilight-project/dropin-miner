@@ -8,11 +8,11 @@ package main
 // own vocabulary. Neither answers the question a participant actually has,
 // which is "am I set up, and if not, which part is wrong".
 //
-// So this command is a VERDICT, not a dump. Five lines, each of which is
-// either true or not, and each of which names the next command when it is
-// not. `status` stays: reading the AS's raw answer is what you want when you
-// are debugging the AS, and a verdict hides exactly the detail you would
-// need for that.
+// So this command is a VERDICT, not a dump. One line per question, each of
+// which is either true or not, and each of which names the next command
+// when it is not. `status` stays: reading the AS's raw answer is what you
+// want when you are debugging the AS, and a verdict hides exactly the
+// detail you would need for that.
 //
 // Two rules about what it may say, both of which the wording is built
 // around. It never calls anything earnings — `doctor` reports setup, and
@@ -25,19 +25,31 @@ package main
 // spool, the config and the local custody state can establish is reported
 // whether or not the AS answers, and the checks that could not run say so by
 // name rather than reading as failures.
+//
+// It opens only existing state and spool paths and creates no state
+// directory, DPoP key, wallet or enrollment to diagnose one. There is
+// exactly one local write: `intake writable` puts a short-lived probe file
+// in the intake directory the client already owns, named so a flush can
+// never mistake it for a record, and removes it — reporting the pathname
+// if it could not. The intake directory itself is created when its parent
+// already exists and it does not, because that is what the first search
+// would create anyway; nothing above it ever is.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
 	"github.com/twilight-project/dropin-miner/pkg/mining/spool"
 	"github.com/twilight-project/dropin-miner/pkg/redact"
 	"github.com/twilight-project/dropin-miner/pkg/wire"
@@ -132,11 +144,33 @@ type doctorFacts struct {
 	HealthErr         error
 	AuthIncomplete    bool
 	AuthIncompleteErr error
+
+	// The miner half, for `intake writable` and `recording`.
+	MinerEnabled bool
+	IntakeDir    string
+	IntakeProbe  intakeProbeResult
+
+	// Recording inputs. Each carries its own error rather than folding a
+	// read failure into an absent value: the two mean different things and
+	// the check reports them differently.
+	Stamp           flushStamp
+	StampPresent    bool
+	StampErr        error
+	IntakeCount     int
+	IntakeErr       error
+	SpoolCount      int
+	QuarantineCount int
+	SpoolErr        error
+
+	// Now is sampled once, by the gatherer. Nothing downstream calls
+	// time.Now(), so a judgment over these facts is reproducible.
+	Now time.Time
 }
 
-// assembleDoctor turns the gathered facts into the five verdicts.
+// assembleDoctor turns the gathered facts into the verdicts.
 //
-// It is pure, and it is where every wording rule lives.
+// It is pure — including of the clock, which arrives as f.Now — and it is
+// where every wording rule lives.
 func assembleDoctor(f doctorFacts) []doctorCheck {
 	return []doctorCheck{
 		doctorASCheck(f),
@@ -144,6 +178,8 @@ func assembleDoctor(f doctorFacts) []doctorCheck {
 		doctorJoinedCheck(f),
 		doctorPayoutCheck(f),
 		doctorEarningCheck(f),
+		doctorIntakeCheck(f),
+		doctorRecordingCheck(f),
 	}
 }
 
@@ -410,7 +446,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	// Gathered once, rendered either way: the JSON report makes no call
 	// the text report does not make, and neither is produced from the
 	// other's output.
-	f := gatherDoctorFacts(ctx, mining, cfg.Mining)
+	f := gatherDoctorFactsFor(ctx, mining, cfg.Mining, cfg.Miner, realIntakeProbeOps())
 	f.ASConfigured = miningASConfigured(cfg.Mining)
 	f.ASConfigKnown = true
 	checks := assembleDoctor(f)
@@ -501,12 +537,23 @@ func doctorASClient(_ context.Context, m config.Mining) asClient {
 
 // gatherDoctorFacts asks each source once, keeping failures rather than
 // returning on the first one — a degraded AS must not blank the report.
+// gatherDoctorFacts is the AS-and-store half, for callers with no [miner]
+// block to speak of. gatherDoctorFactsFor is the whole of it.
 func gatherDoctorFacts(ctx context.Context, as asClient, m config.Mining) doctorFacts {
+	return gatherDoctorFactsFor(ctx, as, m, config.Miner{}, realIntakeProbeOps())
+}
+
+func gatherDoctorFactsFor(ctx context.Context, as asClient, m config.Mining, miner config.Miner, probe intakeProbeOps) doctorFacts {
 	f := doctorFacts{
 		ASBaseURL: m.ASBaseURL,
 		ChainID:   m.ChainID,
 		SlotID:    m.SlotID,
 		SpoolDir:  m.SpoolDir,
+		// Sampled once, here, so every window comparison downstream is
+		// against the same instant.
+		Now:          time.Now(),
+		MinerEnabled: miner.Enabled,
+		IntakeDir:    miner.IntakeDir,
 	}
 
 	// Local first, and unconditionally: it is the half that still answers
@@ -536,6 +583,16 @@ func gatherDoctorFacts(ctx context.Context, as asClient, m config.Mining) doctor
 			f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, reg.LastEnrollmentSlot, reg.LastEnrollmentAt
 		}
 		f.Health, f.HealthErr = store.HealthRecords()
+	}
+
+	// The miner half. The probe is the one write doctor performs, and it
+	// is skipped entirely unless intake is both configured and active —
+	// there is nothing to diagnose about a directory no search will use.
+	if f.MinerEnabled && f.MiningDecision.State == auth.MiningEnabled {
+		f.IntakeProbe = probeIntakeWritable(probe, miner.IntakeDir)
+		f.IntakeCount, f.IntakeErr = countIntakeJSON(miner.IntakeDir)
+		f.Stamp, f.StampPresent, f.StampErr = readFlushStampForDoctor(flushStampPath(miner))
+		f.SpoolCount, f.QuarantineCount, f.SpoolErr = countSpool(m.SpoolDir)
 	}
 
 	f.Doc, f.DocErr = as.ServiceDocument(ctx)
@@ -685,3 +742,386 @@ func printQueueTo(w io.Writer, spoolDir string) {
 // The production implementation, asserted at compile time so a signature
 // change in internal/auth breaks here rather than at the call site.
 var _ asClient = (*auth.MiningClient)(nil)
+
+// ── intake writability, and whether anything is being recorded ──────────
+//
+// These two checks answer #21: "searches are running but nothing is being
+// recorded" had no line of its own, because every other check reads the AS
+// or the store and neither can see the one thing that breaks — the intake
+// intake directory the `search` command writes into not being the one the
+// flush reads from. (The record is written by search itself, through
+// writeIntake; the hooks maintain lineage and start flushes.)
+
+// intakeProbeOps is the seam for the one write doctor performs.
+//
+// It is exactly writeIntake's own sequence plus removal, because a probe
+// that modeled an approximation of the real writer would answer a question
+// nobody asked. writeIntake does os.MkdirAll(dir, 0o700) then
+// fsx.WriteFileAtomic(dir, name, data, 0o600); so does this.
+type intakeProbeOps struct {
+	mkdirAll    func(string, os.FileMode) error
+	writeAtomic func(dir, name string, data []byte, mode os.FileMode) error
+	remove      func(string) error
+}
+
+func realIntakeProbeOps() intakeProbeOps {
+	return intakeProbeOps{
+		mkdirAll:    os.MkdirAll,
+		writeAtomic: fsx.WriteFileAtomic,
+		remove:      os.Remove,
+	}
+}
+
+// Probe stage names, as the detail prints them.
+const (
+	probeStageMkdir  = "creating the intake directory"
+	probeStageWrite  = "writing a probe file"
+	probeStageRemove = "removing the probe file"
+)
+
+// intakeProbeResult is what the probe established, with no wording applied
+// yet — doctorIntakeCheck turns it into a verdict.
+type intakeProbeResult struct {
+	// Ran is false when the probe deliberately did nothing: no [miner],
+	// mining not active, or the intake directory's parent is missing.
+	Ran bool
+	Dir string
+	// ParentMissing means the probe declined to create a tree. README
+	// promises doctor does not create a state directory merely to
+	// diagnose it, and that promise stops being true the moment this
+	// walks up.
+	ParentMissing bool
+	// Created means mkdirAll created IntakeDir itself. It is left in
+	// place: it is what the first search creates anyway.
+	Created bool
+	// Stage and Err describe the first failure. Empty Stage is success.
+	Stage string
+	Err   error
+	// Leftover is the probe pathname when cleanup could not remove it.
+	// Set independently of Stage, because cleanup is attempted even after
+	// a write failure.
+	Leftover string
+}
+
+// ok means the probe ran AND every stage succeeded.
+//
+// Ran is part of it because a probe that was deliberately skipped has
+// established nothing. Reading "no failure recorded" as success is how a
+// check reports OK for a directory it never touched, and how `recording`
+// would go on to call a state suspicious on the strength of writability it
+// never tested.
+func (p intakeProbeResult) ok() bool { return p.Ran && p.Stage == "" && p.Leftover == "" }
+
+// probeIntakeWritable writes and removes one file in the intake directory.
+//
+// The name deliberately does not end in .json. readIntake considers only
+// .json files, so a probe that somehow outlives this process — a crash
+// between write and remove, a cleanup failure reported below — can never
+// be promoted into the mining pipeline. That is the property worth having;
+// "never leaves a file behind" is not one this can honestly promise.
+func probeIntakeWritable(ops intakeProbeOps, dir string) intakeProbeResult {
+	res := intakeProbeResult{Dir: dir}
+	if dir == "" {
+		res.ParentMissing = true
+		return res
+	}
+	// Bounded creation: at most the intake directory itself, and only when
+	// its parent is already there.
+	_, statErr := os.Stat(dir)
+	absent := errors.Is(statErr, fs.ErrNotExist)
+	if absent {
+		if _, perr := os.Stat(filepath.Dir(dir)); perr != nil {
+			res.ParentMissing = true
+			return res
+		}
+	}
+
+	res.Ran = true
+	if err := ops.mkdirAll(dir, 0o700); err != nil {
+		res.Stage, res.Err = probeStageMkdir, err
+		return res
+	}
+	res.Created = absent
+
+	name := fmt.Sprintf(".doctor-probe-%d-%s.tmp", os.Getpid(), randomSuffix())
+	path := filepath.Join(dir, name)
+	werr := ops.writeAtomic(dir, name, []byte("dropin-miner doctor probe\n"), 0o600)
+
+	// Cleanup runs on every exit path, including after a write failure:
+	// some failure shapes leave the final name in place. A cleanup failure
+	// is itself a probe failure — a leftover cannot enter the pipeline,
+	// but a participant is still owed the pathname.
+	if rerr := ops.remove(path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		res.Leftover = path
+		if werr == nil {
+			res.Stage, res.Err = probeStageRemove, rerr
+		}
+	}
+	if werr != nil {
+		res.Stage, res.Err = probeStageWrite, werr
+	}
+	return res
+}
+
+// sandboxDenied reports the permission shapes an agent sandbox produces —
+// EACCES and EPERM on Linux under Landlock, EROFS on macOS under Seatbelt.
+// The EROFS case is matched by string so this stays correct on every GOOS
+// without a syscall import, exactly as intakeWriteBlocked does.
+func sandboxDenied(err error) bool {
+	return err != nil &&
+		(errors.Is(err, fs.ErrPermission) || strings.Contains(err.Error(), "read-only file system"))
+}
+
+// doctorIntakeCheck: can this process write where a served search records
+// its observation?
+//
+// The wording is careful about what a success proves. The probe runs as
+// whoever ran doctor, which is usually a person at a terminal; a search
+// runs inside the agent's sandbox. Those are different subjects, so the
+// detail says "from this process" and the fix only SUGGESTS the sandbox.
+// The search path's own "inside this agent's sandbox" sentence is entitled
+// to be definite because that write actually happened inside one.
+func doctorIntakeCheck(f doctorFacts) doctorCheck {
+	c := doctorCheck{Name: "intake writable"}
+	if !f.MinerEnabled {
+		c.Verdict, c.Detail = verdictOK, "not configured"
+		return c
+	}
+	if f.MiningDecision.State != auth.MiningEnabled {
+		c.Verdict, c.Detail = verdictOK, "mining not active"
+		return c
+	}
+	p := f.IntakeProbe
+	if p.ParentMissing {
+		// Nothing was tried, so nothing is known. The bounded-creation
+		// rule is what stopped it — doctor will not build a directory
+		// tree to diagnose one — and saying OK here would report a
+		// writable intake directory on the strength of never having
+		// looked.
+		c.Verdict = verdictUnknown
+		c.Detail = fmt.Sprintf("could not determine — %s and its parent do not exist, "+
+			"and doctor does not create the parent tree merely to test it; "+
+			"the first search creates the directory", p.Dir)
+		return c
+	}
+	if p.ok() {
+		c.Verdict = verdictOK
+		c.Detail = "writable from this process"
+		if p.Created {
+			c.Detail = "writable from this process (created " + p.Dir + ")"
+		}
+		return c
+	}
+
+	c.Verdict = verdictNo
+	switch {
+	case p.Stage != "" && p.Leftover != "":
+		c.Detail = fmt.Sprintf("%s failed for %s — %v; and the probe file %s could not be removed",
+			p.Stage, p.Dir, redact.Error(p.Err), p.Leftover)
+	case p.Stage != "":
+		c.Detail = fmt.Sprintf("%s failed for %s — %v", p.Stage, p.Dir, redact.Error(p.Err))
+	default:
+		c.Detail = fmt.Sprintf("the probe file %s could not be removed", p.Leftover)
+	}
+	if sandboxDenied(p.Err) {
+		c.Fix = fmt.Sprintf("if searches run under Codex, re-run `dropin-miner agents install` so the sandbox allows %s", p.Dir)
+	}
+	return c
+}
+
+// readFlushStampForDoctor is readFlushStamp's opposite number.
+//
+// readFlushStamp turns every failure — unreadable file, malformed JSON, a
+// version it does not know — into a zero stamp, which is right for the
+// flush (an unreadable stamp must not stop mining) and useless here: a
+// diagnosis that cannot tell "no flush has ever run" from "the stamp is
+// unreadable" will report the first when it means the second. That is the
+// whole bug class this check exists to avoid, so it reads the file again
+// rather than reusing a function designed to lose the distinction.
+//
+// readFlushStamp itself is untouched.
+func readFlushStampForDoctor(path string) (flushStamp, bool, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- our own state dir
+	if errors.Is(err, fs.ErrNotExist) {
+		return flushStamp{}, false, nil
+	}
+	if err != nil {
+		return flushStamp{}, false, err
+	}
+	var st flushStamp
+	if jerr := json.Unmarshal(data, &st); jerr != nil {
+		return flushStamp{}, false, fmt.Errorf("flush stamp %s is not valid JSON: %w", path, jerr)
+	}
+	if st.V != 1 {
+		return flushStamp{}, false, fmt.Errorf("flush stamp %s has version %d, not 1", path, st.V)
+	}
+	return st, true, nil
+}
+
+// countIntakeJSON counts what a flush would promote, and nothing else.
+//
+// readIntake is not used: it parses every record and reports the ones it
+// could not, and a malformed record is still evidence that something was
+// recorded. Counting names answers the question being asked.
+func countIntakeJSON(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil // never created: known empty, not unknown
+		}
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// recordingWindow is how far back a flush stamp still counts as recent.
+const recordingWindow = 24 * time.Hour
+
+// doctorRecordingCheck is a heuristic and says so in its own wording.
+//
+// It never returns NO. Every input it reads is circumstantial — a flush
+// stamp proves the mining plane ran, not that a search did; an empty spool
+// proves nothing is queued, not that nothing was ever queued — and a
+// verdict of NO would assert a fault this evidence cannot establish. The
+// suspicious combination gets UNKNOWN with advice, which is the honest
+// shape: something here does not add up, here is the one thing to check.
+//
+// Every input distinguishes absent from unreadable, and an unreadable one
+// produces "could not determine — <reason>" rather than being folded into
+// the absent case. Silently treating unreadable as empty is how a
+// diagnosis tells a participant their setup is fine when it has not
+// looked.
+func doctorRecordingCheck(f doctorFacts) doctorCheck {
+	c := doctorCheck{Name: "recording"}
+	undetermined := func(reason string) doctorCheck {
+		c.Verdict, c.Detail = verdictUnknown, "could not determine — "+reason
+		return c
+	}
+
+	if !f.MinerEnabled {
+		c.Verdict, c.Detail = verdictOK, "not configured"
+		return c
+	}
+	if f.MiningDecision.State != auth.MiningEnabled {
+		c.Verdict, c.Detail = verdictOK, "mining not active"
+		return c
+	}
+
+	// Anything unreadable stops the heuristic before it can conclude.
+	switch {
+	case f.HealthErr != nil:
+		return undetermined(fmt.Sprintf("component health could not be read: %v", redact.Error(f.HealthErr)))
+	case f.StampErr != nil:
+		return undetermined(fmt.Sprintf("the flush stamp could not be read: %v", redact.Error(f.StampErr)))
+	case f.IntakeErr != nil:
+		return undetermined(fmt.Sprintf("the intake directory could not be read: %v", redact.Error(f.IntakeErr)))
+	case f.SpoolErr != nil:
+		return undetermined(fmt.Sprintf("the spool could not be read: %v", redact.Error(f.SpoolErr)))
+	case f.StampPresent && f.Stamp.LastFlush.After(f.Now):
+		// Never "recent": a clock that disagrees with the stamp makes
+		// every window comparison below meaningless.
+		return undetermined("the flush stamp is in the future")
+	case f.IntakeProbe.ParentMissing:
+		return undetermined("intake writability was not tested; see intake writable")
+	case !f.IntakeProbe.ok():
+		return undetermined("the intake probe failed; see intake writable")
+	}
+
+	// Anything actually recorded settles it.
+	if f.IntakeCount > 0 {
+		c.Verdict = verdictOK
+		c.Detail = fmt.Sprintf("%d observation(s) waiting in %s", f.IntakeCount, f.IntakeDir)
+		return c
+	}
+	if f.SpoolCount > 0 || f.QuarantineCount > 0 {
+		c.Verdict = verdictOK
+		c.Detail = fmt.Sprintf("%d observation(s) queued in the spool", f.SpoolCount+f.QuarantineCount)
+		if f.QuarantineCount > 0 {
+			c.Detail += fmt.Sprintf(" (%d quarantined)", f.QuarantineCount)
+		}
+		return c
+	}
+	if rec, ok := captureHealth(f.Health); ok {
+		// The client already knows capture failed and has said so on its
+		// own line. Repeating it as a mystery here would be worse than
+		// saying nothing.
+		c.Verdict = verdictOK
+		c.Detail = fmt.Sprintf("a capture failure is already recorded (%s); see the health line above", rec.Reason)
+		return c
+	}
+
+	// With nothing recorded, the question is whether anything ran.
+	if !f.StampPresent || f.Stamp.LastFlush.Before(f.Now.Add(-recordingWindow)) {
+		c.Verdict = verdictOK
+		c.Detail = "no recent activity"
+		return c
+	}
+
+	// Something ran, and nothing local shows for it. The AS is the last
+	// place a recorded observation could be.
+	if f.ActivityErr != nil || f.Activity == nil {
+		return undetermined("the AS did not report this epoch's activity")
+	}
+	a := f.Activity
+	if a.VerifiedActivity && a.VerifiedObservationCount == 0 &&
+		a.PendingObservationCount == 0 && a.RejectedObservationCount == 0 {
+		// The AS owns the eligibility verdict and also reports the count
+		// it was derived from; pkg/auth keeps both rather than
+		// recomputing one, precisely so a disagreement stays visible.
+		// Concluding "nothing reached the AS" from an answer that says
+		// there was verified activity would resolve that contradiction in
+		// the participant's disfavor, so it is reported instead.
+		return undetermined("the AS reports verified activity for this epoch but a verified count of zero; the two disagree")
+	}
+	if a.VerifiedObservationCount > 0 || a.PendingObservationCount > 0 || a.RejectedObservationCount > 0 {
+		c.Verdict = verdictOK
+		c.Detail = fmt.Sprintf("the AS has %d verified, %d pending and %d rejected for this epoch",
+			a.VerifiedObservationCount, a.PendingObservationCount, a.RejectedObservationCount)
+		return c
+	}
+
+	c.Verdict = verdictUnknown
+	c.Detail = fmt.Sprintf("recent miner activity, but nothing is queued locally or verified at the AS; "+
+		"if searches have been running, check that %s is the mining intake directory used by "+
+		"the agent's `dropin-miner search` command", f.IntakeDir)
+	c.Fix = "dropin-miner agents status; re-run `dropin-miner agents install` if the agent is using another config or lacks sandbox access"
+	return c
+}
+
+func captureHealth(records []auth.HealthRecord) (auth.HealthRecord, bool) {
+	for _, r := range records {
+		if r.Component == auth.HealthCapture {
+			return r, true
+		}
+	}
+	return auth.HealthRecord{}, false
+}
+
+// countSpool reads both halves of the queue without moving anything.
+//
+// A missing spool directory is known-empty rather than an error: the
+// collector creates it, and a participant who has never flushed has none.
+func countSpool(dir string) (active, quarantined int, err error) {
+	sp, oerr := spool.OpenExisting(dir)
+	if oerr != nil {
+		if errors.Is(oerr, fs.ErrNotExist) {
+			return 0, 0, nil
+		}
+		return 0, 0, oerr
+	}
+	if active, err = sp.Count(); err != nil {
+		return 0, 0, err
+	}
+	quarantined, err = sp.CountQuarantined()
+	if err != nil {
+		return 0, 0, err
+	}
+	return active, quarantined, nil
+}

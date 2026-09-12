@@ -208,3 +208,112 @@ func TestPendingIsOldestFirst(t *testing.T) {
 		}
 	}
 }
+
+// CountQuarantined is the other half of the backlog question, and it
+// exists because Count deliberately refuses to answer it: the number a
+// participant is told about is what can still be delivered.
+//
+// A diagnosis asking "was anything ever recorded" needs the opposite
+// number. A quarantined record got as far as the spool and only then
+// failed to parse, which is about as strong as local evidence of recording
+// gets — so a check that read Count alone would conclude "nothing was
+// recorded" with the proof sitting on disk.
+func TestCountQuarantinedSeesWhatCountDeliberatelyIgnores(t *testing.T) {
+	s := newSpool(t)
+
+	if n, err := s.CountQuarantined(); err != nil || n != 0 {
+		t.Fatalf("empty quarantine = (%d, %v), want (0, nil)", n, err)
+	}
+
+	// Two deliverable records and one the collector quarantines.
+	for _, epoch := range []uint64{1042, 1043} {
+		if err := s.Enqueue(record(t, epoch)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "7-9-corrupt.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pending is what quarantines it — the collector's own path, not a
+	// file moved into place by hand.
+	if _, err := s.Pending(); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := s.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err := s.CountQuarantined()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active != 2 {
+		t.Errorf("Count = %d, want 2", active)
+	}
+	if quarantined != 1 {
+		t.Errorf("CountQuarantined = %d, want 1 — Count cannot see it, which is the point", quarantined)
+	}
+}
+
+// The same name filter as Count, and no mutation of what it counts.
+func TestCountQuarantinedFiltersAndMovesNothing(t *testing.T) {
+	s := newSpool(t)
+	q := filepath.Join(s.dir, "quarantine")
+	for name, content := range map[string]string{
+		"a.json":      `{}`,
+		"b.json":      `{}`,
+		".tmp-c.json": `{}`, // a write in flight
+		"notes.txt":   `x`,  // not a record
+		"d.json.bak":  `{}`, // not a record either
+	} {
+		if err := os.WriteFile(filepath.Join(q, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(q, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadDir(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.CountQuarantined()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("CountQuarantined = %d, want 2 (.tmp- prefixes, non-.json and directories skipped)", n)
+	}
+	after, err := os.ReadDir(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Errorf("counting moved files: %d before, %d after", len(before), len(after))
+	}
+}
+
+// OpenExisting does not create the quarantine directory, so a spool that
+// has never quarantined anything must count zero rather than fail.
+func TestCountQuarantinedOnASpoolWithNoQuarantineDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenExisting(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.CountQuarantined()
+	if err != nil {
+		t.Fatalf("CountQuarantined on a spool with no quarantine dir: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountQuarantined = %d, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "quarantine")); !os.IsNotExist(err) {
+		t.Errorf("counting created the quarantine directory: %v", err)
+	}
+}

@@ -235,10 +235,21 @@ stable reasons `decision_unreadable`, `intake_unwritable`,
 stopping mining retains earlier capture/flush diagnostics as previous
 unresolved degradation.
 
-`doctor` opens only existing state and spool paths. It does not create a
-state directory, DPoP key, wallet, enrollment, or repair mining state merely
-to diagnose it. When valid auth already exists, its authenticated AS checks
-may rotate the refresh token through the normal cross-process refresh lock.
+`doctor` reports seven checks: connected, enrolled, joined, payout address in
+force, earning, intake writable, and recording.
+
+It opens only existing state and spool paths, and does not create a state
+directory, DPoP key, wallet, enrollment, or repair mining state merely to
+diagnose it. It makes exactly one local write: `intake writable` puts a
+short-lived probe file in the intake directory this client already owns,
+named so a flush can never mistake it for a record, and removes it before
+doctor exits — reporting the pathname if it could not. The intake directory
+itself is created when its parent already exists and it does not, because
+that is what the first search creates anyway; nothing above it ever is. A
+successful probe proves the process that ran `doctor` can write there, which
+is not the same as an agent's sandbox being able to. When valid auth already
+exists, its authenticated AS checks may rotate the refresh token through the
+normal cross-process refresh lock.
 
 ## Building
 

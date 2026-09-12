@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
@@ -89,11 +90,42 @@ func healthyFacts() doctorFacts {
 		}},
 		Activity:   &auth.EpochActivity{VerifiedActivity: true, VerifiedObservationCount: 4},
 		HasRefresh: true,
+
+		// A healthy installation also has intake configured, mining on, a
+		// probe that worked and a recent flush. Leaving these unset would
+		// let both new checks answer "not configured", which is OK for the
+		// wrong reason and would keep the all-OK test green however the
+		// checks behaved.
+		MinerEnabled:    true,
+		IntakeDir:       "/fictional/tokendrop/intake",
+		LocalStateKnown: true,
+		MiningDecision:  auth.MiningDecision{State: auth.MiningEnabled, Present: true},
+		IntakeProbe:     intakeProbeResult{Ran: true, Dir: "/fictional/tokendrop/intake"},
+		Now:             healthyNow,
+		Stamp:           flushStamp{V: 1, LastFlush: healthyNow.Add(-time.Hour)},
+		StampPresent:    true,
 	}
 }
 
-func TestAHealthyInstallationIsFiveOKs(t *testing.T) {
-	for _, c := range assembleDoctor(healthyFacts()) {
+// healthyNow pins the clock these facts are judged against.
+var healthyNow = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+// Named for the property, not the count: doctor gained two checks in
+// 0.2.7 and a name that pins the number is a name that has to be edited
+// every time one is added, which is how a stale assertion survives.
+func TestAHealthyInstallationHasAllChecksOK(t *testing.T) {
+	checks := assembleDoctor(healthyFacts())
+	want := []string{
+		"authorization server", "enrolled", "joined this epoch",
+		"payout address", "earning", "intake writable", "recording",
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("%d checks, want %d", len(checks), len(want))
+	}
+	for i, c := range checks {
+		if c.Name != want[i] {
+			t.Errorf("check %d is %q, want %q", i, c.Name, want[i])
+		}
 		if c.Verdict != verdictOK {
 			t.Errorf("%s = %s (%s); a healthy installation should be OK", c.Name, c.Verdict, c.Detail)
 		}
@@ -312,10 +344,14 @@ func TestTheReportNamesTheChecksThatCouldNotRun(t *testing.T) {
 	var b bytes.Buffer
 	printDoctor(&b, assembleDoctor(f), doctorFacts{SpoolDir: t.TempDir()})
 	out := b.String()
-	if !strings.Contains(out, "3 check(s) could not run") {
+	// Four, not three: with a recent flush and nothing queued locally,
+	// `recording` needs the AS's activity to tell "nothing was recorded"
+	// from "recorded and already delivered", and a silent AS leaves that
+	// genuinely undetermined.
+	if !strings.Contains(out, "4 check(s) could not run") {
 		t.Fatalf("the report does not say which checks could not run:\n%s", out)
 	}
-	for _, name := range []string{"joined this epoch", "payout address", "earning"} {
+	for _, name := range []string{"joined this epoch", "payout address", "earning", "recording"} {
 		if !strings.Contains(out, name) {
 			t.Errorf("%q is not named among them:\n%s", name, out)
 		}

@@ -87,8 +87,12 @@ connect): enroll -> payout -> join -> login
 
 is it working, was I paid:
   doctor     checks in a participant's terms — connected, enrolled, joined,
-             payout address in force, earning — each saying what to do.
-             -json reports as one JSON object instead of text
+             payout address in force, earning, intake writable, recording —
+             each saying what to do. "intake writable" writes and removes one
+             short-lived probe file to prove the directory a search records
+             into is usable; "recording" flags recent miner activity with
+             nothing queued locally or verified at the AS. -json reports as
+             one JSON object instead of text
   earnings   what the chain has paid to your payout address
 
 wallet (a reward address this installation controls):
