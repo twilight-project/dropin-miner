@@ -2554,11 +2554,22 @@ func TestConnectResumeNeverRebuildsOrRegistersOnLostRegistration(t *testing.T) {
 //
 // The obstruction is a deterministic filesystem seam, not a POSIX
 // permission-bit assumption (chmod 0444 behaves differently, or not at
-// all, under a root test runner): the state directory is replaced by a
-// plain file at the exact moment the stub answers /v1/agents/me, so
-// whatever this run next tries to persist there (PreserveCorruptAgentRegistration
-// and/or SaveAgentRegistration, both plain os-level file operations under
-// that same path) fails structurally on every OS, root or not.
+// all, under a root test runner) — and, per a real Windows CI failure on
+// an earlier version of this test, not "replace the state directory
+// itself" either: connect.lock is held open for connectRun's entire run,
+// and Windows (unlike POSIX) refuses to remove or replace a directory
+// that contains an open file handle, so that approach silently failed to
+// obstruct anything there. Instead this only ever ADDS a new sibling
+// entry inside the state directory, never touching the directory or
+// connect.lock:
+//   - corrupt: pre-creates agent.json.corrupt so
+//     PreserveCorruptAgentRegistration's own existing safety check
+//     (os.Lstat(backup) succeeding refuses outright, whatever backup is)
+//     refuses deterministically, before ever touching agent.json itself.
+//   - absent: pre-creates agent.json as a directory, so
+//     SaveAgentRegistration's rename-onto-that-path fails deterministically
+//     on every OS (renaming a file onto an existing directory is refused
+//     by both POSIX rename(2) and Windows MoveFileEx).
 func TestConnectRebuildRetriesAfterATransientPersistFailure(t *testing.T) {
 	for _, corrupt := range []bool{true, false} {
 		corrupt := corrupt
@@ -2576,6 +2587,11 @@ func TestConnectRebuildRetriesAfterATransientPersistFailure(t *testing.T) {
 			corruptBytes := setupLostRegistration(t, cfg, key, corrupt)
 			registerCallsBefore, _, _ := platform.counts()
 
+			obstructionPath := filepath.Join(stateDir, "agent.json")
+			if corrupt {
+				obstructionPath = filepath.Join(stateDir, "agent.json.corrupt")
+			}
+
 			// Armed for exactly the first successful /v1/agents/me answer.
 			armed := true
 			platform.setMeHook(func() {
@@ -2583,34 +2599,33 @@ func TestConnectRebuildRetriesAfterATransientPersistFailure(t *testing.T) {
 					return
 				}
 				armed = false
-				_ = os.RemoveAll(stateDir)
-				_ = os.WriteFile(stateDir, []byte("obstruction"), 0o600) // #nosec G306 -- test fixture, not a secret
+				if corrupt {
+					_ = os.WriteFile(obstructionPath, nil, 0o600) // #nosec G306 -- test fixture, not a secret
+				} else {
+					_ = os.Mkdir(obstructionPath, 0o700)
+				}
 			})
 
 			code, _, errOut := runConnect(t, cfgPath, nil)
 			if code == exitOK {
-				t.Fatalf("connect succeeded despite an obstructed state directory: %s", errOut)
+				t.Fatalf("connect succeeded despite an obstructed persist target: %s", errOut)
 			}
 			if registerCalls, _, _ := platform.counts(); registerCalls != registerCallsBefore {
 				t.Fatalf("Register calls = %d, want unchanged from %d — a failed persist must never fall through to Register", registerCalls, registerCallsBefore)
 			}
-
-			// Remove the obstruction and restore an ordinary state directory.
-			// The corrupt starting bytes (when this case has any) were never
-			// reached by the failed run's persist step, since the
-			// obstruction landed before Preserve or Save could run — restore
-			// them so the retry starts from the same state a real second
-			// invocation would see.
-			if err := os.Remove(stateDir); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.MkdirAll(stateDir, 0o700); err != nil {
-				t.Fatal(err)
-			}
 			if corrupt {
-				if err := os.WriteFile(filepath.Join(stateDir, "agent.json"), corruptBytes, 0o600); err != nil {
-					t.Fatal(err)
+				got, err := os.ReadFile(filepath.Join(stateDir, "agent.json")) // #nosec G304 -- test controls its temporary state directory
+				if err != nil || string(got) != string(corruptBytes) {
+					t.Fatalf("corrupt starting bytes were disturbed despite Preserve refusing: err=%v contents=%q", err, got)
 				}
+			}
+
+			// Remove the obstruction; nothing else needs restoring — the
+			// corrupt starting bytes (when this case has any) were never
+			// reached by the failed run, since Preserve refused before ever
+			// touching agent.json.
+			if err := os.Remove(obstructionPath); err != nil {
+				t.Fatal(err)
 			}
 			platform.setMeHook(nil)
 
