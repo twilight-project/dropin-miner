@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/fsx"
 )
 
 const (
@@ -139,33 +140,29 @@ func openWalletDir(dir string, getenv func(string) string) (string, error) {
 	return dir, nil
 }
 
+// writeWalletAtomic is the durable writer, as a package-local seam so a
+// test can fail it deterministically. Production always uses fsx's.
+var writeWalletAtomic = fsx.WriteFileAtomic
+
+// writeWalletFile publishes one wallet file through the shared durable
+// primitive. It used to carry its own temp/chmod/write/sync/close/rename
+// sequence — correct as far as it went, but it never synced the directory,
+// so a crash after the rename could leave the wallet's own directory entry
+// unwritten even though the file's bytes were on disk. That is the one
+// failure mode the participant cannot recover from without the 24 words.
+// pkg/fsx does the same sequence plus the directory sync, with the
+// platform-aware ErrDirectorySyncUnsupported classification for Windows,
+// where publication is already write-through. What is written, where, and
+// under which mode is unchanged.
 func writeWalletFile(dir, name string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, name+".tmp-*")
-	if err != nil {
+	if err := writeWalletAtomic(dir, name, data, 0o600); err != nil {
 		return fmt.Errorf("wallet: write %s: %w", name, err)
 	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, filepath.Join(dir, name))
+	return nil
 }
 
 func readWalletFile(dir, name string, v any) error {

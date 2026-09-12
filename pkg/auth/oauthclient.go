@@ -427,6 +427,14 @@ func (c *OAuthClient) WaitForDeviceApproval(ctx context.Context, da *oauth2.Devi
 // the successor before returning the new tokens (§18.1 client side).
 //
 // The whole cycle runs under the cross-process lock (refreshlock.go),
+// ErrNoRefreshAuthorization is Refresh's answer when this installation
+// holds no refresh authorization at all: nothing to refresh, and nothing a
+// retry can fix — a person has to authorize interactively. It is a
+// sentinel because callers act on it (the flush records an authorization
+// fault rather than a delivery failure), and matching that on the text of
+// the message is how a message becomes an API nobody documented.
+var ErrNoRefreshAuthorization = errors.New("auth: no refresh authorization; interactive authorization required")
+
 // because load, spend and persist are a read-modify-write over one file
 // that the daemon and every CLI command share. The lock covers endpoint
 // resolution too, which is a network fetch on a cold cache: metadata is
@@ -462,7 +470,7 @@ func (c *OAuthClient) Refresh(ctx context.Context) (*oauth2.Token, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("auth: no refresh authorization; interactive authorization required")
+		return nil, ErrNoRefreshAuthorization
 	}
 	cfg, err := c.oauthConfig(ctx)
 	if err != nil {

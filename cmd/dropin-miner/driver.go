@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
+	"net/http"
 	"sync"
 	"time"
 
@@ -222,25 +222,30 @@ type targetResult struct {
 	queried     bool
 }
 
-// targetAuthFailure preserves the existing OAuth/credential classification:
-// token-endpoint refusals are oauth2.RetrieveError values, while a missing
-// refresh authorization and an AS 401/403 are explicit authorization faults.
+// targetAuthFailure keeps the existing OAuth/credential classification and
+// stops inferring it from message text: token-endpoint refusals are
+// oauth2.RetrieveError values, a missing refresh authorization is a
+// sentinel, and an AS refusal carries the status it answered with.
 // Discovery, transport, and other current-target failures remain ordinary
 // target-resolution failures.
+//
+// The strings this replaced were a contract nobody had agreed to. Whether
+// a participant's health record said "your authorization needs attention"
+// or "delivery failed" depended on five substrings matching the wording of
+// errors built three packages away, so rephrasing a message silently
+// reclassified a fault — and any unrelated error whose text happened to
+// quote one of those phrases was classified as an authorization failure on
+// the strength of its prose.
 func targetAuthFailure(err error) bool {
 	if err == nil {
 		return false
 	}
 	var retrieveErr *oauth2.RetrieveError
-	if errors.As(err, &retrieveErr) {
-		return true
-	}
-	text := err.Error()
-	return strings.Contains(text, "no refresh authorization") ||
-		strings.Contains(text, "auth: AS refused with status 401") ||
-		strings.Contains(text, "auth: AS refused with status 403") ||
-		strings.Contains(text, "auth: AS refused (401 ") ||
-		strings.Contains(text, "auth: AS refused (403 ")
+	var refused *auth.ASRefusedError
+	return errors.As(err, &retrieveErr) ||
+		errors.Is(err, auth.ErrNoRefreshAuthorization) ||
+		(errors.As(err, &refused) &&
+			(refused.Status == http.StatusUnauthorized || refused.Status == http.StatusForbidden))
 }
 
 // target resolves the epoch this tick works on: the operator's pin when

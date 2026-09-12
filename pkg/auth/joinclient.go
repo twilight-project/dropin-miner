@@ -401,6 +401,41 @@ func (m *MiningClient) receiptKey(ctx context.Context, kid string) (ed25519.Publ
 // participant already has this epoch.
 var ErrEnrollmentConflict = errors.New("auth: enrollment conflict — another installation of this participant holds this epoch")
 
+// ASRefusedError is a refusal the AS stated: the HTTP status it answered
+// with, and the §26 envelope's code and message when it sent one.
+//
+// It carries the status as a number because callers need to act on it —
+// a 401 or 403 is an authorization fault, a 404 or 500 is not — and the
+// alternative, which this replaced, was every caller matching substrings
+// of Error() and quietly depending on its wording. Error() reproduces
+// that wording exactly, so operators and existing assertions see what
+// they always saw; the difference is that nothing has to parse it.
+type ASRefusedError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *ASRefusedError) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("auth: AS refused with status %d", e.Status)
+	}
+	s := fmt.Sprintf("auth: AS refused (%d %s): %s", e.Status, e.Code, e.Message)
+	if e.Code == "ENROLLMENT_CONFLICT" {
+		return s + ": " + ErrEnrollmentConflict.Error()
+	}
+	return s
+}
+
+// Unwrap keeps errors.Is(err, ErrEnrollmentConflict) true for the one code
+// callers branch on, exactly as the %w wrapping this replaced did.
+func (e *ASRefusedError) Unwrap() error {
+	if e.Code == "ENROLLMENT_CONFLICT" {
+		return ErrEnrollmentConflict
+	}
+	return nil
+}
+
 // joinRefusal maps the stable §26 envelope into an error, wrapping
 // ErrEnrollmentConflict when the code names it so a caller can branch on
 // errors.Is rather than parsing the message.
@@ -412,12 +447,9 @@ func joinRefusal(status int, raw []byte) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &env); err == nil && env.Error.Code != "" {
-		if env.Error.Code == "ENROLLMENT_CONFLICT" {
-			return fmt.Errorf("auth: AS refused (%d %s): %s: %w", status, env.Error.Code, env.Error.Message, ErrEnrollmentConflict)
-		}
-		return fmt.Errorf("auth: AS refused (%d %s): %s", status, env.Error.Code, env.Error.Message)
+		return &ASRefusedError{Status: status, Code: env.Error.Code, Message: env.Error.Message}
 	}
-	return fmt.Errorf("auth: AS refused with status %d", status)
+	return &ASRefusedError{Status: status}
 }
 
 func expandSlot(tmpl string, slotID uint64) string {
