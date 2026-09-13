@@ -687,10 +687,19 @@ func claudeAllowRules(entry binEntry) []string {
 	}
 }
 
-// ruleIsOurs: does this permissions.allow entry name this binary?
+// ruleIsOurs: does this permissions.allow entry name this binary? Matches
+// the exact two representations claudeAllowRules writes — "Bash(" followed
+// by either the %q-quoted path or the bare one, each then a space — rather
+// than a raw substring test. strconv.Quote doubles every backslash, so on
+// Windows the quoted rule's bytes never contain bin's own backslashes as a
+// contiguous run; a substring test only ever catches the bare rule there,
+// leaving the quoted one behind on uninstall.
 func ruleIsOurs(e any, bin string) bool {
 	r, ok := e.(string)
-	return ok && strings.Contains(r, bin)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(r, "Bash("+strconv.Quote(bin)+" ") || strings.HasPrefix(r, "Bash("+bin+" ")
 }
 
 func cursorHooks(entry binEntry) hooksSpec {
@@ -704,19 +713,27 @@ func cursorHooks(entry binEntry) hooksSpec {
 
 // entryIsOurs: does this hook entry (a Claude group or a Cursor entry)
 // run this binary? Matching on the binary path is what makes uninstall
-// exact and idempotent install cheap.
+// exact and idempotent install cheap. Every command binEntry writes begins
+// with %q of the binary path followed by a space (searchCommand,
+// stdinCommand, preferCommand, hookCommand all share that shape), so the
+// match is that exact prefix — strconv.Quote(bin)+" " — rather than a raw
+// substring test. A substring test breaks on Windows: strconv.Quote
+// doubles every backslash, so bin's own single-backslash path never
+// appears as a contiguous run inside the quoted command text, and a
+// second install or an uninstall never recognizes its own entry.
 func entryIsOurs(e any, bin string) bool {
 	m, ok := e.(map[string]any)
 	if !ok {
 		return false
 	}
-	if c, ok := m["command"].(string); ok && strings.Contains(c, bin) {
+	prefix := strconv.Quote(bin) + " "
+	if c, ok := m["command"].(string); ok && strings.HasPrefix(c, prefix) {
 		return true
 	}
 	if hs, ok := m["hooks"].([]any); ok {
 		for _, h := range hs {
 			if hm, ok := h.(map[string]any); ok {
-				if c, ok := hm["command"].(string); ok && strings.Contains(c, bin) {
+				if c, ok := hm["command"].(string); ok && strings.HasPrefix(c, prefix) {
 					return true
 				}
 			}

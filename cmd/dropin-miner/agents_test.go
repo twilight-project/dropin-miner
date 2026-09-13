@@ -467,6 +467,68 @@ func TestAgentsUninstallSparesAHookEntryForADifferentInstallationOfTheSameName(t
 	}
 }
 
+// TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath guards
+// entryIsOurs and ruleIsOurs against the defect found on PR #51's Windows
+// run: both used strings.Contains(command, bin), but binEntry's commands
+// and claudeAllowRules' quoted rule are written with %q, which doubles
+// every backslash. On a Windows path like the one used here, bin's own
+// single-backslash bytes never occur as a contiguous run inside the
+// quoted text, so the substring test never matched — a second install
+// duplicated every Claude and Cursor hook, and uninstall removed none of
+// them (nor the quoted half of the Claude allow rules). This runs on
+// every OS: the path is only ever a string embedded in JSON, nothing
+// executes it.
+func TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath(t *testing.T) {
+	m, ops := newFakeMachine("claude", "cursor")
+	ops.executable = func() (string, error) { return `C:\Users\u\.tokendrop\bin\dropin-miner.exe`, nil }
+
+	for i := 1; i <= 2; i++ {
+		if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install #%d: exit %d\n%s%s", i, code, out, errOut)
+		}
+	}
+
+	settings := "/home/u/.claude/settings.json"
+	claudeHooksAfter := hooksOf(t, m, settings)
+	for _, ev := range []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"} {
+		list, _ := claudeHooksAfter[ev].([]any)
+		if len(list) != 1 {
+			t.Errorf("Claude %s after two installs: want 1 entry, got %d: %v", ev, len(list), list)
+		}
+	}
+	if allow := allowOf(t, m, settings); len(allow) != 2 {
+		t.Fatalf("Claude allow rules after two installs: want 2, got %d: %v", len(allow), allow)
+	}
+
+	cursorPath := "/home/u/.cursor/hooks.json"
+	cursorHooksAfter := hooksOf(t, m, cursorPath)
+	for _, ev := range []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"} {
+		list, _ := cursorHooksAfter[ev].([]any)
+		if len(list) != 1 {
+			t.Errorf("Cursor %s after two installs: want 1 entry, got %d: %v", ev, len(list), list)
+		}
+	}
+
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
+	}
+	claudeHooksGone := hooksOf(t, m, settings)
+	for _, ev := range []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"} {
+		if _, ok := claudeHooksGone[ev]; ok {
+			t.Errorf("Claude %s survived uninstall: %v", ev, claudeHooksGone[ev])
+		}
+	}
+	if allow := allowOf(t, m, settings); len(allow) != 0 {
+		t.Errorf("Claude allow rules survived uninstall: %v", allow)
+	}
+	cursorHooksGone := hooksOf(t, m, cursorPath)
+	for _, ev := range []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"} {
+		if _, ok := cursorHooksGone[ev]; ok {
+			t.Errorf("Cursor %s survived uninstall: %v", ev, cursorHooksGone[ev])
+		}
+	}
+}
+
 func keysOf(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
