@@ -1,0 +1,14 @@
+{
+  "writes": [
+    {
+      "surface": "Codex",
+      "path": "/home/u/.codex/config.toml",
+      "mode": 384,
+      "why": "remove sandbox block",
+      "content": ""
+    }
+  ],
+  "removes": [
+    "/home/u/.codex/skills/dropin-miner"
+  ]
+}

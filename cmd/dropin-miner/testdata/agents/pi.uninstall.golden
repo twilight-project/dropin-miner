@@ -1,0 +1,7 @@
+{
+  "writes": null,
+  "removes": [
+    "/home/u/.pi/agent/skills/dropin-miner",
+    "/home/u/.pi/agent/extensions/dropin-miner.ts"
+  ]
+}
