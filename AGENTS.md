@@ -197,6 +197,16 @@ each line names the file that owns the rule and the test that proves it.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
   silently, and the structural test proves the public ID set.
+- **Lifecycle coordination** — `cmd/dropin-miner/lifecycle.go` owns the gate `H.lifecycle.lock`
+  (a sibling of the installation, never inside it and never deleted), the one lock order
+  (gate → `setup.lock` → `connect.lock` → `flush.lock`), how setup, connect and flush pass the gate
+  (a person's command waits at most five seconds; a detached child, marked by `spawnDetached`,
+  makes one attempt and exits 0 recording nothing) and the exclusion a destructive operation holds:
+  the gate, then every operation lock, located from the config only once the gate is held.
+  `lifecycle_test.go`'s `TestConnectCannotStartUnderAHeldExclusion` and
+  `TestFlushCannotStartUnderAHeldExclusion` prove an operation starting after the check meets the
+  gate before it reads or writes anything; `TestSetupHoldsSetupLockThroughItsWholeRun` proves setup
+  excludes a destructive operation until its closing message.
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.

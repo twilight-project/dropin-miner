@@ -262,8 +262,19 @@ func publishPendingRegistration(store *auth.Store, m config.Miner, pending auth.
 // substitutes an answer of its own; a JSON mode that took a different path
 // through registration would be a second, less-tested registration client.
 func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	return connectCommand(args, stdin, stdout, stderr, getenv, false)
+}
+
+// connectAdmitted is connect for a caller whose own lifecycle admission
+// covers this run: setup, which holds setup.lock and must not take the
+// lifecycle gate again after it (lifecycle.go's lock order).
+func connectAdmitted(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	return connectCommand(args, stdin, stdout, stderr, getenv, true)
+}
+
+func connectCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, admitted bool) int {
 	if !jsonRequested(args) {
-		return connectRun(args, stdin, stdout, stderr, getenv, false)
+		return connectRun(args, stdin, stdout, stderr, getenv, false, admitted)
 	}
 	cfgPath, force, parseErr := connectMachineFlags(args)
 	// Selecting an output format must not select an answer. Machine mode
@@ -293,7 +304,19 @@ func cmdConnect(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitUsage
 	}
 	var narration bytes.Buffer
-	code := connectRun(args, stdin, io.Discard, &narration, getenv, true)
+	code := connectRun(args, stdin, io.Discard, &narration, getenv, true, admitted)
+	if code == exitLifecycleBusy {
+		// Structural, like the human-decision sentinel below: the gate was
+		// held for this whole wait, and nothing of the installation was read
+		// or written. The same call may succeed once the other operation ends.
+		retryAfter := lifecycleBusyRetryAfter.Milliseconds()
+		emitMachine(stdout, lifecycleBusyEnvelope{
+			machineHeader: newMachineHeader("connect", exitTransport, "lifecycle_busy", true, actionRetry),
+			RetryAfterMS:  &retryAfter,
+			Error:         clientMessage(errLifecycleBusy),
+		})
+		return exitTransport
+	}
 	if code == exitHumanDecisionRequired {
 		// Reached mid-run, past the pre-check above: a rebuild (B.3) can
 		// only learn a recovered identity is expired AFTER calling
@@ -435,7 +458,7 @@ func connectMachineFlags(args []string) (cfgPath string, force bool, err error) 
 // branch below, and detecting it from the writer would be guessing the
 // caller's intent from an implementation detail of how cmdConnect happens
 // to capture narration today.
-func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, machine bool) int {
+func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, machine, admitted bool) int {
 	fs := newFlagSet("connect", stderr)
 	cfgPath := fs.String("config", "", "path to TOML config file")
 	name := fs.String("name", "", "a name for this agent (optional)")
@@ -445,6 +468,36 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+
+	// Lifecycle admission comes before the config is loaded or the state
+	// directory opened: an uninstall or upgrade holding the gate must find
+	// nothing of this run on disk. -resume is a detached child and never
+	// waits; setup's in-process connect is already admitted.
+	mode := admitForeground
+	switch {
+	case admitted:
+		mode = admitAlreadyAdmitted
+	case *resume:
+		mode = admitDetached
+	}
+	gatePath, err := configGatePath(*cfgPath, getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner:", err)
+		return exitTransport
+	}
+	gate, err := admitOrdinary(gatePath, mode)
+	if err != nil {
+		if *resume {
+			fmt.Fprintf(stderr, "connect -resume: %v; not resuming now\n", err)
+			return exitOK
+		}
+		fmt.Fprintf(stderr, "dropin-miner connect: %v (%s); nothing was changed, run connect again shortly\n", err, gatePath)
+		if machine {
+			return exitLifecycleBusy
+		}
+		return exitTransport
+	}
+	defer gate.release()
 
 	cfg, cfgSource, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
@@ -473,6 +526,9 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	// exits quietly rather than racing the first for the same enrollment
 	// token, the same dpop.key, or the same declaration.
 	lock, held, err := tryLockFile(connectLockPath(cfg.Mining.StateDir))
+	// Admission ends here: from now on this run is excluded by connect.lock
+	// alone, and the gate must not be held through a poll loop.
+	gate.release()
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner:", err)
 		return exitTransport
@@ -484,6 +540,7 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		return exitOK
 	}
 	defer func() { _ = unlockFile(lock) }()
+	lifecycleEvent("operation locked")
 
 	// ctx bounds SIGINT/SIGTERM cancellation and, for -resume, its one
 	// round trip's worth of patience. It deliberately does NOT carry the

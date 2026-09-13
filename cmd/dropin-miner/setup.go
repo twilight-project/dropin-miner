@@ -91,6 +91,11 @@ func (d setupDeps) restrictFn() func(string, bool) error {
 }
 
 func cmdSetup(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	return setupMain(systemSetupDeps(stdin, stdout, stderr, getenv), args)
+}
+
+// systemSetupDeps is setup against the real machine.
+func systemSetupDeps(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) setupDeps {
 	home, _ := os.UserHomeDir()
 	interactive := false
 	if f, ok := stdin.(*os.File); ok {
@@ -99,7 +104,7 @@ func cmdSetup(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv f
 		// person at a console.
 		interactive = term.IsTerminal(int(f.Fd()))
 	}
-	return setupMain(setupDeps{
+	return setupDeps{
 		stdin:       stdin,
 		stdout:      stdout,
 		stderr:      stderr,
@@ -108,10 +113,10 @@ func cmdSetup(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv f
 		executable:  os.Executable,
 		interactive: interactive,
 		agents:      realAgentOps(),
-		connect:     cmdConnect,
+		connect:     connectAdmitted,
 		userEnv:     systemUserEnvironment(),
 		now:         time.Now,
-	}, args)
+	}
 }
 
 // setupRun is one invocation's state.
@@ -306,6 +311,16 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 		return exitUsage
 	}
 
+	// A dry run writes nothing, so there is nothing for it to exclude or be
+	// excluded from; every other run holds setup.lock to its end.
+	if !r.dry {
+		release, code := r.admit()
+		if code != exitOK {
+			return code
+		}
+		defer release()
+	}
+
 	r.say("Using binary: " + exe)
 	r.printf("dropin-miner %s\n", buildVersion())
 	if r.dry {
@@ -369,6 +384,44 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	// ── 8. closing ──
 	r.closing()
 	return exitOK
+}
+
+// admit passes the lifecycle gate and takes setup.lock for the rest of the
+// run: gate first, then the installation directory (owner-only before
+// anything is created in it), then setup.lock, then the gate is let go. An
+// uninstall or upgrade holding the gate refuses this run before it creates
+// anything; one that starts later finds setup.lock held and refuses itself.
+// connect runs in-process under this admission (connectAdmitted).
+func (r *setupRun) admit() (release func(), code int) {
+	gatePath := lifecycleGatePath(r.home)
+	gate, err := admitOrdinary(gatePath, admitForeground)
+	if err != nil {
+		fmt.Fprintf(r.d.stderr, "dropin-miner setup: %v (%s); nothing was changed, run setup again shortly\n", err, gatePath)
+		return nil, exitTransport
+	}
+	defer gate.release()
+	if !lexists(r.home) {
+		if err := os.MkdirAll(r.home, 0o700); err != nil {
+			fmt.Fprintln(r.d.stderr, "dropin-miner setup:", err)
+			return nil, exitTransport
+		}
+		r.changed = true
+	}
+	if err := restrictToOwner(r.home, true); err != nil {
+		fmt.Fprintf(r.d.stderr, "dropin-miner setup: restrict %s to its owner: %v\n", r.home, err)
+		return nil, exitTransport
+	}
+	lockPath := filepath.Join(r.home, setupLockFile)
+	lock, held, err := tryLockFile(lockPath)
+	if err != nil {
+		fmt.Fprintln(r.d.stderr, "dropin-miner setup: lock:", err)
+		return nil, exitTransport
+	}
+	if !held {
+		fmt.Fprintf(r.d.stderr, "dropin-miner setup: another setup is already running for %s (%s is held); nothing was changed\n", r.home, lockPath)
+		return nil, exitTransport
+	}
+	return func() { _ = unlockFile(lock) }, exitOK
 }
 
 func (r *setupRun) previousInstallation() {

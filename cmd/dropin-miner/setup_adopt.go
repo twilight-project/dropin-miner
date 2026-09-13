@@ -88,6 +88,11 @@ func setAsideInstallation(home string) string {
 		if name == base || (!strings.HasPrefix(name, base+".") && !strings.HasPrefix(name, base+"-")) {
 			continue
 		}
+		// The lifecycle gate matches home.* by construction; it coordinates
+		// this installation and is never a previous one, whatever it is.
+		if name == base+lifecycleGateSuffix {
+			continue
+		}
 		path := filepath.Join(parent, name)
 		info, err := os.Lstat(path)
 		if err != nil || !info.IsDir() {
