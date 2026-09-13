@@ -24,5 +24,18 @@ checksum:
   name_template: checksums.txt
 release:
   draft: false
+  # The release body is a commit list (changelog.use: git below), which is the
+  # mechanical record. CHANGELOG.md is the other thing: what a participant
+  # should be told in plain language. The GitHub Release is where people
+  # actually land — it carries the Latest badge and the installers point at it
+  # — so it opens with a pointer to the prose rather than leaving a reader to
+  # know the file exists.
+  #
+  # Blob-at-tag, not a heading anchor. An anchor for "## v0.2.7 — 2026-09-13"
+  # mangles to something like #v027--2026-09-13 (dots dropped, em dash dropped,
+  # the date baked in) and rots silently the moment a heading is reworded; the
+  # blob URL pins the file as it stood at that tag, with the entry at the top.
+  header: |
+    What changed, in plain language: https://github.com/twilight-project/dropin-miner/blob/{{ .Tag }}/CHANGELOG.md
 changelog:
   use: git

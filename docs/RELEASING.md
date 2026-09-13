@@ -74,8 +74,12 @@ them. Run them on the commit you are about to tag, not on a branch that resemble
    isn't green, fix that first, don't tag through it.
 2. Bump `npm/package.json`'s `"version"` to the target `X.Y.Z` in its own
    `release/x.y.z` PR, and merge that PR. The merge commit is what gets tagged.
-3. `git tag vX.Y.Z <commit>` and `git push upstream vX.Y.Z`. This is what triggers
-   `release.yml` — nothing else does.
+3. `git tag -a vX.Y.Z -m "vX.Y.Z" <commit>` and `git push upstream vX.Y.Z`. This is what
+   triggers `release.yml` — nothing else does.
+   Annotated (`-a`) is the rule from v0.2.8 on — it records who cut the release and
+   when, which a lightweight tag does not — while the earlier tags are mixed (v0.1.1
+   through v0.1.6 and v0.2.6 annotated; v0.1.7 through v0.2.5 and v0.2.7 lightweight)
+   and are left exactly as they are, since `release.yml` matches `v*` either way.
    The tag carries the `v` prefix always: `release.yml` matches `v*`, and
    `npm/install.js` downloads from `releases/download/v${version}`, so a tag named
    `0.2.0` builds nothing and the npm package of that version can never install.
