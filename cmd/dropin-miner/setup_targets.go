@@ -1,0 +1,127 @@
+package main
+
+// setup's coding-agent step. It has its own selection path and calls the
+// agents planner directly: agentsMain's explicit resolver is host-only by
+// design (an integration must never be reachable through agents -client),
+// while setup -with names a target of either kind.
+//
+//	default            every host, filtered by Detect, and asked about
+//	-with <id> ...     exactly those targets, any kind, detection ignored,
+//	                   duplicates removed keeping the first occurrence
+//	-no-agents         no detection; -with still installs what it names
+
+import (
+	"fmt"
+	"strings"
+)
+
+// setupTargets resolves the run's selection. explicit is true when -with
+// named the targets: that naming is the participant's answer, so nothing is
+// asked about them.
+func setupTargets(ops agentOps, paths agentPaths, getenv func(string) string, with []string, noAgents bool) (selected []installTarget, explicit bool, err error) {
+	if len(with) > 0 {
+		resolved, err := targetsByIDs(with)
+		if err != nil {
+			return nil, true, err
+		}
+		seen := map[string]bool{}
+		for _, t := range resolved {
+			if seen[t.ID()] {
+				continue
+			}
+			seen[t.ID()] = true
+			selected = append(selected, t)
+		}
+		return selected, true, nil
+	}
+	if noAgents {
+		return nil, false, nil
+	}
+	for _, t := range targetsByKind(targetHost) {
+		if t.Detect(ops, paths, getenv) {
+			selected = append(selected, t)
+		}
+	}
+	return selected, false, nil
+}
+
+// joinLabels is "A", "A and B", "A, B and C".
+func joinLabels(ls []string) string {
+	switch len(ls) {
+	case 0:
+		return ""
+	case 1:
+		return ls[0]
+	}
+	return strings.Join(ls[:len(ls)-1], ", ") + " and " + ls[len(ls)-1]
+}
+
+// agentsParagraph says what answering yes writes, from the registry's own
+// labels, and claims nothing about earning: whether a search earns is the
+// mining decision's business, not the skill's.
+func agentsParagraph() string {
+	codex := codexTarget{}.Label()
+	return fmt.Sprintf(`Setup knows these coding agents: %s.
+Each can get a web-search skill that runs dropin-miner's search through the
+Twilight search router, and — where the agent supports one — the hook, plugin
+or extension that threads each search into the agent's session (an agent with
+no skill directory gets a plugin and a line to paste into its rules instead).
+These are written into the agent's own config directory. For %s it also
+widens the sandbox in its config.toml:
+network access on, and the tokendrop state directory — plus the intake,
+sessions and spool directories — made writable, never the config, the stored
+key or the wallet, so a search can record itself and the claim can resolve.
+Answering yes here accepts all of that.
+`, joinLabels(labels(targetsByKind(targetHost))), codex)
+}
+
+func (r *setupRun) agentsStep() {
+	r.say("Coding agents")
+	ops := r.d.agents
+	paths := ops.paths(r.d.getenv)
+	later := fmt.Sprintf("%s agents install -config %s", r.displayPath(r.exe), r.displayPath(r.cfgPath))
+
+	selected := r.targets
+	if !r.explicitTargets {
+		switch {
+		case r.noAgents:
+			r.printf("Left the agents alone (-no-agents). When you are ready:\n\n    %s\n", later)
+			return
+		case len(selected) == 0:
+			r.printf("No coding agent found on PATH (looked for: %s). When one is installed:\n\n    %s\n", targetIDs(targetHost), later)
+			return
+		case !r.d.interactive && !r.yes && !r.dry:
+			r.printf("Not an interactive shell — not touching any agent (pass -yes to set them up). When you are ready:\n\n    %s\n", later)
+			return
+		}
+	}
+
+	r.printf("%s\n", agentsParagraph())
+	entry := binEntry{command: r.exe, cfg: r.cfgPath}
+	plan := buildInstallPlan(ops, paths, selected, entry, r.d.getenv)
+	if r.explicitTargets {
+		r.printf("Setting up (named with -with): %s\n", strings.Join(labels(selected), ", "))
+	} else {
+		r.printf("Found on this machine: %s\n", strings.Join(labels(selected), ", "))
+	}
+	printPlan(&plan, ops.home, r.d.stdout)
+	if plan.empty() {
+		r.printf("  nothing to write: already set up\n")
+		return
+	}
+	if r.dry {
+		r.printf("(dry run) nothing was written\n")
+		return
+	}
+	if !r.explicitTargets && !r.ask("Set up the coding agents found on this machine now?") {
+		r.printf("Left the agents alone. When you change your mind: %s\n", later)
+		return
+	}
+	failures := commitPlan(ops, &plan, r.d.stdout, r.d.stderr)
+	if len(plan.writes) > failures || len(plan.removes) > 0 {
+		r.changed = true
+	}
+	if failures > 0 || len(plan.refused) > 0 {
+		r.printf("Some agent could not be set up; see above.\n")
+	}
+}

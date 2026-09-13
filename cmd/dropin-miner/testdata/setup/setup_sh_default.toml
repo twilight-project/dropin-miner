@@ -1,0 +1,20 @@
+[[provider]]
+name     = "search-router"
+upstream = "https://router-api.nyks.dev"   # the GATEWAY, not the verification API
+
+[platform]
+base_url       = "https://platform.nyks.dev"
+agents_api_url = "https://agents-v1.nyks.dev"
+
+[mining]
+as_url    = "https://rewards.nyks.dev"
+chain_id  = "twilight-testnet-1"
+slot_id   = 3
+# target_epoch deliberately unset — flush asks the AS which epoch to join.
+state_dir = "{{HOME}}/state"
+spool_dir = "{{HOME}}/spool"
+
+[miner]
+enabled      = true
+intake_dir   = "{{HOME}}/intake"
+sessions_dir = "{{HOME}}/sessions"
