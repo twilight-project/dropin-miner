@@ -2,21 +2,25 @@ package main
 
 // The pre-registry characterization: what agents.go's three host switches
 // (install, uninstall, status), its selection rule, `agents prefer` and
-// the top-level help text do today, captured before any of it moves into
-// targets.go. This file references nothing commit 2 introduces — no
-// installTarget, no targetKind, no registry of any kind — only
-// agentSurfaces and the switch-based functions that already exist. The
-// refactor that follows must reproduce every plan, every status line,
-// every rewritten skill and the rendered help byte-for-byte; this is the
-// baseline that is checked against.
+// the top-level help text did before the registry, captured so the
+// refactor onto targets.go can be checked against it byte-for-byte.
+//
+// This file's assertions, literals and expected values are frozen exactly
+// as they were characterized against the pre-registry code: the only
+// adaptation applied after the refactor is mechanical — agentSurfaces (a
+// struct with id/label fields) replaced by targetsByKind(targetHost)
+// ([]installTarget, ID()/Label() methods), surfaceByID replaced by a
+// local helper of the same shape over the registry, and the two
+// selectSurfaces call sites widened to pass the paths/getenv its Detect
+// calls now need. Nothing this file checks for changed.
 //
 // The goldens under testdata/ are read-only inputs to this file. There is
 // no flag that regenerates them: a future intentional behavior change
 // updates the fixture as a reviewed diff, the same as any other file in
 // the tree, never by re-running the test with a write switch.
 //
-// goldenHostIDs and goldenHostLabels are literals, not derived from
-// agentSurfaces: dropping or reordering a host must fail this file by
+// goldenHostIDs and goldenHostLabels are literals, not derived from the
+// registry: dropping or reordering a host must fail this file by
 // diverging from the literal, not by silently characterizing a different
 // set or sequence.
 
@@ -49,21 +53,41 @@ func containsFlat(s, want string) bool {
 	return strings.Contains(strings.Join(strings.Fields(s), " "), want)
 }
 
+// surfaceByID is the one named mechanical adaptation's companion: this
+// file's original characterization drove agentSurface's single-id lookup
+// throughout; agentSurface, surfaceByID and surfaceIDs are gone from
+// agents.go per A.2, deleted rather than kept as shims, so this local
+// helper of the same shape restores every one of those call sites without
+// touching them, over targetsByIDs instead of agentSurfaces.
+func surfaceByID(id string) (installTarget, bool) {
+	ts, err := targetsByIDs([]string{id})
+	if err != nil || len(ts) != 1 {
+		return nil, false
+	}
+	return ts[0], true
+}
+
 // requireGoldenSequence is the guard every characterization test in this
-// file starts with: the registry-to-be has exactly these six hosts, in
-// exactly this order, with exactly these labels. Every other test in this
-// file assumes that and would otherwise be characterizing hosts that no
-// longer match the literal it reports against.
+// file starts with: the registry has exactly these six hosts, in exactly
+// this order, with exactly these labels. Every other test in this file
+// assumes that and would otherwise be characterizing hosts that no longer
+// match the literal it reports against.
+//
+// This is the one named mechanical adaptation: agentSurfaces (deleted)
+// replaced by targetsByKind(targetHost), field access replaced by the
+// interface's ID()/Label() methods. The literal ids, labels and order it
+// checks against are unchanged.
 func requireGoldenSequence(t *testing.T) {
 	t.Helper()
-	if len(agentSurfaces) != len(goldenHostIDs) {
-		t.Fatalf("agentSurfaces has %d hosts, want the literal %d (%v): a host was added or removed",
-			len(agentSurfaces), len(goldenHostIDs), goldenHostIDs)
+	hosts := targetsByKind(targetHost)
+	if len(hosts) != len(goldenHostIDs) {
+		t.Fatalf("targetsByKind(targetHost) has %d hosts, want the literal %d (%v): a host was added or removed",
+			len(hosts), len(goldenHostIDs), goldenHostIDs)
 	}
-	for i, s := range agentSurfaces {
-		if s.id != goldenHostIDs[i] || s.label != goldenHostLabels[i] {
-			t.Fatalf("agentSurfaces[%d] = {%q,%q}, want {%q,%q} in this order",
-				i, s.id, s.label, goldenHostIDs[i], goldenHostLabels[i])
+	for i, h := range hosts {
+		if h.ID() != goldenHostIDs[i] || h.Label() != goldenHostLabels[i] {
+			t.Fatalf("targetsByKind(targetHost)[%d] = {%q,%q}, want {%q,%q} in this order",
+				i, h.ID(), h.Label(), goldenHostIDs[i], goldenHostLabels[i])
 		}
 	}
 }
@@ -170,7 +194,7 @@ func TestInstallPlanGoldenPerHost(t *testing.T) {
 			}
 			_, ops := newFakeMachine()
 			paths := ops.paths(noEnv)
-			plan := buildInstallPlan(ops, paths, []agentSurface{surface}, entry, noEnv)
+			plan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 			compareGoldenPlan(t, capturePlanForGolden(id, ops, entry, plan), filepath.Join("testdata", "agents", id+".install.golden"))
 		})
 	}
@@ -196,11 +220,11 @@ func TestUninstallPlanGoldenPerHost(t *testing.T) {
 			}
 			_, ops := newFakeMachine()
 			paths := ops.paths(noEnv)
-			installPlan := buildInstallPlan(ops, paths, []agentSurface{surface}, entry, noEnv)
+			installPlan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 			if failures := commitPlan(ops, &installPlan, io.Discard, io.Discard); failures != 0 {
 				t.Fatalf("committing the install %s's uninstall is characterized against: %d failures", id, failures)
 			}
-			plan := buildUninstallPlan(ops, paths, []agentSurface{surface}, entry)
+			plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry)
 			compareGoldenPlan(t, capturePlanForGolden(id, ops, entry, plan), filepath.Join("testdata", "agents", id+".uninstall.golden"))
 		})
 	}
@@ -334,7 +358,7 @@ func TestCodexSandboxPlanGolden(t *testing.T) {
 		entry := binEntry{command: goldenBin, cfg: cfgPath}
 		_, ops := newFakeMachine()
 		paths := ops.paths(noEnv)
-		plan := buildInstallPlan(ops, paths, []agentSurface{surface}, entry, noEnv)
+		plan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 		compareGoldenPlan(t, normalizeGoldenPlan(capturePlan(plan), home), filepath.Join("testdata", "agents", "codex-sandbox.install.golden"))
 	})
 
@@ -343,11 +367,11 @@ func TestCodexSandboxPlanGolden(t *testing.T) {
 		entry := binEntry{command: goldenBin, cfg: cfgPath}
 		_, ops := newFakeMachine()
 		paths := ops.paths(noEnv)
-		installPlan := buildInstallPlan(ops, paths, []agentSurface{surface}, entry, noEnv)
+		installPlan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 		if failures := commitPlan(ops, &installPlan, io.Discard, io.Discard); failures != 0 {
 			t.Fatalf("committing the sandboxed install: %d failures", failures)
 		}
-		plan := buildUninstallPlan(ops, paths, []agentSurface{surface}, entry)
+		plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry)
 		compareGoldenPlan(t, normalizeGoldenPlan(capturePlan(plan), home), filepath.Join("testdata", "agents", "codex-sandbox.uninstall.golden"))
 	})
 }
@@ -368,7 +392,7 @@ func statusOutputFor(t *testing.T, id string, install bool, remove func(agentPat
 		if !ok {
 			t.Fatalf("no agentSurface for %q", id)
 		}
-		plan := buildInstallPlan(ops, paths, []agentSurface{surface}, entry, noEnv)
+		plan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 		if failures := commitPlan(ops, &plan, io.Discard, io.Discard); failures != 0 {
 			t.Fatalf("install %s: %d failures", id, failures)
 		}
@@ -468,6 +492,11 @@ func TestAgentStatusExactStates(t *testing.T) {
 // builds its own resolver on the same foundation, so every corner of the
 // current behavior — not just the headline no-client/explicit-client
 // split — has to be pinned before either resolver replaces it.
+//
+// Every call site below passes paths and noEnv in addition to ops and the
+// client list: the mechanical widening selectSurfaces needs so its
+// Detect() calls have something to detect against. Nothing it asserts
+// changed.
 
 // TestSelectSurfacesSemantics pins the headline rule: no -client means the
 // detected hosts and nothing more; an explicit -client selects that host
@@ -475,23 +504,24 @@ func TestAgentStatusExactStates(t *testing.T) {
 // signal than a PATH probe.
 func TestSelectSurfacesSemantics(t *testing.T) {
 	_, ops := newFakeMachine("claude")
+	paths := ops.paths(noEnv)
 
-	selected, detected, err := selectSurfaces(ops, nil)
+	selected, detected, err := selectSurfaces(ops, paths, noEnv, nil)
 	if err != nil {
 		t.Fatalf("selectSurfaces(nil): %v", err)
 	}
-	if len(detected) != 1 || detected[0].id != "claude" {
+	if len(detected) != 1 || detected[0].ID() != "claude" {
 		t.Fatalf("detected = %v, want just claude", detected)
 	}
-	if len(selected) != 1 || selected[0].id != "claude" {
+	if len(selected) != 1 || selected[0].ID() != "claude" {
 		t.Fatalf("no -client should select exactly what was detected: %v", selected)
 	}
 
-	selected, _, err = selectSurfaces(ops, []string{"codex"})
+	selected, _, err = selectSurfaces(ops, paths, noEnv, []string{"codex"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([codex]): %v", err)
 	}
-	if len(selected) != 1 || selected[0].id != "codex" {
+	if len(selected) != 1 || selected[0].ID() != "codex" {
 		t.Fatalf("-client codex must select codex even though it is not on PATH: %v", selected)
 	}
 }
@@ -500,11 +530,12 @@ func TestSelectSurfacesSemantics(t *testing.T) {
 // applied to each -client value before it is looked up.
 func TestSelectSurfacesTrimsAndLowercasesAnExplicitID(t *testing.T) {
 	_, ops := newFakeMachine()
-	selected, _, err := selectSurfaces(ops, []string{" CoDeX "})
+	paths := ops.paths(noEnv)
+	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{" CoDeX "})
 	if err != nil {
 		t.Fatalf("selectSurfaces([\" CoDeX \"]): %v", err)
 	}
-	if len(selected) != 1 || selected[0].id != "codex" {
+	if len(selected) != 1 || selected[0].ID() != "codex" {
 		t.Fatalf("whitespace and case should be normalized away: %v", selected)
 	}
 }
@@ -515,11 +546,12 @@ func TestSelectSurfacesTrimsAndLowercasesAnExplicitID(t *testing.T) {
 // undocumented sort the caller never asked for.
 func TestSelectSurfacesPreservesExplicitArgumentOrder(t *testing.T) {
 	_, ops := newFakeMachine()
-	selected, _, err := selectSurfaces(ops, []string{"hermes", "claude"})
+	paths := ops.paths(noEnv)
+	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{"hermes", "claude"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([hermes, claude]): %v", err)
 	}
-	if len(selected) != 2 || selected[0].id != "hermes" || selected[1].id != "claude" {
+	if len(selected) != 2 || selected[0].ID() != "hermes" || selected[1].ID() != "claude" {
 		t.Fatalf("selected = %v, want [hermes claude] in that order", selected)
 	}
 }
@@ -530,11 +562,12 @@ func TestSelectSurfacesPreservesExplicitArgumentOrder(t *testing.T) {
 // depends on this one being frozen first.
 func TestSelectSurfacesUnknownIDErrorTextIsExact(t *testing.T) {
 	_, ops := newFakeMachine()
-	_, _, err := selectSurfaces(ops, []string{"nonesuch"})
+	paths := ops.paths(noEnv)
+	_, _, err := selectSurfaces(ops, paths, noEnv, []string{"nonesuch"})
 	if err == nil {
 		t.Fatal("selectSurfaces([nonesuch]): want an error")
 	}
-	want := fmt.Sprintf("unknown -client %q (%s)", "nonesuch", surfaceIDs())
+	want := fmt.Sprintf("unknown -client %q (%s)", "nonesuch", targetIDs(targetHost))
 	if err.Error() != want {
 		t.Errorf("error text:\n got  %q\n want %q", err.Error(), want)
 	}
@@ -547,11 +580,12 @@ func TestSelectSurfacesUnknownIDErrorTextIsExact(t *testing.T) {
 // silently change.
 func TestSelectSurfacesRepeatedIDIsNotDeduplicated(t *testing.T) {
 	_, ops := newFakeMachine()
-	selected, _, err := selectSurfaces(ops, []string{"claude", "claude"})
+	paths := ops.paths(noEnv)
+	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{"claude", "claude"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([claude, claude]): %v", err)
 	}
-	if len(selected) != 2 || selected[0].id != "claude" || selected[1].id != "claude" {
+	if len(selected) != 2 || selected[0].ID() != "claude" || selected[1].ID() != "claude" {
 		t.Fatalf("selected = %v, want [claude claude] (no dedup)", selected)
 	}
 }

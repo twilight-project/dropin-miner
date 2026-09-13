@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strings"
 )
 
 // version is set at release time via:
@@ -22,7 +23,44 @@ import (
 //	go build -ldflags "-X main.version=v1.2.3"
 var version = "dev"
 
-const usageText = `usage: dropin-miner <command> [flags]
+// usageText is rendered once, at init, from usageTemplate: the agents
+// section's host labels and -client ids come from targetsByKind(targetHost)
+// rather than being hand-typed a second time, so a host can never be
+// implemented and left out of top-level help the way usageText and
+// agentsUsage's -client list once could drift from each other independently.
+var usageText = renderUsageText()
+
+// hostLabelList and hostIDList reproduce the exact wrapping the hand-written
+// help text used for six hosts — a line break after the second entry — so
+// the registry-derived render is byte-identical to what came before it.
+// They are not a general word-wrapper: the wrap point is fixed, the way the
+// original hand-wrapped text was, and a host added or removed changes it
+// only by changing what is being wrapped, which is exactly the point.
+func hostLabelList(labels []string) string {
+	return labels[0] + ", " + labels[1] + ",\n             " +
+		strings.Join(labels[2:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
+}
+
+func hostIDList(ids []string) string {
+	return ids[0] + ", " + ids[1] + ",\n             " + strings.Join(ids[2:], ", ")
+}
+
+func renderUsageText() string {
+	hosts := targetsByKind(targetHost)
+	labels := make([]string, len(hosts))
+	ids := make([]string, len(hosts))
+	for i, h := range hosts {
+		labels[i] = h.Label()
+		ids[i] = h.ID()
+	}
+	r := strings.NewReplacer(
+		"{{HOST_LABELS}}", hostLabelList(labels),
+		"{{HOST_IDS}}", hostIDList(ids),
+	)
+	return r.Replace(usageTemplate)
+}
+
+const usageTemplate = `usage: dropin-miner <command> [flags]
 
 the tool (what an agent runs):
   search     one web search through the router, two forms: dropin-miner
@@ -34,11 +72,9 @@ the tool (what an agent runs):
              1m0s. Records the served request for mining and starts a
              flush. Exit: 0=valid search response, 1=transport/timeout/
              cancel, 2=usage, 3=HTTP 4xx, 4=HTTP 5xx or invalid server response.
-  agents     agents install|status|uninstall — find Claude Code, Codex,
-             Cursor, opencode, Pi and Hermes on this machine and give each
+  agents     agents install|status|uninstall — find {{HOST_LABELS}} on this machine and give each
              the search skill and the hooks it supports. -dry-run previews,
-             -yes skips the prompt, -client <name> picks one (claude, codex,
-             cursor, opencode, pi, hermes).
+             -yes skips the prompt, -client <name> picks one ({{HOST_IDS}}).
              agents prefer on|off — whether this search or the agent's own
              is the default (off keeps this one for when you name it);
              in the agent, /dropin-miner off and /dropin-miner on do the same

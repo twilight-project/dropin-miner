@@ -48,10 +48,10 @@ func TestTheConnectActionCoversTheWholeRegistrationWorkflow(t *testing.T) {
 func TestGuidanceDoesNotClaimConnectMeansNoRegistrationExists(t *testing.T) {
 	entry := guidanceEntry()
 	narrow := regexp.MustCompile(`(?i)connect[^.\n]{0,60}(no registration here at all|is not registered|never registered here)`)
-	for _, s := range agentSurfaces {
-		text := instructionTextFor(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		text := instructionTextFor(t, s.ID(), entry)
 		if m := narrow.FindString(text); m != "" {
-			t.Errorf("%s is told the narrow connect contract (%q):\n%s", s.label, m, text)
+			t.Errorf("%s is told the narrow connect contract (%q):\n%s", s.Label(), m, text)
 		}
 	}
 }
@@ -59,16 +59,16 @@ func TestGuidanceDoesNotClaimConnectMeansNoRegistrationExists(t *testing.T) {
 // And the 401 rule survives the broadening: it still maps to login.
 func TestGuidanceStillSendsA401ToLoginNotConnect(t *testing.T) {
 	entry := guidanceEntry()
-	for _, s := range agentSurfaces {
-		if s.id == "opencode" {
+	for _, s := range targetsByKind(targetHost) {
+		if s.ID() == "opencode" {
 			continue // the snippet is short by design; the skill carries the 401 rule
 		}
-		flat := strings.Join(strings.Fields(instructionTextFor(t, s.id, entry)), " ")
+		flat := strings.Join(strings.Fields(instructionTextFor(t, s.ID(), entry)), " ")
 		if !strings.Contains(flat, "401 maps to `login`") {
-			t.Errorf("%s is not told that a 401 maps to login:\n%s", s.label, flat)
+			t.Errorf("%s is not told that a 401 maps to login:\n%s", s.Label(), flat)
 		}
 		if !strings.Contains(flat, "does not mean this installation has never registered") {
-			t.Errorf("%s is not told that a 401 does not prove absence of registration", s.label)
+			t.Errorf("%s is not told that a 401 does not prove absence of registration", s.Label())
 		}
 	}
 	// The classifier agrees.

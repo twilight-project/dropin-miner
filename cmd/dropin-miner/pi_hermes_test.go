@@ -207,15 +207,15 @@ func TestAgentsPreferDoesNotCreateAMissingPiOrHermesSkill(t *testing.T) {
 func TestClientGuidanceNamesEverySurface(t *testing.T) {
 	_, ops := newFakeMachine()
 	_, _, errOut := runAgents(t, ops, nil, "install", "-client", "nonesuch", "-config", testCfg)
-	for _, s := range agentSurfaces {
-		if !strings.Contains(errOut, s.id) {
-			t.Errorf("the unknown -client error omits %q:\n%s", s.id, errOut)
+	for _, s := range targetsByKind(targetHost) {
+		if !strings.Contains(errOut, s.ID()) {
+			t.Errorf("the unknown -client error omits %q:\n%s", s.ID(), errOut)
 		}
-		if !strings.Contains(agentsUsage, s.id) {
-			t.Errorf("agents usage omits -client %q", s.id)
+		if !strings.Contains(agentsUsage, s.ID()) {
+			t.Errorf("agents usage omits -client %q", s.ID())
 		}
-		if !strings.Contains(usageText, s.label) && !strings.Contains(usageText, s.id) {
-			t.Errorf("dropin-miner help omits %q", s.label)
+		if !strings.Contains(usageText, s.Label()) && !strings.Contains(usageText, s.ID()) {
+			t.Errorf("dropin-miner help omits %q", s.Label())
 		}
 	}
 }

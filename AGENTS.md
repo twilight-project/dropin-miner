@@ -175,6 +175,9 @@ each line names the file that owns the rule and the test that proves it.
   creates no state it was only asked to diagnose; `doctor_recording_test.go` proves the probe's
   every failure stage is reported and that `recording` never turns a heuristic into a verdict
   of NO.
+- **The install registry** — `targets.go` owns the interface, the kinds, the views and the
+  slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
+  silently, and the structural test proves the public ID set.
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.

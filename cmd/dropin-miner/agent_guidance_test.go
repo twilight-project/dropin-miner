@@ -2,11 +2,11 @@ package main
 
 // What the six supported hosts are actually told.
 //
-// The list is read from agentSurfaces rather than written out here, so a
-// seventh host cannot be added without either giving it instruction text
-// or failing this file. That is the point: Pi and Hermes were the two that
-// arrived last, and a test that hardcoded the original four would have
-// passed while saying nothing about them.
+// The list is read from targetsByKind(targetHost) rather than written out
+// here, so a seventh host cannot be added without either giving it
+// instruction text or failing this file. That is the point: Pi and Hermes
+// were the two that arrived last, and a test that hardcoded the original
+// four would have passed while saying nothing about them.
 
 import (
 	"regexp"
@@ -24,7 +24,11 @@ func instructionTextFor(t *testing.T, surfaceID string, entry binEntry) string {
 	if surfaceID == "opencode" {
 		return rulesSnippet(entry)
 	}
-	return string(renderSkill(entry, preferOn, surfaceID))
+	note := ""
+	if surfaceID == "hermes" {
+		note = hermesApprovalNote
+	}
+	return string(renderSkill(entry, preferOn, note))
 }
 
 func guidanceEntry() binEntry {
@@ -33,24 +37,24 @@ func guidanceEntry() binEntry {
 
 func TestEverySupportedHostIsToldTheStructuredProtocol(t *testing.T) {
 	entry := guidanceEntry()
-	if len(agentSurfaces) != 6 {
-		t.Fatalf("the supported-surface table has %d entries; this test enumerates what each is told", len(agentSurfaces))
+	if len(targetsByKind(targetHost)) != 6 {
+		t.Fatalf("the supported-surface table has %d entries; this test enumerates what each is told", len(targetsByKind(targetHost)))
 	}
-	for _, s := range agentSurfaces {
-		t.Run(s.id, func(t *testing.T) {
-			text := instructionTextFor(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		t.Run(s.ID(), func(t *testing.T) {
+			text := instructionTextFor(t, s.ID(), entry)
 			if strings.TrimSpace(text) == "" {
-				t.Fatalf("%s receives no instruction text at all", s.label)
+				t.Fatalf("%s receives no instruction text at all", s.Label())
 			}
 			for _, want := range []string{"--stdin", `"version"`, "query"} {
 				if !strings.Contains(text, want) {
-					t.Errorf("%s is not told about %q:\n%s", s.label, want, text)
+					t.Errorf("%s is not told about %q:\n%s", s.Label(), want, text)
 				}
 			}
 			// The machine envelope, not prose, is what recovery comes from.
 			for _, want := range []string{"ok", "retryable", "action"} {
 				if !strings.Contains(text, want) {
-					t.Errorf("%s is not told to read %q from the envelope", s.label, want)
+					t.Errorf("%s is not told to read %q from the envelope", s.Label(), want)
 				}
 			}
 		})
@@ -71,11 +75,11 @@ func TestNoHostIsToldTheSupersededRules(t *testing.T) {
 		{"blanket no-fallback", `(?i)do not silently fall back`},
 		{"401 means never registered", `(?i)401[^.]{0,40}has not registered`},
 	}
-	for _, s := range agentSurfaces {
-		text := instructionTextFor(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		text := instructionTextFor(t, s.ID(), entry)
 		for _, f := range forbidden {
 			if regexp.MustCompile(f.pattern).MatchString(text) {
-				t.Errorf("%s is still told %q:\n%s", s.label, f.name, text)
+				t.Errorf("%s is still told %q:\n%s", s.Label(), f.name, text)
 			}
 		}
 	}
@@ -113,18 +117,18 @@ func taughtInvocation(t *testing.T, surfaceID string, entry binEntry) string {
 // there.
 func TestTheTaughtCommandIsTheStructuredOne(t *testing.T) {
 	entry := guidanceEntry()
-	for _, s := range agentSurfaces {
-		t.Run(s.id, func(t *testing.T) {
-			taught := taughtInvocation(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		t.Run(s.ID(), func(t *testing.T) {
+			taught := taughtInvocation(t, s.ID(), entry)
 			if !strings.Contains(taught, "--stdin") {
-				t.Errorf("%s is taught a command that is not the stdin protocol:\n%s", s.label, taught)
+				t.Errorf("%s is taught a command that is not the stdin protocol:\n%s", s.Label(), taught)
 			}
 			if strings.Contains(taught, "-format model") {
-				t.Errorf("%s is taught the argv model form as its command:\n%s", s.label, taught)
+				t.Errorf("%s is taught the argv model form as its command:\n%s", s.Label(), taught)
 			}
 			// And the request shape travels with the command.
 			if !strings.Contains(taught, `"version"`) || !strings.Contains(taught, `"query"`) {
-				t.Errorf("%s is not shown the v1 request alongside the command:\n%s", s.label, taught)
+				t.Errorf("%s is not shown the v1 request alongside the command:\n%s", s.Label(), taught)
 			}
 		})
 	}
@@ -132,16 +136,16 @@ func TestTheTaughtCommandIsTheStructuredOne(t *testing.T) {
 
 func TestTheStructuredPathIsTaughtBeforeTheHumanOne(t *testing.T) {
 	entry := guidanceEntry()
-	for _, s := range agentSurfaces {
-		t.Run(s.id, func(t *testing.T) {
-			text := instructionTextFor(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		t.Run(s.ID(), func(t *testing.T) {
+			text := instructionTextFor(t, s.ID(), entry)
 			stdinAt := strings.Index(text, "--stdin")
 			if stdinAt < 0 {
-				t.Fatalf("%s is never told about --stdin", s.label)
+				t.Fatalf("%s is never told about --stdin", s.Label())
 			}
 			if modelAt := strings.Index(text, "-format model"); modelAt >= 0 && modelAt < stdinAt {
 				t.Errorf("%s is shown -format model (at %d) before --stdin (at %d):\n%s",
-					s.label, modelAt, stdinAt, text)
+					s.Label(), modelAt, stdinAt, text)
 			}
 		})
 	}
@@ -153,18 +157,18 @@ func TestTheStructuredPathIsTaughtBeforeTheHumanOne(t *testing.T) {
 // against.
 func TestHostsAreToldSearchSuccessIsNotMiningCredit(t *testing.T) {
 	entry := guidanceEntry()
-	for _, s := range agentSurfaces {
-		t.Run(s.id, func(t *testing.T) {
-			text := instructionTextFor(t, s.id, entry)
+	for _, s := range targetsByKind(targetHost) {
+		t.Run(s.ID(), func(t *testing.T) {
+			text := instructionTextFor(t, s.ID(), entry)
 			lower := strings.ToLower(text)
 			if !strings.Contains(lower, "does not mean") && !strings.Contains(lower, "not mean anything was earned") {
-				t.Errorf("%s is not told that a successful search is not earnings:\n%s", s.label, text)
+				t.Errorf("%s is not told that a successful search is not earnings:\n%s", s.Label(), text)
 			}
 			if !strings.Contains(text, "mining") || !strings.Contains(text, "state") {
-				t.Errorf("%s is not pointed at the mining state:\n%s", s.label, text)
+				t.Errorf("%s is not pointed at the mining state:\n%s", s.Label(), text)
 			}
 			if regexp.MustCompile(`(?i)configured[^.\n]{0,30}mining is on`).MatchString(text) {
-				t.Errorf("%s is told that configured means mining is on:\n%s", s.label, text)
+				t.Errorf("%s is told that configured means mining is on:\n%s", s.Label(), text)
 			}
 		})
 	}
@@ -172,10 +176,10 @@ func TestHostsAreToldSearchSuccessIsNotMiningCredit(t *testing.T) {
 
 func TestHostsAreToldResultTextIsUntrusted(t *testing.T) {
 	entry := guidanceEntry()
-	for _, s := range agentSurfaces {
-		text := strings.ToLower(instructionTextFor(t, s.id, entry))
+	for _, s := range targetsByKind(targetHost) {
+		text := strings.ToLower(instructionTextFor(t, s.ID(), entry))
 		if !strings.Contains(text, "untrusted") {
-			t.Errorf("%s is not told that result text is untrusted web content", s.label)
+			t.Errorf("%s is not told that result text is untrusted web content", s.Label())
 		}
 	}
 }
@@ -201,13 +205,13 @@ func TestOnlyHermesCarriesTheHookApprovalNote(t *testing.T) {
 	if !strings.Contains(hermes, "does not authorize") {
 		t.Error("the Hermes note does not say the approval authorizes nothing")
 	}
-	for _, s := range agentSurfaces {
-		if s.id == "hermes" {
+	for _, s := range targetsByKind(targetHost) {
+		if s.ID() == "hermes" {
 			continue
 		}
-		text := instructionTextFor(t, s.id, entry)
+		text := instructionTextFor(t, s.ID(), entry)
 		if strings.Contains(text, "one-time approval prompt") || strings.Contains(text, "--accept-hooks") {
-			t.Errorf("%s carries Hermes' hook-approval note, which is not true of it:\n%s", s.label, text)
+			t.Errorf("%s carries Hermes' hook-approval note, which is not true of it:\n%s", s.Label(), text)
 		}
 	}
 }
