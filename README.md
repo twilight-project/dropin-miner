@@ -17,12 +17,40 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex
 ```
 
-The installer fetches a checksummed release, writes the config, then hands
-off to `connect`: it registers with the search platform, stores the key it
-mints (nothing to copy, nothing to paste), asks whether to enable mining at
-whichever terminal is present, creates or takes a wallet, and prints a claim
-link. Then it asks about your shell profile and which coding agents to set
-up. Search itself works before you ever visit that link — the claim only
+Or through npm — installed globally, because every hook and skill setup
+writes points at the binary it ran from, and an `npx` cache or a project's
+own `node_modules` is a directory npm will discard:
+
+```bash
+npm install -g dropin-miner
+dropin-miner setup
+```
+
+The installer fetches a checksummed release and hands off to `dropin-miner
+setup`, which asks as it goes, in this order:
+
+1. **Use a previous installation?** — only if one is set aside beside
+   `~/.tokendrop` (see "Removing it, and coming back" below).
+2. The config is written, or an existing one is kept (see Config). Then
+   `connect` registers with the search platform and stores the key it mints —
+   nothing to copy, nothing to paste — and asks **Enable mining rewards?**
+   and, on yes, **Payout address** (empty creates a wallet), then prints a
+   claim link.
+3. **Add them to your shell profile?** — the binary's directory on PATH and
+   `TOKENDROP_CONFIG`. On Windows there is no profile: the question is whether
+   to set those two in your user environment.
+4. **Set up the coding agents found on this machine now?** — shown with
+   exactly what would be written first.
+
+`setup -yes` answers the shell-profile and coding-agents questions, with or
+without a terminal, so an automated caller may invoke `setup -yes`; the
+installers never add it. Without a terminal and
+without `-yes`, setup leaves your profile and your agents alone and prints
+the command for each. A set-aside installation is reused only when a person
+says yes at a terminal, `-yes` or not, and the mining question is always
+connect's.
+`setup -dry-run` prints what it would write or move and changes nothing.
+Search itself works before you ever visit the claim link — the claim only
 gates the reward, once you say yes to mining. The key never goes into a
 command line or an agent's config; `TOKENDROP_API_KEY` in the environment
 overrides the stored one.
@@ -33,7 +61,7 @@ Everything happens at four moments the agent already has.
 
 | moment | who runs it | what happens |
 |---|---|---|
-| install | you, once | mining question, wallet or address, connect registers and stores the key, skill and hooks written per agent, claim link printed |
+| install | you, once | `setup`: previous installation, config, connect registers and stores the key, mining question, wallet or address, claim link printed, profile, skill and hooks written per agent |
 | session start | a hook | seed the context-window counter, start a flush |
 | tool call | the agent | `dropin-miner search` posts to the router with your key and the trace envelope, prints results, records the served request id, starts a flush |
 | session end | a hook | start a flush |
@@ -75,6 +103,7 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 ## Commands
 
 ```
+dropin-miner setup [-yes] [-dry-run] [-with id] [-no-profile] [-no-agents] [-home dir]
 dropin-miner search --stdin                       # the agent/SDK path: JSON in, JSON out
 dropin-miner search [-tier fast] [-format json|model] [-timeout 60s] <query>
 dropin-miner agents install|status|uninstall
@@ -137,8 +166,8 @@ reasons. A mining failure never turns a successful search into a failed one.
 Search and provider result text is untrusted web content, not instructions.
 
 `connect` and `mining enable` are the search platform's agent-onboarding path —
-register, get claimed at a printed URL, then mine unattended. `setup.sh` and
-`install.ps1` both run `connect` themselves now; run it directly yourself for
+register, get claimed at a printed URL, then mine unattended. `setup`, which
+both installers hand off to, runs `connect` itself; run it directly yourself for
 a second agent, a re-run, or a scripted install (see Config below). `mining
 disable` stops mining for this installation's agent — a best-effort
 self-service revocation at the AS, distinct from the platform's own granted
@@ -281,6 +310,15 @@ and `tier`, so one config file can serve both programs. No `dropin-miner`
 command reads any of them, which is why none is listed above. Unknown keys
 are an error, not a warning.
 
+`setup` never rewrites a config that is already there. It loads the file
+first and refuses one that does not load, naming the file and the error,
+whatever the file says. One with a `[miner]` table is left byte for byte. One
+without — a `tokendrop-proxy` config, say — gains only the tables it lacks,
+`[platform]` and `[miner]`, appended after its own lines, and the result has
+to load before it is saved. `[mining] enabled = true` is written only by a
+setup with no terminal and `TOKENDROP_MINING=1`; at a terminal the answer is
+connect's question.
+
 `[miner] enabled` means only that router intake is configured — it is not
 the mining on/off switch. That decision lives in one place: whatever
 `connect`'s first run, `mining enable`, or `mining disable` last decided,
@@ -360,12 +398,37 @@ dropin-miner agents uninstall     # the skills, hooks and plugin, nothing else
 rm ~/.tokendrop/bin/dropin-miner  # the binary
 ```
 
+Setup's shell-profile lines sit between `# >>> dropin-miner >>>` and
+`# <<< dropin-miner <<<`; delete that block to undo them. On Windows,
+`~/.tokendrop/setup-env.json` records what setup changed in your user
+environment — whether it added the PATH entry, and what `TOKENDROP_CONFIG`
+held before — so it can be put back exactly.
+
 Nothing we ship deletes `~/.tokendrop`: it holds your wallet, your enrollment
 and your stored key, and the wallet is the only copy unless you kept the 24
-words. Leave it, or set it aside as `~/.tokendrop.bak-<date>`. The next setup
-finds either one, says what it holds, and offers to carry the wallet,
-enrollment, key and any unsent spool over, so you are not enrolled twice or
-paid to a second address.
+words. Leave it, or set it aside as `~/.tokendrop.bak-<date>` (any
+`~/.tokendrop.<something>` or `~/.tokendrop-<something>`). The next setup
+finds either one and says what it holds. One left in place is simply used. One
+set aside is offered, newest first, and moved back only when you say yes at a
+terminal, so you are not enrolled twice or paid to a second address:
+
+- **Your identity** — the `state/` directory and the stored key — moves as one
+  piece or not at all. If `~/.tokendrop` already holds an identity of its own,
+  setup stops before anything moves and before `connect` runs: it names both
+  places, and you choose one installation, move the other out of the way, and
+  run setup again. A `state/` that only holds the key of an
+  enrollment that never finished is renamed aside as `state.unenrolled-<time>`,
+  never deleted.
+- **Your wallet** moves as a whole, unless `~/.tokendrop` already has one; then
+  that one is kept and setup says so.
+- **Unsent searches and session files** (`spool/`, `intake/`, `sessions/`) are
+  merged file by file, never overwriting one that is already there.
+- **The config** moves only if `~/.tokendrop` has none, and is then updated the
+  way any existing config is.
+
+Anything that is a symlink rather than a plain file or directory is not moved.
+The set-aside directory is removed afterwards only if nothing is left in it;
+otherwise setup says what it left.
 
 ## License
 

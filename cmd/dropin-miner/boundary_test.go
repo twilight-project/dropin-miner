@@ -205,3 +205,63 @@ func TestConnectAndMiningNeverImportOSExec(t *testing.T) {
 		t.Fatalf("checked %d files, want 2 (connect.go, mining.go) — this test is no longer looking at anything", checked)
 	}
 }
+
+// unsafeAllowed is the one file in the module that may import unsafe: setup's
+// Windows environment broadcast, which has to hand SendMessageTimeoutW the
+// address of a UTF-16 string and has no other way to form it. Anything else
+// that reaches for unsafe is a new exception, and belongs in review rather
+// than in a quiet import.
+const unsafeAllowed = "cmd/dropin-miner/setup_env_windows.go"
+
+// TestOnlyTheEnvironmentBroadcastImportsUnsafe walks every .go file in the
+// module — every package, every build tag, tests included, since the parser
+// reads files regardless of GOOS — and fails on any unsafe import outside
+// unsafeAllowed. It also fails if the allowed file stops importing it, so the
+// exception cannot outlive its reason unnoticed.
+func TestOnlyTheEnvironmentBroadcastImportsUnsafe(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	checked, allowedSeen := 0, false
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != root && (strings.HasPrefix(name, ".") || name == "testdata" || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		checked++
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		for _, imp := range file.Imports {
+			if imp.Path.Value != `"unsafe"` {
+				continue
+			}
+			if rel == unsafeAllowed {
+				allowedSeen = true
+				continue
+			}
+			t.Errorf("%s imports unsafe; the module admits it only in %s", rel, unsafeAllowed)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 100 {
+		t.Fatalf("walked only %d .go files under %s; the walk is not covering the module", checked, root)
+	}
+	if !allowedSeen {
+		t.Errorf("%s no longer imports unsafe: remove the exception from unsafeAllowed, AGENTS.md and pkg/auth/refreshlock_windows.go", unsafeAllowed)
+	}
+}

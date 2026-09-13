@@ -217,7 +217,8 @@ every ten seconds — and says so when it expires.
 
 **This Windows job does not run `scripts/install.ps1`.** It exercises the npm path on
 Windows: ZIP selection, checksum, unpack, and the `.exe` reporting its version. The
-`install.ps1` acceptance check below remains manual and separate.
+`install.ps1` download check below remains manual and separate; its setup hand-off and
+legacy branch run offline in `ci.yml`.
 
 ## When something fails
 
@@ -324,28 +325,46 @@ stays stale until someone notices.
 
 ## Manually verifying install.ps1
 
-Not covered by CI, and **not covered by the release workflow either**: `ci.yml`'s
-Windows runner does `go vet`/`go test`/`go build` only, and `release.yml`'s Windows
-smoke job installs the npm package, which is a different path. `install.ps1` downloads
-a real GitHub release over a real network call to `api.github.com`, not something worth
-building a CI stub for one script. `setup.sh`'s equivalent behavior (the config it
-writes, ending with a mining decision on file) has an automated test that actually runs
-it, `cmd/dropin-miner/installer_test.go`; `install.ps1` has no PowerShell equivalent
-yet.
+Half of `install.ps1` is now covered by CI and half is not, and the line between them
+is the network.
 
-After cutting a release, run it once by hand (a real Windows machine, or `pwsh`
-elsewhere — the script is plain PowerShell; the CIM processor-architecture query is its
-only genuinely Windows-only line):
+**Covered by CI.** `ci.yml`'s Windows runner runs the script itself, offline, through
+`TOKENDROP_INSTALL_BIN` (`cmd/dropin-miner/installer_bridge_test.go`). With the binary
+built from the tree it proves the script probes `setup -h`, hands off to
+`dropin-miner.exe setup`, and never runs its legacy config, PATH and connect blocks.
+With a stand-in whose `setup -h` exits 2 — what v0.2.8 and older answer — it proves the
+legacy blocks run instead. `install.sh` gets the same two runs on the POSIX runners,
+its legacy branch being the `setup.sh` shipped beside the binary. What setup itself
+writes is covered in-process by `cmd/dropin-miner/installer_test.go` on all three
+runners.
+
+**Not covered.** The part `TOKENDROP_INSTALL_BIN` skips: asking `api.github.com` for the
+latest release, downloading the ZIP and `checksums.txt`, verifying the checksum, and
+unpacking. That needs a real release over a real network, and `release.yml`'s Windows
+smoke job installs the npm package, which is a different path.
+
+**Until v0.3.0 is the latest release**, `install.ps1` on `main` downloads a binary with
+no `setup`, so what a participant actually runs is the legacy branch. The manual check
+therefore covers both: the download and the branch it lands in. After cutting a release,
+run it once by hand (a real Windows machine, or `pwsh` elsewhere — the CIM
+processor-architecture query is its only genuinely Windows-only line):
 
 1. `irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex`
    against a scratch `$env:TOKENDROP_HOME`.
-2. Confirm the checksum step actually ran: a deliberately wrong `checksums.txt`
-   should throw, not silently pass.
-3. Confirm the written `tokendrop.toml` has `[platform]`/`[mining]`/`[miner]`
-   blocks, and no unconditional `enabled = true` under `[mining]` unless
-   `TOKENDROP_MINING=1` was set with input redirected.
-4. Confirm `connect` actually ran: a claim URL printed, and
+2. Confirm the download, verify and unpack ran: `==> Latest release: vX.Y.Z -
+   downloading …` printed, and a deliberately wrong `checksums.txt` throws rather than
+   passing silently.
+3. Confirm which branch it took, and that it was the right one for that release. A
+   release with `setup`: setup's own narration (`Using binary:`, `Search context`,
+   `Setup complete.`) and none of `==> Wrote`, `==> Connecting` or `Installed and
+   connected.`. A release without it: those three legacy lines, a `tokendrop.toml` with
+   `[platform]`/`[mining]`/`[miner]` blocks, and no unconditional `enabled = true`
+   under `[mining]` unless `TOKENDROP_MINING=1` was set with input redirected.
+4. Either way, confirm `connect` actually ran: a claim URL printed, and
    `dropin-miner status` afterward showing the registration it made.
+
+Once v0.3.0 is the latest release, the legacy branch of both installers and
+`scripts/setup.sh` are removed together, and step 3 reduces to the setup branch.
 
 ## What this doesn't cover
 
@@ -365,7 +384,7 @@ Still outside the automation, deliberately:
 - **The version bump itself.** CI does not commit to this repository. The number belongs
   in a reviewed commit.
 - **Which commit gets released.** The whole design boundary.
-- **`install.ps1`**, above.
+- **`install.ps1`'s download, verify and unpack**, above.
 - **Pi and Hermes live-host smokes**, which need real hosts and are not release
   engineering.
 

@@ -168,6 +168,25 @@ each line names the file that owns the rule and the test that proves it.
   `hermes_hook.go` is Hermes' own, and sends less because its host payload carries less.
   `trace_boundaries_test.go`'s `TestEveryJSHostRendersTheSharedTraceSource` keeps the splice
   honest; `pi_extension_test.go` and `hermes_hook_test.go` guard the two adapters.
+- **Setup and the installers' bridge** — `setup.go` owns the order (binary, previous
+  installation, owner-only directories, adoption, config, connect, environment, agents) and
+  the rule that the mining question stays connect's: `-yes` never answers it, and
+  `[mining] enabled = true` is written only with no terminal and `TOKENDROP_MINING=1`.
+  `setup_adopt.go` owns what counts as an installation and adoption by bundle — the
+  identity (`state/` and `credentials.json`) moves whole or not at all, and a destination
+  identity is a typed conflict that stops setup non-zero before anything moves and before
+  connect runs (`TestSetupStopsOnAnIdentityConflictBeforeConnect`). `setup_config.go` owns TOML quoting and
+  the migration policy (parse first; `[miner]` present → byte-identical; otherwise append
+  only the missing tables and parse again). `setup_env.go` owns the one-well-formed-block
+  profile rule and the Windows `setup-env.json` delta journal, over backends in
+  `setup_env_unix.go` and `setup_env_windows.go`; `setup_targets.go` owns `-with`, which
+  reaches every target kind. `installer_test.go` drives setup in-process against a sandbox
+  and asserts the ownership set on every case, `TestSetupSecondRunIsANoOp` byte for byte;
+  `installer_bridge_test.go` runs `install.sh` and `install.ps1` down both branches of the
+  `setup -h` probe offline through `TOKENDROP_INSTALL_BIN`;
+  `TestSetupFilesNeverImportOSExec` keeps setup from running a process. The package's
+  `TestMain` (`testmain_test.go`) refuses to run any test unless `os.UserConfigDir()` and
+  the home directory resolve under a temporary test root.
 - **`doctor`'s probe** — `doctor.go` owns the one bounded local probe operation (it may create
   the intake directory, publishes at most one inert non-`.json` file there, then attempts
   cleanup — three filesystem operations, each reported separately, not "one write") and the
@@ -235,5 +254,9 @@ each line names the file that owns the rule and the test that proves it.
   upstream only when cutting a release, per `docs/RELEASING.md`. The older `merge <branch>:
   <phrase>` subject line described the hand-merged branches of the first ten PRs and is not what
   the history has looked like since.
+- `unsafe` is admitted in exactly one file, `cmd/dropin-miner/setup_env_windows.go`, where the
+  Windows environment broadcast must hand `SendMessageTimeoutW` a string's address;
+  `TestOnlyTheEnvironmentBroadcastImportsUnsafe` fails on any other import, so a second use is an
+  exception argued in review, never a quiet import.
 - Keep diffs scoped. **Don't copy a rule you can't explain** — an inherited rule without its argument is
   one the next person deletes.

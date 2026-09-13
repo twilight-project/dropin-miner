@@ -44,15 +44,38 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/twilight-project/dropin-miner/main/scripts/install.ps1 | iex
 ```
 
+Or, if you use npm, install it globally and run setup yourself:
+
+```bash
+npm install -g dropin-miner
+dropin-miner setup
+```
+
+Globally, not with `npx`: setup writes this binary's location into your agents'
+skills and hooks, and a copy npm keeps only for one `npx` run, or inside one
+project's `node_modules`, would disappear from under them. Setup refuses to run
+from either and says so.
+
 Setup asks, in order:
 
 | it asks | what to know |
 |---|---|
-| **Use the previous installation?** | Only if one is found in `~/.tokendrop` or set aside beside it. Yes keeps your wallet, registration and key; the questions below that they answer are then skipped. |
-| **Enable mining rewards?** | A bare Enter answers no — search still works either way. Yes asks the next question now; changing your mind later is `dropin-miner mining enable` (or `mining disable` to stop). |
-| **Wallet, or your own address?** | Only asked after yes above. The wallet prints its 24 words once. Have paper ready. |
-| **Add settings to your shell profile?** | Puts the binary on PATH and sets `TOKENDROP_CONFIG`. Saying no just means longer commands. |
-| **Set up the coding agents found here?** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
+| **Use it? [Y/n]** | Only if a previous installation is set aside beside `~/.tokendrop` (one inside `~/.tokendrop` is simply used). Setup first says where it is and what it holds. Yes brings back your wallet, registration and key; the questions below that they answer are then skipped. |
+| **Enable mining rewards? [y/N]** | A bare Enter answers no — search still works either way. Yes asks the next question now; changing your mind later is `dropin-miner mining enable` (or `mining disable` to stop). |
+| **Payout address (leave empty to create a wallet here):** | Only asked after yes above. Paste a `twilight1…` address you control, or leave it empty for a wallet: it prints its 24 words once. Have paper ready. |
+| **Add them to ~/.zshrc? [Y/n]** | (or `~/.bashrc`, whichever your shell reads). Puts the binary on PATH and sets `TOKENDROP_CONFIG`, in one marked block. Saying no just means longer commands. On Windows the question is **Set them for your user? [Y/n]**: the same two, in your user environment. |
+| **Set up the coding agents found on this machine now? [Y/n]** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
+
+`dropin-miner setup -yes` answers yes to **Add them to ~/.zshrc?** (on Windows,
+**Set them for your user?**) and **Set up the coding agents found on this
+machine now?**, whether or not there is a terminal, so a script or CI job that
+runs setup itself may pass it to set those up. The installers never add it:
+run through them, you answer at the terminal. Without `-yes` and without
+a terminal, setup leaves your profile and your agents alone and prints the
+command for each. `-yes` answers **Use it?** only at a terminal: a set-aside
+installation is never reused by a script. And it never answers **Enable mining
+rewards?**, which is always yours. `dropin-miner setup -dry-run` lists every file it would
+write or move and changes nothing.
 
 Then it prints a claim link and waits a few minutes for you to visit it. Not
 required right there and then: search already works, and revisiting the link
@@ -361,9 +384,30 @@ your agents and touches nothing else. Delete the binary if you like. Do not
 delete `~/.tokendrop` unless you mean to lose the wallet in it: if you made
 the wallet here, the 24 words you wrote down are the only other copy.
 
-Coming back later, run the installer again. It looks for `~/.tokendrop`, or
-a set-aside copy beside it (`~/.tokendrop.bak-<date>`, `~/.tokendrop.old`),
-tells you what it holds — the wallet's address, whether it is enrolled,
-whether a key is stored — and asks before using it. Saying yes carries the
-wallet, the enrollment, the key and any unsent spool over; the steps that
-would have made new ones are skipped. Saying no starts fresh beside it.
+Coming back later, run the installer again (or `dropin-miner setup`). It looks
+for `~/.tokendrop`, or a set-aside copy beside it (`~/.tokendrop.bak-<date>`,
+`~/.tokendrop.old`), tells you what it holds — the wallet's address, whether it
+is enrolled, whether a key is stored, any unsent searches — and asks before
+using a set-aside one. Saying no starts fresh beside it. Saying yes moves it
+back in pieces that belong together:
+
+- **Your registration and your stored key** travel as one. If `~/.tokendrop`
+  already has a registration of its own, setup stops right there — nothing is
+  moved and no new registration is made. It names both places; choose the one
+  you mean to keep, move the other out of the folder they share, and run setup
+  again. If
+  `~/.tokendrop` only has the half-made key of a setup that stopped early, that
+  is renamed aside (`state.unenrolled-<time>`), not deleted.
+- **Your wallet** moves whole, unless `~/.tokendrop` already has a wallet; then
+  that one stays and setup tells you.
+- **Unsent searches and session files** are merged in, one file at a time,
+  never replacing a file already there.
+- **Your config** moves only if `~/.tokendrop` has none.
+
+Nothing that is a symlink is moved. The set-aside folder is deleted afterwards
+only if it is empty; otherwise setup lists what it left in it.
+
+Setup's shell-profile lines are one block between `# >>> dropin-miner >>>` and
+`# <<< dropin-miner <<<` — delete the block to undo them. If the block has been
+edited so that it no longer has exactly one start and one end line, setup will
+not touch the file; it prints the lines to add by hand instead.

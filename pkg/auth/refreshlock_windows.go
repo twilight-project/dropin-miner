@@ -6,8 +6,9 @@ package auth
 //
 // The obvious call is LockFileEx, and it is deliberately not used. Its
 // lpOverlapped argument has to reach the kernel as a raw pointer, and
-// producing one in Go needs the unsafe package — banned outright in this
-// repository and enforced by the linter (AGENTS.md invariant 8). The
+// producing one in Go needs the unsafe package — admitted in exactly one file
+// in this module, setup's Windows environment broadcast, and guarded by
+// TestOnlyTheEnvironmentBroadcastImportsUnsafe. The
 // standard syscall package does not wrap LockFileEx, and the wrapper in
 // golang.org/x/sys/windows would be a new module dependency, which the
 // dependency budget admits only under an accepted ADR.

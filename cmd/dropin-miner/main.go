@@ -89,6 +89,15 @@ onboarding (one-time, per agent): register with the search platform, claim
 it at one URL, done. search works the moment connect stores the key,
 before the claim; mining (if granted) enrolls and declares a payout
 unattended once claimed.
+  setup      the installers run this: everything after the binary, asked as
+             it goes — reuse a previous installation, write or migrate the
+             config, connect, the shell profile (Windows: the user PATH and
+             TOKENDROP_CONFIG) and the coding agents found here.
+             -yes answers the profile and agents questions, terminal or not
+             -yes may come from automated callers; the installers never add it
+             -yes never answers the mining question or adopts without a terminal
+             -dry-run changes nothing
+             -with <id> sets up one target whether or not it was found
   connect    ask whether to mine, then register [-name …] (the answer hints
              the claim page's mining pre-tick); prints the claim URL and
              code and polls (bounded) until claimed. A second run resumes;
@@ -176,6 +185,8 @@ func dispatch(name string, args []string) int {
 		return cmdFlush(args, os.Stdout, os.Stderr, os.Getenv)
 	case "login":
 		return cmdLogin(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
+	case "setup":
+		return cmdSetup(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "connect":
 		return cmdConnect(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "mining":
