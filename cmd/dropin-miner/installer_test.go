@@ -205,6 +205,11 @@ type fakeUserEnv struct {
 
 func newFakeUserEnv() *fakeUserEnv { return &fakeUserEnv{values: map[string]string{}} }
 
+func (e *fakeUserEnv) Delete(name string) error {
+	delete(e.values, name)
+	return nil
+}
+
 func (e *fakeUserEnv) Get(name string) (string, bool, error) {
 	v, ok := e.values[name]
 	return v, ok, nil

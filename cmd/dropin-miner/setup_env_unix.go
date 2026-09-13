@@ -7,8 +7,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,37 +124,4 @@ func profileEnvLines(binDir, cfgPath, walletDir string) []string {
 		lines = append(lines, "export TOKENDROP_WALLET_DIR="+shellQuote(walletDir))
 	}
 	return lines
-}
-
-// profileTarget resolves the file an edit of path must actually replace.
-// A profile that is a symlink is edited through the link: the regular file
-// it points at is replaced in its own directory, and the link stays. A
-// target that is not a regular file is refused like malformed markers.
-func profileTarget(path string) (target string, existing []byte, mode fs.FileMode, err error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return path, nil, 0o644, nil
-	}
-	if err != nil {
-		return "", nil, 0, err
-	}
-	target = path
-	if info.Mode()&fs.ModeSymlink != 0 {
-		resolved, rerr := filepath.EvalSymlinks(path)
-		if rerr != nil {
-			return "", nil, 0, fmt.Errorf("it is a symlink whose target cannot be resolved: %w", rerr)
-		}
-		target = resolved
-		if info, err = os.Lstat(target); err != nil {
-			return "", nil, 0, err
-		}
-	}
-	if !info.Mode().IsRegular() {
-		return "", nil, 0, fmt.Errorf("%s is not a regular file", target)
-	}
-	data, err := os.ReadFile(target) // #nosec G304 -- the participant's own shell profile, chosen from $SHELL
-	if err != nil {
-		return "", nil, 0, err
-	}
-	return target, data, info.Mode().Perm(), nil
 }

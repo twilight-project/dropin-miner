@@ -208,36 +208,6 @@ var errNpmLaunch = errors.New("setup must run from a global npm install: npm ins
 // tell a global copy from one a project will discard.
 var errNpmDirect = errors.New("this is npm's copy of the binary, run directly; run the dropin-miner command npm installed, which tells setup how it was installed")
 
-// checkSetupLaunch decides whether this binary may be the one every hook and
-// skill is written to call. The npm launcher says where it was launched
-// from (DROPIN_MINER_LAUNCH=npm:<global|local|unknown>); a binary run any
-// other way leaves the variable unset. An ephemeral npm exec cache is refused
-// whatever the variable says, because its path is the proof; an unset
-// variable on a binary inside node_modules means the launcher was bypassed.
-func checkSetupLaunch(exe, launch string) error {
-	for _, seg := range strings.FieldsFunc(exe, func(c rune) bool { return c == '/' || c == '\\' }) {
-		switch strings.ToLower(seg) {
-		case "_npx", "_cacache", "npm-cache":
-			return fmt.Errorf("%w (this copy runs from npm's temporary cache, %s)", errNpmLaunch, exe)
-		}
-	}
-	if launch == "" {
-		for _, seg := range strings.FieldsFunc(exe, func(c rune) bool { return c == '/' || c == '\\' }) {
-			if strings.EqualFold(seg, "node_modules") {
-				return fmt.Errorf("%w (%s)", errNpmDirect, exe)
-			}
-		}
-	}
-	switch launch {
-	case "", "npm:global":
-		return nil
-	case "npm:local":
-		return fmt.Errorf("%w (this copy is a project-local node_modules install, %s)", errNpmLaunch, exe)
-	default:
-		return fmt.Errorf("%w (npm could not say where this copy is installed: %s)", errNpmLaunch, exe)
-	}
-}
-
 func setupMain(d setupDeps, args []string) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(d.stderr)

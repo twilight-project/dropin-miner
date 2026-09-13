@@ -208,6 +208,15 @@ each line names the file that owns the rule and the test that proves it.
   gate before it reads or writes anything; `TestSetupHoldsSetupLockThroughItsWholeRun` proves setup
   excludes a destructive operation until its closing message.
 
+- **Uninstall** — `cmd/dropin-miner/uninstall.go` owns the order (plan everything, confirm,
+  then integrations, environment, revocation, state, binary), what "this installation's" means
+  for a skill, hook or profile block, the purge set and its target guard, and the typed
+  confirmation `-yes` cannot supply; `setup_env.go` owns the profile-block removal and the
+  compare-and-revert of the Windows user environment; `ownership.go` owns the one npm/native
+  classifier setup, `uninstall -binary` and upgrade consult. `uninstall_test.go`'s
+  `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
+  and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
+
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
 - **A review's reproduction is a vulnerability *demo* (green when vulnerable), not a guard.** A guard

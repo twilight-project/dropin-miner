@@ -379,10 +379,24 @@ next step is nothing.
 
 ## Removing it, and coming back
 
-`dropin-miner agents uninstall` takes the skills, hooks and plugin out of
-your agents and touches nothing else. Delete the binary if you like. Do not
-delete `~/.tokendrop` unless you mean to lose the wallet in it: if you made
-the wallet here, the 24 words you wrote down are the only other copy.
+`dropin-miner uninstall` takes out what setup put on this machine: the skills,
+hooks and plugin in your agents that run this installation's binary, and the
+shell-profile block (on Windows, the user PATH entry and `TOKENDROP_CONFIG`,
+put back exactly as setup's record says, and only where they still hold what
+setup set). Your wallet, registration, stored key, unsent searches and config
+stay, nothing is revoked, and it tells you how to keep using them. Run it with
+`-dry-run` first to see the list. Installed with npm? `npm uninstall -g
+dropin-miner` removes the binary.
+
+`-binary` also deletes `~/.tokendrop/bin/dropin-miner` (not yet on Windows,
+which cannot delete a running program). `-purge-state` is the one that
+destroys things: the wallet, your registration and key, unsent searches and
+the config. It asks you, at a terminal, to type your wallet's address; `-yes`
+cannot answer it, and neither can a script without a terminal. It tries
+briefly to revoke this installation's authorization first and finishes either
+way, saying which. Your approval on the platform is revoked only at the
+console. If you made the wallet here, the 24 words you wrote down are the only
+other copy, so do not purge until you have them or have moved the funds.
 
 Coming back later, run the installer again (or `dropin-miner setup`). It looks
 for `~/.tokendrop`, or a set-aside copy beside it (`~/.tokendrop.bak-<date>`,
@@ -398,8 +412,10 @@ back in pieces that belong together:
   again. If
   `~/.tokendrop` only has the half-made key of a setup that stopped early, that
   is renamed aside (`state.unenrolled-<time>`), not deleted.
-- **Your wallet** moves whole, unless `~/.tokendrop` already has a wallet; then
-  that one stays and setup tells you.
+- **Your wallet** moves whole. If `~/.tokendrop` already has a wallet, it is an
+  installation already and is simply used; nothing set aside is offered. A
+  wallet folder there with no key in it, from a wallet that was never finished,
+  is renamed aside (`wallet.incomplete-<time>`), not deleted, and yours moves in.
 - **Unsent searches and session files** are merged in, one file at a time,
   never replacing a file already there.
 - **Your config** moves only if `~/.tokendrop` has none.

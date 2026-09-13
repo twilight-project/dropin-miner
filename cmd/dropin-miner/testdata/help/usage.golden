@@ -38,6 +38,15 @@ unattended once claimed.
              -yes never answers the mining question or adopts without a terminal
              -dry-run changes nothing
              -with <id> sets up one target whether or not it was found
+  uninstall  take out what setup put here for one installation (-home dir):
+             the agents' skills, hooks and plugins that run its binary, and
+             the shell-profile block (Windows: the user PATH entry and
+             TOKENDROP_CONFIG). The wallet, registration, stored key,
+             recorded searches and config stay; nothing is revoked.
+             -binary also removes the installation's own binary (an npm
+             copy is npm's to remove). -purge-state also destroys the
+             participant state after you type the wallet address at a
+             terminal; -yes never answers it. -dry-run changes nothing
   connect    ask whether to mine, then register [-name …] (the answer hints
              the claim page's mining pre-tick); prints the claim URL and
              code and polls (bounded) until claimed. A second run resumes;

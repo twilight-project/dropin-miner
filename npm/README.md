@@ -104,6 +104,7 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 
 ```
 dropin-miner setup [-yes] [-dry-run] [-with id] [-no-profile] [-no-agents] [-home dir]
+dropin-miner uninstall [-binary] [-purge-state] [-dry-run] [-yes] [-home dir]
 dropin-miner search --stdin                       # the agent/SDK path: JSON in, JSON out
 dropin-miner search [-tier fast] [-format json|model] [-timeout 60s] <query>
 dropin-miner agents install|status|uninstall
@@ -394,23 +395,59 @@ and the pot splits equally among everyone eligible.
 ## Removing it, and coming back
 
 ```
-dropin-miner agents uninstall     # the skills, hooks and plugin, nothing else
-rm ~/.tokendrop/bin/dropin-miner  # the binary
+dropin-miner uninstall -dry-run                  # what would be removed; changes nothing
+dropin-miner uninstall                           # integrations, profile block / user environment
+dropin-miner uninstall -binary                   # ...and this installation's own binary
+dropin-miner uninstall -purge-state              # ...and the wallet, identity, key, evidence, config
+npm uninstall -g dropin-miner                    # an npm install is npm's to remove
 ```
 
-Setup's shell-profile lines sit between `# >>> dropin-miner >>>` and
-`# <<< dropin-miner <<<`; delete that block to undo them. On Windows,
-`~/.tokendrop/setup-env.json` records what setup changed in your user
-environment — whether it added the PATH entry, and what `TOKENDROP_CONFIG`
-held before — so it can be put back exactly.
+`uninstall` takes out what setup put on this machine for one installation
+(`-home`, default `~/.tokendrop`): the coding agents' skills, hooks and plugins
+that run its binary, and the shell-profile block that names its config. On
+Windows it reverts the user `PATH` entry and `TOKENDROP_CONFIG` against
+`~/.tokendrop/setup-env.json`, the record of what setup changed: the `PATH`
+entry goes only if setup added it, and `TOKENDROP_CONFIG` goes back to what it
+held only while it still holds setup's value — one you changed since is yours
+and is left. Without that record nothing in the environment is guessed at; it
+prints what to remove by hand. Anything that runs another installation's
+binary, or a profile block naming another config, is left and reported. Your
+wallet, registration, stored key, recorded searches and config stay, and
+nothing is revoked; it ends by saying how to keep using them (`-config
+~/.tokendrop/tokendrop.toml`, or `dropin-miner setup` again). A bare `connect`
+afterwards would register this machine anew.
 
-Nothing we ship deletes `~/.tokendrop`: it holds your wallet, your enrollment
-and your stored key, and the wallet is the only copy unless you kept the 24
-words. Leave it, or set it aside as `~/.tokendrop.bak-<date>` (any
-`~/.tokendrop.<something>` or `~/.tokendrop-<something>`). The next setup
-finds either one and says what it holds. One left in place is simply used. One
-set aside is offered, newest first, and moved back only when you say yes at a
-terminal, so you are not enrolled twice or paid to a second address:
+`-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
+binary running and no package manager owns it; a copy npm installed is
+refused with the npm command to use instead. On Windows `-binary` is not
+available in this version, because Windows cannot delete a running executable.
+
+`-purge-state` is separate from `-binary` and destroys the participant state in
+the installation directory: the wallet, the identity and stored key, recorded
+searches, the config and preferences. It needs a terminal and asks you to type
+the wallet's address (or, with no wallet, the installation path); `-yes` never
+answers it. That guards against accidents, not against a program driving your
+terminal. Before removing anything it tries, for at most eight seconds, to
+revoke this installation's authorization at the rewards service; a purge still
+completes if that fails, and says so. The platform's grant is revoked only at
+the console. Directories your config points at outside the installation are
+left and listed. `~/.tokendrop.lifecycle.lock`, which only coordinates
+DropinMiner commands, is left behind and safe to delete. Close any open agent
+sessions first: searches and hooks are not paused, and one that runs
+afterwards can recreate an empty `intake/` or `sessions/`.
+
+While uninstall runs it holds a lock that setup, connect and flush wait for, so
+none of them starts underneath it. A plain uninstall refuses to start while
+setup is running; `-binary` and `-purge-state` also refuse while connect or
+flush is. Those are excluded for as long as uninstall holds their locks.
+
+The wallet in `~/.tokendrop` is the only copy unless you kept the 24 words.
+Instead of purging, you can set the directory aside as
+`~/.tokendrop.bak-<date>` (any `~/.tokendrop.<something>` or
+`~/.tokendrop-<something>`). The next setup finds it and says what it holds.
+One left in place is simply used. One set aside is offered, newest first, and
+moved back only when you say yes at a terminal, so you are not enrolled twice
+or paid to a second address:
 
 - **Your identity** — the `state/` directory and the stored key — moves as one
   piece or not at all. If `~/.tokendrop` already holds an identity of its own,
@@ -419,8 +456,11 @@ terminal, so you are not enrolled twice or paid to a second address:
   run setup again. A `state/` that only holds the key of an
   enrollment that never finished is renamed aside as `state.unenrolled-<time>`,
   never deleted.
-- **Your wallet** moves as a whole, unless `~/.tokendrop` already has one; then
-  that one is kept and setup says so.
+- **Your wallet** moves as a whole. A `~/.tokendrop` that already holds a
+  wallet is an installation in its own right: it is used as it is, and nothing
+  set aside is offered. A `wallet/` there with no wallet key in it — left by a
+  wallet that was never finished — is renamed aside as
+  `wallet.incomplete-<time>`, never deleted, and yours moves in.
 - **Unsent searches and session files** (`spool/`, `intake/`, `sessions/`) are
   merged file by file, never overwriting one that is already there.
 - **The config** moves only if `~/.tokendrop` has none, and is then updated the
