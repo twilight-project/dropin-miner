@@ -141,3 +141,13 @@ func checkSetupLaunch(exe, launch string) error {
 		return fmt.Errorf("%w (npm could not say where this copy is installed: %s)", errNpmLaunch, exe)
 	}
 }
+
+// checkUpgradeLaunch admits a native self-upgrade only for a native copy:
+// every npm kind, and an ambiguous layout, is the package manager's to
+// update, and the refusal says how.
+func checkUpgradeLaunch(exe, launch string) error {
+	if kind := classifyLaunch(exe, launch); kind != launchNative {
+		return errors.New(npmRemovalGuidance(kind, "upgrade"))
+	}
+	return nil
+}

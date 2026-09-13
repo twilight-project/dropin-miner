@@ -259,6 +259,38 @@ to republish. A released package that does not install is a defect to diagnose, 
 next release is the fix. The per-platform matrix does not fail fast, so the run tells you
 whether one operating system is broken or all three.
 
+## What installed updaters depend on
+
+From 0.3.0 a native installation can upgrade itself, and every copy that can do so
+carries its expectations of a release compiled in. A release that breaks one of them
+cannot be upgraded into by any installed updater, and no later release can fix that for
+the copies already out there. So these are contracts, and each has a test that fails in
+CI before a tag can break it.
+
+**The version command.** A release binary's `dropin-miner version` prints exactly
+`dropin-miner X.Y.Z` and a newline — the bare version, no `v`, nothing else — and writes
+nothing to stderr, under an environment with nothing of the participant's in it. The
+updater runs it on the downloaded candidate before installing anything, and it accepts
+nothing else. GoReleaser stamps it with `-X main.version={{.Version}}`, which is the bare
+version. `cmd/dropin-miner`'s `TestVersionOutputIsAReleaseCompatibilityContract` builds
+the binary that way and runs it through the updater's own validator, and checks
+`.goreleaser.yaml` still stamps the bare version.
+
+**The asset names.** The updater computes the archive name from the version and platform
+(`dropin-miner_X.Y.Z_<os>_<arch>.tar.gz`, `.zip` on Windows) and expects `checksums.txt`
+beside it, with a small checked-in function rather than GoReleaser's templates.
+`tools/releasecheck`'s `TestSelfUpdaterAssetNamesMatchGoReleaser` derives the whole matrix
+from `.goreleaser.yaml` and requires the two to agree, so changing the naming, the
+platforms, the archive format or the checksum file's name fails here first.
+
+**A stable, published release.** The updater takes GitHub's latest release, or exactly
+`vX.Y.Z` when asked, and refuses drafts, pre-releases and any tag that is not canonical
+`vX.Y.Z`. It downloads only from the canonical repository, following redirects only to
+GitHub's own hosts, under frozen bounds: 1 MiB of release metadata, 64 KiB of checksums,
+a 64 MiB archive, a 64 MiB executable and 128 MiB of total declared expansion. The v0.2.8
+archives are 7–8 MB. A release that approaches half of a bound is a question for review
+before it ships, not a reason to raise the bound.
+
 ## What this assumes about the repository
 
 Two settings live in GitHub's configuration, not in this repository's files. **This PR

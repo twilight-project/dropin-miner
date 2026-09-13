@@ -34,6 +34,18 @@ linters:
           deny:
             - pkg: github.com/twilight-project/dropin-miner/cmd/dropin-miner
               desc: "pkg/ must not import cmd/dropin-miner (AGENTS.md invariant 8): it is the shared protocol implementation, owned here and consumed elsewhere by import"
+        # AGENTS.md import boundaries: internal/selfupdate is the release fetcher and verifier. It
+        # never reaches the wrapper, and it holds no participant credential, so it imports neither
+        # the key and authorization store nor the platform client.
+        selfupdate-boundary:
+          files: ["**/internal/selfupdate/**"]
+          deny:
+            - pkg: github.com/twilight-project/dropin-miner/cmd/dropin-miner
+              desc: "internal/selfupdate must not import cmd/dropin-miner (AGENTS.md import boundaries)"
+            - pkg: github.com/twilight-project/dropin-miner/pkg/auth
+              desc: "internal/selfupdate holds no participant credential (AGENTS.md import boundaries)"
+            - pkg: github.com/twilight-project/dropin-miner/pkg/platform
+              desc: "internal/selfupdate holds no participant credential (AGENTS.md import boundaries)"
   exclusions:
     generated: lax
     presets:

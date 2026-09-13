@@ -61,7 +61,7 @@ govulncheck.
    than by code review.
 4. **Secrets never in argv.** stdin or owner-only (0600) files, never a flag. The one documented
    exception is the search *query* (not a credential), called out where it happens.
-5. **Never assemble or call an unadvertised URL.** Endpoints come from the discovery document; the
+5. **Never assemble or call an unadvertised operational URL.** Endpoints come from the discovery document; the
    AS origin is **configured, not discovered**; service-document endpoints are same-origin checked; an
    off-origin provider-authorization template is refused unless on the compiled `providerhosts`
    allowlist. `as_url`, `router_url`, `platform.base_url` and `platform.agents_api_url` are all
@@ -71,7 +71,10 @@ govulncheck.
    `platform.base_url` carries no credential — nothing is ever dialed there — it is the portal
    origin a printed `claim_url` is checked against (invariant 12); live testing found the real
    deployment splits the human portal and the machine API across two separate hosts, which the
-   original single-URL design missed.
+   original single-URL design missed. The sole exception is the self-updater: `internal/selfupdate`
+   contacts only the compiled-in canonical `twilight-project/dropin-miner` GitHub release origin,
+   carries no participant credential, follows only its bounded HTTPS GitHub redirect allowlist, and
+   no environment variable, config or flag may redirect that origin.
 6. **Strict for the AS wire, permissive for the provider response.** AS-facing types conform to the
    frozen, checksum-verified fixtures. The provider **response** shape is not frozen and is decoded
    permissively (no `DisallowUnknownFields`) on purpose — we own the AS contract, not the provider's
@@ -256,6 +259,14 @@ each line names the file that owns the rule and the test that proves it.
 - No package in the module graph reaches the chain application or the Cosmos/CometBFT SDK
   (invariant 9) — `TestNoChainImportsAnywhere`. `wallet_tx.go` hand-encodes the six protobuf
   messages a bank send needs instead.
+- `internal/selfupdate` ⊄ `cmd/`, `pkg/auth`, `pkg/platform`: the self-updater fetches public release
+  assets and holds no participant credential, so it reaches neither the wrapper nor the key and
+  authorization store nor the platform client — `TestSelfupdateImportsNoWrapperAndNoCredential` and
+  the `selfupdate-boundary` depguard rule. Its one HTTP client (`NewHTTPClient`) is invariant 3's
+  explicit choice: it follows a redirect only over HTTPS, at most five hops, and only to
+  `api.github.com`, `github.com`, `objects.githubusercontent.com` and
+  `release-assets.githubusercontent.com`; anything else is refused with advice to reinstall. The
+  release origin is compiled in and no environment variable redirects it.
 - State YOUR forbidden edges here and nowhere else. Don't import another repo's edges; a boundary with
   no argument you can state should not exist.
 
