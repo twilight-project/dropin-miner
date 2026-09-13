@@ -135,38 +135,6 @@ func realAgentOps() agentOps {
 	}
 }
 
-type agentSurface struct{ id, label, probe string }
-
-var agentSurfaces = []agentSurface{
-	{"claude", "Claude Code", "claude"},
-	{"codex", "Codex", "codex"},
-	{"cursor", "Cursor", "cursor"},
-	{"opencode", "opencode", "opencode"},
-	{"pi", "Pi", "pi"},
-	{"hermes", "Hermes", "hermes"},
-}
-
-func surfaceByID(id string) (agentSurface, bool) {
-	for _, s := range agentSurfaces {
-		if s.id == id {
-			return s, true
-		}
-	}
-	return agentSurface{}, false
-}
-
-// surfaceIDs is every -client value, in one place: help, the unknown-client
-// error and the nothing-detected line all read from the same list the
-// installer itself iterates, so a host can never be implemented and then
-// left out of the guidance that tells people it exists.
-func surfaceIDs() string {
-	ids := make([]string, 0, len(agentSurfaces))
-	for _, s := range agentSurfaces {
-		ids = append(ids, s.id)
-	}
-	return strings.Join(ids, ", ")
-}
-
 type agentPaths struct {
 	claudeSkill    string
 	claudeSettings string
@@ -349,7 +317,7 @@ var agentsUsage = `usage: dropin-miner agents install|status|uninstall [-config 
               when named; on: this one is the default. Rewrites the installed
               skills so it takes effect in every agent (/dropin-miner off|on in
               the agent does the same)
-  -client     act on this agent only (` + surfaceIDs() + `); repeatable
+  -client     act on this agent only (` + targetIDs(targetHost) + `); repeatable
   -dry-run    print the plan, change nothing
   -yes        do not ask before writing
 `
@@ -383,7 +351,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	paths := ops.paths(getenv)
-	selected, detected, err := selectSurfaces(ops, clients)
+	selected, detected, err := selectSurfaces(ops, paths, getenv, clients)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner agents:", err)
 		return exitUsage
@@ -408,7 +376,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 
 	fmt.Fprintf(stdout, "dropin-miner agents %s\n", sub)
 	if len(detected) == 0 && len(clients) == 0 {
-		fmt.Fprintf(stdout, "  no coding agent found on PATH (looked for: %s)\n", surfaceIDs())
+		fmt.Fprintf(stdout, "  no coding agent found on PATH (looked for: %s)\n", targetIDs(targetHost))
 	} else {
 		fmt.Fprintf(stdout, "  agents: %s\n", strings.Join(labels(selected), ", "))
 	}
@@ -511,24 +479,20 @@ func agentsPrefer(ops agentOps, args []string, stdout, stderr io.Writer, getenv 
 	// touched, and an agent with no skill gets none.
 	paths := ops.paths(getenv)
 	var p agentPlan
-	// Every host we install a skill for, not a subset: a participant who
-	// turns the default off and finds one agent still preferring this
-	// search has been told something untrue by the command that printed
-	// "in effect now". opencode is absent because it has no skill — its
-	// plugin carries no preference text — and creating one here would
-	// install a host the participant never asked for.
-	for _, sk := range []struct{ id, label, path string }{
-		{"claude", "Claude Code", paths.claudeSkill}, {"codex", "Codex", paths.codexSkill},
-		{"cursor", "Cursor", paths.cursorSkill},
-		{"pi", "Pi", paths.piSkill}, {"hermes", "Hermes", paths.hermesSkill},
-	} {
-		if _, err := ops.stat(sk.path); err != nil {
-			continue
+	// Every host that carries the preference capability, not a subset: a
+	// participant who turns the default off and finds one agent still
+	// preferring this search has been told something untrue by the command
+	// that printed "in effect now". opencode is absent because it does not
+	// satisfy preferenceTarget — it has no skill, so its plugin carries no
+	// preference text — and creating one here would install a host the
+	// participant never asked for. Each target decides for itself whether
+	// it is already installed and, if so, renders and writes its own skill
+	// (Hermes' approval note included), so a rewrite here can never drop a
+	// host-specific tail the install wrote.
+	for _, t := range targetsByKind(targetHost) {
+		if pt, ok := t.(preferenceTarget); ok {
+			pt.PlanPreference(ops, paths, entry, next, &p)
 		}
-		// Rendered with the surface's own id so a rewrite keeps the
-		// host-specific tail the install wrote, rather than quietly
-		// dropping Hermes' approval note on the next prefer toggle.
-		planWrite(ops, sk.label, sk.path, renderSkill(entry, next, sk.id), 0o600, "skill", &p)
 	}
 	if failures := commitPlan(ops, &p, io.Discard, stderr); failures > 0 {
 		return exitTransport
@@ -556,21 +520,18 @@ func refusedExit(p *agentPlan) int {
 	return exitOK
 }
 
-func selectSurfaces(ops agentOps, clients []string) (selected, detected []agentSurface, err error) {
-	for _, s := range agentSurfaces {
-		if _, e := ops.lookPath(s.probe); e == nil {
-			detected = append(detected, s)
+func selectSurfaces(ops agentOps, paths agentPaths, getenv func(string) string, clients []string) (selected, detected []installTarget, err error) {
+	for _, t := range targetsByKind(targetHost) {
+		if t.Detect(ops, paths, getenv) {
+			detected = append(detected, t)
 		}
 	}
 	if len(clients) == 0 {
 		return detected, detected, nil
 	}
-	for _, c := range clients {
-		s, ok := surfaceByID(strings.ToLower(strings.TrimSpace(c)))
-		if !ok {
-			return nil, detected, fmt.Errorf("unknown -client %q (%s)", c, surfaceIDs())
-		}
-		selected = append(selected, s)
+	selected, err = hostTargetsByIDs(clients)
+	if err != nil {
+		return nil, detected, err
 	}
 	return selected, detected, nil
 }
@@ -596,10 +557,10 @@ func resolveEntry(ops agentOps, cfgPath string, getenv func(string) string) (bin
 	return entry, "  (config: " + abs + ")", nil
 }
 
-func labels(ss []agentSurface) []string {
-	out := make([]string, 0, len(ss))
-	for _, s := range ss {
-		out = append(out, s.label)
+func labels(ts []installTarget) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Label())
 	}
 	return out
 }
@@ -638,16 +599,13 @@ records which session and tool call a search belonged to; every command still
 goes through Hermes' ordinary permission handling.
 `
 
-// hostNotes is the per-surface tail of the skill. Empty for every host
-// that has nothing host-specific to say, which is most of them.
-func hostNotes(surfaceID string) string {
-	if surfaceID == "hermes" {
-		return hermesApprovalNote
-	}
-	return ""
-}
-
-func renderSkill(entry binEntry, prefer, surfaceID string) []byte {
+// renderSkill takes the resolved host-specific tail as a parameter rather
+// than branching on which host it is: the caller — the target itself —
+// is the one thing that already knows whether it has one, and it is the
+// only thing that should. note is empty for every host that has nothing
+// host-specific to say, which is most of them; hermesTarget passes
+// hermesApprovalNote.
+func renderSkill(entry binEntry, prefer, note string) []byte {
 	desc, rules := descriptionOn, rulesOn
 	if prefer == preferOff {
 		desc, rules = descriptionOff, rulesOff
@@ -658,66 +616,15 @@ func renderSkill(entry binEntry, prefer, surfaceID string) []byte {
 		"{{PREFER}}", entry.preferCommand(),
 		"{{DESCRIPTION}}", desc,
 		"{{PREFER_RULES}}", rules,
-		"{{HOST_NOTES}}", hostNotes(surfaceID),
+		"{{HOST_NOTES}}", note,
 	)
 	return []byte(r.Replace(skillMD))
 }
 
-func buildInstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, entry binEntry, getenv func(string) string) agentPlan {
+func buildInstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry, getenv func(string) string) agentPlan {
 	var p agentPlan
-	prefer := readPrefer(ops, entry)
-	codexRoots := codexSandboxRoots(entry, getenv)
-	for _, s := range selected {
-		switch s.id {
-		case "claude":
-			changed := planWrite(ops, s.label, paths.claudeSkill, renderSkill(entry, prefer, "claude"), 0o600, "skill", &p)
-			if planHooksMerge(ops, s.label, paths.claudeSettings, &p, entry, claudeHooks(entry)) {
-				changed = true
-			}
-			if !changed {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-		case "codex":
-			if !planWrite(ops, s.label, paths.codexSkill, renderSkill(entry, prefer, "codex"), 0o600, "skill", &p) {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-			if len(codexRoots) > 0 {
-				planCodexSandbox(ops, s.label, paths.codexConfig, codexRoots, &p)
-			} else {
-				p.notes = append(p.notes, s.label+": shell commands run sandboxed; if searches record nothing, allow this command network access and let it write to your tokendrop home")
-			}
-		case "cursor":
-			changed := planWrite(ops, s.label, paths.cursorSkill, renderSkill(entry, prefer, "cursor"), 0o600, "skill", &p)
-			if planHooksMerge(ops, s.label, paths.cursorHooks, &p, entry, cursorHooks(entry)) {
-				changed = true
-			}
-			if !changed {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-		case "opencode":
-			js := renderAgentScript(opencodePluginJS)
-			if !planWrite(ops, s.label, paths.opencodePlugin, []byte(js), 0o600, "lineage plugin", &p) {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-			p.notes = append(p.notes, s.label+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
-		case "pi":
-			changed := planWrite(ops, s.label, paths.piSkill, renderSkill(entry, prefer, "pi"), 0o600, "skill", &p)
-			if planWrite(ops, s.label, paths.piExtension, []byte(renderAgentScript(piExtensionTS)), 0o600, "lineage extension", &p) {
-				changed = true
-			}
-			if !changed {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-		case "hermes":
-			changed := planWrite(ops, s.label, paths.hermesSkill, renderSkill(entry, prefer, "hermes"), 0o600, "skill", &p)
-			if planHermesHook(ops, s.label, paths.hermesConfig, entry, &p) {
-				changed = true
-			}
-			if !changed {
-				p.skipped = append(p.skipped, s.label+": already installed")
-			}
-			p.notes = append(p.notes, s.label+": takes effect next session; Hermes asks once to approve the hook the first time it fires — approve it, or launch with --accept-hooks. Its shell tool is in the terminal/coding toolsets.")
-		}
+	for _, t := range selected {
+		t.PlanInstall(ops, paths, entry, getenv, &p)
 	}
 	return p
 }
@@ -941,142 +848,40 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 
 // ── uninstall / status ──────────────────────────────────────────────────
 
-func buildUninstallPlan(ops agentOps, paths agentPaths, selected []agentSurface, entry binEntry) agentPlan {
+func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry) agentPlan {
 	var p agentPlan
-	for _, s := range selected {
-		removed := false
-		rm := func(path string) {
-			if _, err := ops.stat(path); err == nil {
-				p.removes = append(p.removes, path)
-				removed = true
-			}
-		}
-		switch s.id {
-		case "claude":
-			rm(filepath.Dir(paths.claudeSkill))
-			if planHooksRemove(ops, s.label, paths.claudeSettings, &p, entry.command, "hooks") {
-				removed = true
-			}
-		case "codex":
-			rm(filepath.Dir(paths.codexSkill))
-			if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
-				if next, had := removeMarkedBlock(existing); had {
-					planWrite(ops, s.label, paths.codexConfig, next, mode, "remove sandbox block", &p)
-					removed = true
-				}
-			}
-		case "cursor":
-			rm(filepath.Dir(paths.cursorSkill))
-			if planHooksRemove(ops, s.label, paths.cursorHooks, &p, entry.command, "hooks") {
-				removed = true
-			}
-		case "opencode":
-			rm(paths.opencodePlugin)
-		case "pi":
-			rm(filepath.Dir(paths.piSkill))
-			rm(paths.piExtension)
-		case "hermes":
-			rm(filepath.Dir(paths.hermesSkill))
-			if existing, mode, err := readWithMode(ops, paths.hermesConfig); err == nil && existing != nil {
-				if next, had := hermesRemoveBlock(existing); had {
-					planWrite(ops, s.label, paths.hermesConfig, next, mode, "remove lineage hook", &p)
-					removed = true
-				}
-			}
-		}
-		if !removed {
-			p.skipped = append(p.skipped, s.label+": not installed")
-		}
+	for _, t := range selected {
+		t.PlanUninstall(ops, paths, entry, &p)
 	}
 	return p
 }
 
-func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected []agentSurface, stdout io.Writer) {
+// Pi and Hermes each have two halves, and a half-installed host is the
+// state worth naming: the skill alone teaches the agent to run the search
+// but threads no lineage, and the extension or hook alone threads lineage
+// for a search the agent has no reason to run. Reporting either as simply
+// "installed" would answer the question the participant is actually
+// asking — why is this not working — with the word "installed". Each
+// target's own Status method decides this for itself; printAgentStatus
+// only renders what it returns.
+func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected []installTarget, stdout io.Writer) {
 	isDetected := map[string]bool{}
-	for _, s := range detected {
-		isDetected[s.id] = true
-	}
-	exists := func(path string) bool { _, err := ops.stat(path); return err == nil }
-	hooked := func(path string) bool {
-		b, _, err := readWithMode(ops, path)
-		if err != nil || b == nil {
-			return false
-		}
-		m, err := decodeJSONObject(b)
-		if err != nil {
-			return false
-		}
-		hooks, _ := m["hooks"].(map[string]any)
-		for _, v := range hooks {
-			if list, ok := v.([]any); ok {
-				for _, e := range list {
-					if entryIsOurs(e, entry.command) {
-						return true
-					}
-				}
-			}
-		}
-		return false
+	for _, t := range detected {
+		isDetected[t.ID()] = true
 	}
 	fmt.Fprintln(stdout, "dropin-miner agents status")
 	fmt.Fprintf(stdout, "  search default: %s\n", preferLabel(readPrefer(ops, entry)))
-	for _, s := range agentSurfaces {
+	for _, t := range targetsByKind(targetHost) {
+		st := t.Status(ops, paths, entry)
 		state := "not installed"
-		switch s.id {
-		case "claude":
-			switch {
-			case exists(paths.claudeSkill) && hooked(paths.claudeSettings):
-				state = "installed (skill+hooks)"
-			case exists(paths.claudeSkill):
-				state = "installed (skill only)"
-			}
-		case "codex":
-			if exists(paths.codexSkill) {
-				state = "installed (skill)"
-			}
-		case "cursor":
-			switch {
-			case exists(paths.cursorSkill) && hooked(paths.cursorHooks):
-				state = "installed (skill+hooks)"
-			case exists(paths.cursorSkill):
-				state = "installed (skill only)"
-			}
-		case "opencode":
-			if exists(paths.opencodePlugin) {
-				state = "installed (plugin)"
-			}
-		// Pi and Hermes each have two halves, and a half-installed host is
-		// the state worth naming: the skill alone teaches the agent to run
-		// the search but threads no lineage, and the extension or hook
-		// alone threads lineage for a search the agent has no reason to
-		// run. Reporting either as simply "installed" would answer the
-		// question the participant is actually asking — why is this not
-		// working — with the word "installed".
-		case "pi":
-			switch {
-			case exists(paths.piSkill) && exists(paths.piExtension):
-				state = "installed (skill+extension)"
-			case exists(paths.piSkill):
-				state = "installed (skill only)"
-			case exists(paths.piExtension):
-				state = "installed (extension only)"
-			}
-		case "hermes":
-			hooked := hermesHookInstalled(ops, paths.hermesConfig, entry)
-			switch {
-			case exists(paths.hermesSkill) && hooked:
-				state = "installed (skill+hook)"
-			case exists(paths.hermesSkill):
-				state = "installed (skill only)"
-			case hooked:
-				state = "installed (hook only)"
-			}
+		if st.installed {
+			state = "installed (" + st.detail + ")"
 		}
 		found := "not on PATH"
-		if isDetected[s.id] {
+		if isDetected[t.ID()] {
 			found = "on PATH"
 		}
-		fmt.Fprintf(stdout, "  %-12s %-12s %s\n", s.label, found, state)
+		fmt.Fprintf(stdout, "  %-12s %-12s %s\n", t.Label(), found, state)
 	}
 }
 

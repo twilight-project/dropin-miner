@@ -1,0 +1,12 @@
+usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
+       dropin-miner agents prefer on|off|status [-config file]
+  install     detect coding agents on PATH and give each the search skill and hooks
+  status      what is installed where, and which search is the default
+  uninstall   remove exactly what install wrote
+  prefer      off: the agent's own web search is the default and this one is used
+              when named; on: this one is the default. Rewrites the installed
+              skills so it takes effect in every agent (/dropin-miner off|on in
+              the agent does the same)
+  -client     act on this agent only (claude, codex, cursor, opencode, pi, hermes); repeatable
+  -dry-run    print the plan, change nothing
+  -yes        do not ask before writing

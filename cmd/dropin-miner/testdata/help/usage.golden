@@ -1,66 +1,4 @@
-// Command dropin-miner is the Twilight drop-in search miner.
-//
-// It is not a daemon, not a proxy, and not a tool server. It is one
-// binary that a coding agent runs to search the web through the Twilight
-// search router, plus the hooks that thread each search into the agent's
-// trajectory, plus a one-shot flush that does the mining-plane work the
-// proxy used to do on a ticker. Between tool calls nothing runs.
-//
-// The participant packages under pkg/ (identity, enrollment, join,
-// capability, spool, submit, wallet, wire) are the proxy's, copied with
-// their golden vectors; pkg/PROVENANCE names the commit.
-package main
-
-import (
-	"fmt"
-	"os"
-	"runtime/debug"
-	"strings"
-)
-
-// version is set at release time via:
-//
-//	go build -ldflags "-X main.version=v1.2.3"
-var version = "dev"
-
-// usageText is rendered once, at init, from usageTemplate: the agents
-// section's host labels and -client ids come from targetsByKind(targetHost)
-// rather than being hand-typed a second time, so a host can never be
-// implemented and left out of top-level help the way usageText and
-// agentsUsage's -client list once could drift from each other independently.
-var usageText = renderUsageText()
-
-// hostLabelList and hostIDList reproduce the exact wrapping the hand-written
-// help text used for six hosts — a line break after the second entry — so
-// the registry-derived render is byte-identical to what came before it.
-// They are not a general word-wrapper: the wrap point is fixed, the way the
-// original hand-wrapped text was, and a host added or removed changes it
-// only by changing what is being wrapped, which is exactly the point.
-func hostLabelList(labels []string) string {
-	return labels[0] + ", " + labels[1] + ",\n             " +
-		strings.Join(labels[2:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
-}
-
-func hostIDList(ids []string) string {
-	return ids[0] + ", " + ids[1] + ",\n             " + strings.Join(ids[2:], ", ")
-}
-
-func renderUsageText() string {
-	hosts := targetsByKind(targetHost)
-	labels := make([]string, len(hosts))
-	ids := make([]string, len(hosts))
-	for i, h := range hosts {
-		labels[i] = h.Label()
-		ids[i] = h.ID()
-	}
-	r := strings.NewReplacer(
-		"{{HOST_LABELS}}", hostLabelList(labels),
-		"{{HOST_IDS}}", hostIDList(ids),
-	)
-	return r.Replace(usageTemplate)
-}
-
-const usageTemplate = `usage: dropin-miner <command> [flags]
+usage: dropin-miner <command> [flags]
 
 the tool (what an agent runs):
   search     one web search through the router, two forms: dropin-miner
@@ -72,9 +10,11 @@ the tool (what an agent runs):
              1m0s. Records the served request for mining and starts a
              flush. Exit: 0=valid search response, 1=transport/timeout/
              cancel, 2=usage, 3=HTTP 4xx, 4=HTTP 5xx or invalid server response.
-  agents     agents install|status|uninstall — find {{HOST_LABELS}} on this machine and give each
+  agents     agents install|status|uninstall — find Claude Code, Codex,
+             Cursor, opencode, Pi and Hermes on this machine and give each
              the search skill and the hooks it supports. -dry-run previews,
-             -yes skips the prompt, -client <name> picks one ({{HOST_IDS}}).
+             -yes skips the prompt, -client <name> picks one (claude, codex,
+             cursor, opencode, pi, hermes).
              agents prefer on|off — whether this search or the agent's own
              is the default (off keeps this one for when you name it);
              in the agent, /dropin-miner off and /dropin-miner on do the same
@@ -154,84 +94,3 @@ the portal a printed claim URL is checked against and nothing dials
 actually send register/status/enroll (agents-v1.nyks.dev). Searches take
 your sr- key from TOKENDROP_API_KEY if it is set, else from the file
 login (or connect) wrote. Otherwise run connect or login to set up search.
-`
-
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usageText)
-		os.Exit(2)
-	}
-	os.Exit(dispatch(os.Args[1], os.Args[2:]))
-}
-
-func dispatch(name string, args []string) int {
-	switch name {
-	case "search":
-		return cmdSearch(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "agents":
-		return cmdAgents(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "hook":
-		return cmdHook(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "flush":
-		return cmdFlush(args, os.Stdout, os.Stderr, os.Getenv)
-	case "login":
-		return cmdLogin(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "connect":
-		return cmdConnect(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "mining":
-		return cmdMining(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "enroll":
-		return cmdEnroll(args)
-	case "join":
-		return cmdJoin(args)
-	case "provider":
-		return cmdProvider(args)
-	case "payout":
-		return cmdPayout(args)
-	case "wallet":
-		return cmdWallet(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
-	case "status":
-		return cmdStatus(args)
-	case "doctor":
-		return cmdDoctor(args, os.Stdout, os.Stderr)
-	case "earnings":
-		return cmdEarnings(args, os.Stdout, os.Stderr, os.Getenv)
-	case "version", "-version", "--version":
-		fmt.Fprintln(os.Stdout, "dropin-miner", buildVersion())
-		return 0
-	case "help", "-h", "--help":
-		fmt.Fprint(os.Stdout, usageText)
-		return 0
-	default:
-		fmt.Fprintf(os.Stderr, "dropin-miner: unknown command %q\n\n%s", name, usageText)
-		return 2
-	}
-}
-
-func buildVersion() string {
-	if version != "dev" {
-		return version
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return version
-	}
-	rev, dirty := "", ""
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			if s.Value == "true" {
-				dirty = "+dirty"
-			}
-		}
-	}
-	if rev == "" {
-		return version
-	}
-	if len(rev) > 12 {
-		rev = rev[:12]
-	}
-	return version + " (" + rev + dirty + ")"
-}

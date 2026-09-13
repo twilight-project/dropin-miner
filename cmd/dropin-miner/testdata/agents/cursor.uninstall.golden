@@ -1,0 +1,14 @@
+{
+  "writes": [
+    {
+      "surface": "Cursor",
+      "path": "/home/u/.cursor/hooks.json",
+      "mode": 384,
+      "why": "remove hooks",
+      "content": "{\n  \"hooks\": {},\n  \"version\": 1\n}\n"
+    }
+  ],
+  "removes": [
+    "/home/u/.cursor/skills/dropin-miner"
+  ]
+}
