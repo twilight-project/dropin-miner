@@ -14,6 +14,45 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// restoreUserEnvironmentAfter puts HKCU\Environment's named values back as
+// they were when the test started.
+func restoreUserEnvironmentAfter(t *testing.T, names ...string) {
+	t.Helper()
+	type saved struct {
+		value   string
+		typ     uint32
+		present bool
+	}
+	k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]saved{}
+	for _, n := range names {
+		v, typ, err := k.GetStringValue(n)
+		before[n] = saved{v, typ, err == nil}
+	}
+	_ = k.Close()
+	t.Cleanup(func() {
+		k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.SET_VALUE)
+		if err != nil {
+			t.Errorf("restore the user environment: %v", err)
+			return
+		}
+		defer k.Close()
+		for n, s := range before {
+			switch {
+			case !s.present:
+				_ = k.DeleteValue(n)
+			case s.typ == registry.EXPAND_SZ:
+				_ = k.SetExpandStringValue(n, s.value)
+			default:
+				_ = k.SetStringValue(n, s.value)
+			}
+		}
+	})
+}
+
 // The registry backend, against a scratch key rather than the real
 // Environment: values round-trip, a missing value is absent rather than an
 // error, and Path keeps (or is created with) REG_EXPAND_SZ.

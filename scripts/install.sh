@@ -7,8 +7,14 @@
 #   1. get a binary: the latest GitHub release for this OS/arch, checksum
 #      verified — or, while no release is tagged, a shallow clone built with
 #      the machine's Go
-#   2. hand off to scripts/setup.sh, which asks the questions: config,
-#      enrollment, payout address, join, shell profile, coding agents
+#   2. hand off to `dropin-miner setup`, which asks the questions: a previous
+#      installation, config, connect (registration, mining, wallet), shell
+#      profile, coding agents
+#
+# A binary from before setup moved into it (v0.2.8 and older) has no `setup`
+# command. The capability is probed, never assumed from a version: when
+# `<bin> setup -h` does not exit 0, the setup.sh that shipped in the same
+# release archive runs instead, exactly as it did before.
 #
 # It never uses sudo, writes only under $HOME (binary in ~/.tokendrop/bin,
 # source in ~/.tokendrop/src), and reattaches the terminal for setup's
@@ -18,6 +24,9 @@
 #   TOKENDROP_INSTALL_REF          branch/tag to clone when building (default main)
 #   TOKENDROP_INSTALL_REPO         repo URL
 #   TOKENDROP_INSTALL_NO_SETUP=1   stop after the binary; print the next command
+#   TOKENDROP_INSTALL_BIN=<path>   skip the download and use this binary (air-gapped
+#                                  installs, and the installer's own tests); a legacy
+#                                  binary's setup.sh is looked for beside it
 set -eu
 
 REPO="${TOKENDROP_INSTALL_REPO:-https://github.com/twilight-project/dropin-miner}"
@@ -41,8 +50,19 @@ case "$ARCH" in
 esac
 
 BIN=""
-TAG=$(curl -fsSL "$API" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
-if [ -n "$TAG" ]; then
+TAG=""
+if [ -n "${TOKENDROP_INSTALL_BIN:-}" ]; then
+  BIN="$TOKENDROP_INSTALL_BIN"
+  [ -x "$BIN" ] || die "TOKENDROP_INSTALL_BIN is not an executable file: $BIN"
+  say "Using $BIN (TOKENDROP_INSTALL_BIN; nothing downloaded)"
+  SETUP="$(dirname "$BIN")/dropin-miner-setup.sh"
+  [ -f "$SETUP" ] || SETUP="$(dirname "$BIN")/setup.sh"
+else
+  TAG=$(curl -fsSL "$API" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
+fi
+if [ -n "$BIN" ]; then
+  :
+elif [ -n "$TAG" ]; then
   say "Latest release: $TAG — downloading for ${OS}/${ARCH}"
   BASE="$REPO/releases/download/$TAG"
   NAME="dropin-miner_${TAG#v}_${OS}_${ARCH}.tar.gz"
@@ -77,9 +97,25 @@ else
   BIN="$BIN_DIR/dropin-miner"
   SETUP="$SRC_DIR/scripts/setup.sh"
 fi
-say "Installed $BIN"
+[ -n "${TOKENDROP_INSTALL_BIN:-}" ] || say "Installed $BIN"
 "$BIN" version || true
 
+# The capability contract: `setup -h` exits 0 on a binary that has setup.
+if "$BIN" setup -h >/dev/null 2>&1; then
+  if [ "${TOKENDROP_INSTALL_NO_SETUP:-0}" = 1 ]; then
+    printf '\nNext: %s setup\n' "$BIN"
+    exit 0
+  fi
+  # The pipe is not the terminal: give setup the real one for its questions.
+  if [ -t 1 ] && [ -r /dev/tty ]; then
+    "$BIN" setup < /dev/tty
+  else
+    "$BIN" setup
+  fi
+  exit $?
+fi
+
+# A binary without setup: the setup.sh that shipped with it.
 if [ "${TOKENDROP_INSTALL_NO_SETUP:-0}" = 1 ]; then
   printf '\nNext: TOKENDROP_BIN=%s sh %s\n' "$BIN" "$SETUP"
   exit 0
