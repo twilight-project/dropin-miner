@@ -220,6 +220,17 @@ each line names the file that owns the rule and the test that proves it.
   `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
   and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
 
+- **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
+  a durable same-directory copy, the candidate renamed over the binary, the canonical path run and
+  validated, and only then the copy committed as `.previous`; on Windows the probed sequence
+  (binary aside, candidate in, validate, aside replaces `.previous`) with `previous_in_use` when a
+  process still runs `.previous`. `rollback.go` owns restoring a validated copy of `.previous`
+  with no network. `cmd/dropin-miner/upgrade_locks.go` owns the gate, `setup.lock` and
+  `<binary>.update.lock` an upgrade holds. `replace_test.go`'s
+  `TestAFailedSecondUpgradeLeavesPreviousByteIdentical` and `acceptance_test.go`'s
+  `TestReplacementAcceptanceWithTheRunningImage` (real processes, on every CI runner including
+  Windows arm64) guard them.
+
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
 - **A review's reproduction is a vulnerability *demo* (green when vulnerable), not a guard.** A guard

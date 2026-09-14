@@ -44,7 +44,7 @@ func ResolveExecutable(path string) (string, error) {
 func StageCandidate(executable string, binary []byte) (string, error) {
 	dir := filepath.Dir(executable)
 	mode := os.FileMode(0o755)
-	if info, err := os.Stat(executable); err == nil && info.Mode().Perm()&0o100 != 0 {
+	if info, err := os.Stat(executable); err == nil && info.Mode().Perm()&0o100 != 0 { // #nosec G703 -- the resolved installed binary
 		mode = info.Mode().Perm()
 	}
 	f, err := os.CreateTemp(dir, ".dropin-miner.candidate-*"+filepath.Ext(executable))
@@ -56,7 +56,7 @@ func StageCandidate(executable string, binary []byte) (string, error) {
 	defer func() {
 		if !keep {
 			_ = f.Close()
-			_ = os.Remove(name)
+			_ = os.Remove(name) // #nosec G703 -- a temporary file this function created beside it
 		}
 	}()
 	if err := f.Chmod(mode); err != nil && runtime.GOOS != "windows" {
@@ -90,7 +90,7 @@ type CommandRunner interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, path string, args, env []string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- a verified staged candidate, one fixed argument
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 G702 -- a verified staged candidate, one fixed argument
 	cmd.Env = env
 	cmd.Stdin = nil
 	// A child that leaves a grandchild holding its pipes must not outlive

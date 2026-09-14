@@ -14,6 +14,11 @@ type Updater struct {
 	Runner   CommandRunner   // nil: ExecRunner
 	GOOS     string
 	GOARCH   string
+
+	// Tests only: the replacement's failure points, and which platform's
+	// sequence to run. Nil means the real operations and runtime.GOOS.
+	ops     *replaceOps
+	windows *bool
 }
 
 // Prepared is a verified candidate staged beside the installed binary, or,
@@ -26,10 +31,21 @@ type Prepared struct {
 	Candidate  string // the staged, validated candidate; "" with NoChange
 }
 
-// Discard removes the staged candidate. It never touches the installed
-// binary.
+// Discard removes the staged candidate before any replacement was
+// attempted. It never touches the installed binary.
 func (p Prepared) Discard() {
 	if p.Candidate != "" {
+		_ = os.Remove(p.Candidate)
+	}
+}
+
+// DiscardAfterInstall is the only cleanup for staging material once Install
+// has run: it removes the candidate unless installErr names that path as one
+// that survives — a recovery moved the new binary back out to it — so a copy
+// the participant is told to find is never deleted. After a successful
+// Install the candidate name no longer exists and there is nothing to remove.
+func (p Prepared) DiscardAfterInstall(installErr error) {
+	if p.Candidate != "" && !errorPreservesPath(installErr, p.Candidate) {
 		_ = os.Remove(p.Candidate)
 	}
 }

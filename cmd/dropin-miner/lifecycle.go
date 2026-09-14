@@ -20,6 +20,7 @@ package main
 // Lock order, everywhere, with no exceptions:
 //
 //	H.lifecycle.lock → setup.lock → connect.lock → flush.lock
+//	H.lifecycle.lock → setup.lock → <resolved binary>.update.lock   (upgrade)
 //
 // A process never takes an earlier lock while holding a later one. Setup's
 // in-process connect runs under setup's admission and does not take the gate
