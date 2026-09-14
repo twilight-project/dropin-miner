@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/internal/selfupdate"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -695,16 +696,178 @@ func TestUninstallBinaryRefusesACopyItDoesNotOwn(t *testing.T) {
 	}
 }
 
-func TestUninstallBinaryOnWindowsIsATypedRefusal(t *testing.T) {
-	s := installed(t)
-	before := snapshotTree(t, s.root)
-	d, _, errOut := s.uninstallDeps(nil, false, &revokeRecorder{})
-	d.windows = true
-	if code := uninstallMain(d, []string{"-yes", "-binary"}); code != exitUsage || !strings.Contains(errOut.String(), errBinaryNotYetOnWindows.Error()) {
-		t.Errorf("uninstall -binary on Windows refuses with its typed error: exit %d, %q", code, errOut.String())
+// withOwnBinaryAndLeftovers is a set-up installation whose binary is H's own
+// copy, with a .previous, the updater's staging leftovers and a file that is
+// not DropinMiner's beside it.
+func withOwnBinaryAndLeftovers(t *testing.T, binaryName string) (s *setupSandbox, unrelated string, leftovers []string) {
+	t.Helper()
+	s = newSetupSandbox(t)
+	s.exe = filepath.Join(s.home, "bin", binaryName)
+	writeFileT(t, s.exe, "the binary")
+	if code, out, errOut := s.run(nil, false, "-yes"); code != exitOK {
+		t.Fatalf("setup exited %d\n%s\n%s", code, out, errOut)
 	}
-	if !reflect.DeepEqual(before, snapshotTree(t, s.root)) {
-		t.Error("the Windows -binary refusal must change nothing")
+	bin := filepath.Dir(s.exe)
+	writeFileT(t, s.exe+".previous", "the previous binary")
+	for _, name := range []string{".dropin-miner.candidate-123", ".dropin-miner.snapshot-456", ".dropin-miner.displaced-789"} {
+		leftovers = append(leftovers, filepath.Join(bin, name))
+		writeFileT(t, filepath.Join(bin, name), "staging")
+	}
+	unrelated = filepath.Join(bin, "not-dropin-miners.txt")
+	writeFileT(t, unrelated, "someone else's file")
+	writeWalletFixture(t, filepath.Join(s.home, "wallet"))
+	return s, unrelated, leftovers
+}
+
+// removedAfter reports whether out says first was removed or moved aside
+// before second was removed.
+func removedAfter(out, first, second string) bool {
+	i := strings.Index(out, "removed "+first+"\n")
+	if j := strings.Index(out, "moved "+first+" aside"); i < 0 {
+		i = j
+	}
+	k := strings.Index(out, "removed "+second+"\n")
+	return i >= 0 && k > i
+}
+
+func TestUninstallBinaryRemovesPreviousAndStagingLeftoversButNothingElse(t *testing.T) {
+	posixOnly(t)
+	s, unrelated, leftovers := withOwnBinaryAndLeftovers(t, "dropin-miner")
+	walletBefore := snapshotTree(t, filepath.Join(s.home, "wallet"))
+	resolved, err := selfupdate.ResolveExecutable(s.exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := resolved + updateLockSuffix
+	code, out, errOut := s.uninstall(t, nil, false, nil, "-yes", "-binary")
+	if code != exitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	if lexists(lock) || !removedAfter(out, s.exe, lock) {
+		t.Errorf("the update lock goes only after the binary has left its path:\n%s", out)
+	}
+	for _, p := range append(leftovers, s.exe, s.exe+".previous") {
+		if lexists(p) {
+			t.Errorf("-binary left %s", p)
+		}
+	}
+	if !lexists(unrelated) {
+		t.Error("-binary must not remove anything in the directory that is not DropinMiner's")
+	}
+	if !reflect.DeepEqual(walletBefore, snapshotTree(t, filepath.Join(s.home, "wallet"))) {
+		t.Error("-binary must not touch participant state")
+	}
+}
+
+func TestUninstallBinaryOnWindowsMovesTheRunningBinaryAside(t *testing.T) {
+	s, unrelated, leftovers := withOwnBinaryAndLeftovers(t, "dropin-miner.exe")
+	walletBefore := snapshotTree(t, filepath.Join(s.home, "wallet"))
+	d, out, errOut := s.uninstallDeps(nil, false, &revokeRecorder{})
+	d.windows = true
+	if code := uninstallMain(d, []string{"-yes", "-binary"}); code != exitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, out.String(), errOut.String())
+	}
+	if lexists(s.exe) {
+		t.Error("the owned binary must be out of its name")
+	}
+	var aside string
+	entries, _ := os.ReadDir(filepath.Dir(s.exe))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".dropin-miner.displaced-") {
+			aside = filepath.Join(filepath.Dir(s.exe), e.Name())
+		}
+	}
+	if aside == "" {
+		t.Fatalf("the binary was not moved aside: %v", entries)
+	}
+	if b, _ := os.ReadFile(aside); string(b) != "the binary" { // #nosec G304 -- sandbox path
+		t.Errorf("the moved-aside file must be the binary, holds %q", b)
+	}
+	if !strings.Contains(out.String(), "moved "+s.exe+" aside to "+aside) || !strings.Contains(out.String(), "Left behind") ||
+		strings.Contains(out.String(), "removed "+s.exe+"\n") {
+		t.Errorf("the residual path must be reported honestly, never as removed:\n%s", out.String())
+	}
+	for _, p := range append(leftovers, s.exe+".previous") {
+		if lexists(p) {
+			t.Errorf("-binary left %s", p)
+		}
+	}
+	if !lexists(unrelated) || !reflect.DeepEqual(walletBefore, snapshotTree(t, filepath.Join(s.home, "wallet"))) {
+		t.Error("-binary on Windows touches nothing else: the unrelated file and participant state stay")
+	}
+	resolvedDir, _ := filepath.EvalSymlinks(filepath.Dir(s.exe))
+	lock := filepath.Join(resolvedDir, filepath.Base(s.exe)) + updateLockSuffix
+	if lexists(lock) || !removedAfter(out.String(), s.exe, lock) {
+		t.Errorf("the update lock goes only after the binary was moved out of its path:\n%s", out.String())
+	}
+}
+
+// When the binary cannot leave its path, its update lock stays too.
+func TestUninstallBinaryLeavesTheUpdateLockWhenTheBinaryStays(t *testing.T) {
+	posixOnly(t)
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions are not enforced for root")
+	}
+	s, _, _ := withOwnBinaryAndLeftovers(t, "dropin-miner")
+	resolved, err := selfupdate.ResolveExecutable(s.exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := resolved + updateLockSuffix
+	writeFileT(t, lock, "")
+	bin := filepath.Dir(s.exe)
+	if err := os.Chmod(bin, 0o500); err != nil { // #nosec G302 -- a deliberately unwritable fixture directory
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(bin, 0o700) }() // #nosec G302 -- restore for cleanup
+	code, out, _ := s.uninstall(t, nil, false, nil, "-yes", "-binary")
+	if code == exitOK {
+		t.Errorf("a binary that could not be removed is a failure:\n%s", out)
+	}
+	if !lexists(s.exe) || !lexists(lock) {
+		t.Errorf("the binary stayed, so its update lock must stay: binary %v, lock %v", lexists(s.exe), lexists(lock))
+	}
+	// The directory is unwritable, so the lock file would survive a removal
+	// attempt too; the report line is the proof the lock was kept on purpose.
+	if !strings.Contains(out, "left "+lock+": the binary is still at "+s.exe) {
+		t.Errorf("the kept lock must be reported as kept:\n%s", out)
+	}
+}
+
+func TestUninstallBinaryRefusesAnUpgradeOfTheSameBinaryBeforeChangingAnything(t *testing.T) {
+	name := "dropin-miner"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	s := newSetupSandbox(t)
+	s.exe = filepath.Join(s.home, "bin", name)
+	writeFileT(t, s.exe, "the binary")
+	if code, out, errOut := s.run(nil, false, "-yes", "-with", "claude", "-with", "codex"); code != exitOK {
+		t.Fatalf("setup exited %d\n%s\n%s", code, out, errOut)
+	}
+	writeFileT(t, s.exe+".previous", "the previous binary")
+	for _, leftover := range []string{".dropin-miner.candidate-1", ".dropin-miner.snapshot-2", ".dropin-miner.displaced-3"} {
+		writeFileT(t, filepath.Join(filepath.Dir(s.exe), leftover), "an upgrade's staging")
+	}
+	writeWalletFixture(t, filepath.Join(s.home, "wallet"))
+	resolved, err := selfupdate.ResolveExecutable(s.exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holdLockFile(t, resolved+updateLockSuffix)
+	setForegroundWait(t, 50*time.Millisecond)
+
+	before := snapshotHeld(t, s.root)
+	envBefore := fmt.Sprint(s.userEnv.values)
+	code, out, errOut := s.uninstall(t, nil, false, nil, "-yes", "-binary")
+	if code != exitTransport || !strings.Contains(errOut, "an upgrade of "+s.exe+" is running") {
+		t.Errorf("a running upgrade of this binary must refuse -binary: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if !reflect.DeepEqual(withoutLocks(before), withoutLocks(snapshotHeld(t, s.root))) {
+		t.Error("the binary, .previous, every leftover, the integrations and the participant state must be byte-identical")
+	}
+	if fmt.Sprint(s.userEnv.values) != envBefore {
+		t.Errorf("the user environment must be unchanged: %s -> %v", envBefore, s.userEnv.values)
 	}
 }
 

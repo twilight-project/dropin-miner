@@ -43,6 +43,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/twilight-project/dropin-miner/internal/selfupdate"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 	"github.com/twilight-project/dropin-miner/pkg/fsx"
@@ -81,8 +82,6 @@ const purgeRevokeTimeout = 8 * time.Second
 // uninstall for it yields exactly the parts that do not depend on which
 // binary they run.
 const uninstallProbeCommand = "\x00dropin-miner-uninstall-probe"
-
-var errBinaryNotYetOnWindows = errors.New("uninstall -binary is not available on Windows in this version: Windows cannot delete a running executable. Remove the binary by hand once no DropinMiner or agent process is using it")
 
 // uninstallDeps is everything uninstall reaches outside itself.
 type uninstallDeps struct {
@@ -155,6 +154,10 @@ type uninstallRun struct {
 	// its revert did not finish or it could not be trusted.
 	envKept  bool
 	failures int
+	// residual: binary material -binary could not remove and says where it is.
+	residual []string
+	// updateLock is the binary's own update lock, held by -binary's exclusion.
+	updateLock string
 }
 
 func (r *uninstallRun) printf(format string, args ...any) { fmt.Fprintf(r.d.stdout, format, args...) }
@@ -209,10 +212,6 @@ func (r *uninstallRun) run(homeFlag string) int {
 		return exitUsage
 	}
 	if r.binary {
-		if d.windows {
-			fmt.Fprintln(d.stderr, "dropin-miner uninstall:", errBinaryNotYetOnWindows, "Nothing was changed.")
-			return exitUsage
-		}
 		if exeErr != nil {
 			fmt.Fprintln(d.stderr, "dropin-miner uninstall: cannot determine my own path:", exeErr)
 			return exitTransport
@@ -368,7 +367,27 @@ func checkPurgeTarget(home, userHome string) error {
 // disturb a connect or a flush, but it must not cross a setup writing them.
 func (r *uninstallRun) exclude() (*lifecycleExclusion, error) {
 	if r.purge || r.binary {
-		return excludeLifecycle(r.home, r.d.getenv, lifecycleForegroundWait)
+		ex, err := excludeLifecycle(r.home, r.d.getenv, lifecycleForegroundWait)
+		if err != nil || !r.binary {
+			return ex, err
+		}
+		// -binary also takes the binary's own update lock, the identity an
+		// upgrade holds (lock order: gate, setup, connect, flush, then this).
+		// A held lock is an upgrade of this binary in progress; refusing now
+		// leaves every integration, the environment and every binary file
+		// as they are, and the leftovers beside the binary may be that
+		// upgrade's own staging.
+		resolved, rerr := selfupdate.ResolveExecutable(r.exe)
+		if rerr != nil {
+			ex.release()
+			return nil, rerr
+		}
+		r.updateLock = resolved + updateLockSuffix
+		if err := ex.hold("upgrade", r.updateLock); err != nil {
+			ex.release()
+			return nil, err
+		}
+		return ex, nil
 	}
 	if _, err := os.Stat(filepath.Dir(r.home)); errors.Is(err, fs.ErrNotExist) {
 		return &lifecycleExclusion{home: r.home}, nil // nothing can be set up there
@@ -391,6 +410,8 @@ func (r *uninstallRun) printExclusionError(err error) {
 	switch {
 	case errors.Is(err, errLifecycleBusy):
 		r.fail("%v (%s). %s Run uninstall again shortly.", err, r.home, noParticipantChange)
+	case errors.As(err, &active) && active.Operation == "upgrade":
+		r.fail("an upgrade of %s is running (%s is held). %s Let it finish and run uninstall again.", r.exe, active.Lock, noParticipantChange)
 	case errors.As(err, &active):
 		r.fail("%v. %s Let it finish, or stop it, and run uninstall again.", err, noParticipantChange)
 	case errors.As(err, &cfgErr):
@@ -477,8 +498,13 @@ func (r *uninstallRun) plan() {
 	if r.binary {
 		r.say("Binary")
 		for _, p := range r.binarySet() {
+			if r.d.windows && p == r.ownedBinary() {
+				r.printf("  move %s aside: Windows cannot delete a running binary, so it stays under a new name until nothing runs it\n", p)
+				continue
+			}
 			r.printf("  remove %s\n", p)
 		}
+		r.printf("  remove the binary's update lock once the binary has left %s\n", r.ownedBinary())
 	}
 }
 
@@ -853,12 +879,20 @@ func pathWithin(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-// binarySet is what -binary removes: the installation's own binary, the
-// setup script the installer put beside an old one, and the installer's
-// source checkout.
+// binarySet is what -binary removes, in order: the self-updater's own staging
+// leftovers beside the binary, the one-level .previous, the executable's
+// update lock, the setup script the installer put beside an old binary, the
+// installer's source checkout, and last the binary itself. Nothing else in
+// the directory is touched.
 func (r *uninstallRun) binarySet() []string {
+	owned := r.ownedBinary()
+	leftovers, _ := selfupdate.StagingLeftovers(filepath.Dir(owned))
 	var out []string
-	for _, p := range []string{r.ownedBinary(), filepath.Join(r.home, "bin", "dropin-miner-setup.sh"), filepath.Join(r.home, "src")} {
+	for _, p := range append(leftovers,
+		selfupdate.PreviousPath(owned),
+		filepath.Join(r.home, "bin", "dropin-miner-setup.sh"),
+		filepath.Join(r.home, "src"),
+		owned) {
 		if lexists(p) {
 			out = append(out, p)
 		}
@@ -1019,12 +1053,41 @@ func (r *uninstallRun) applyPurge() {
 }
 
 func (r *uninstallRun) applyBinary() {
+	owned := r.ownedBinary()
 	for _, p := range r.binarySet() {
+		switch {
+		case p == owned && r.d.windows:
+			// The probe's result: a running image can be renamed, not
+			// deleted. It is moved out of its name and reported, never
+			// claimed as removed.
+			aside, err := selfupdate.MoveAside(owned)
+			if err != nil {
+				r.fail("move %s aside: %v", owned, err)
+				continue
+			}
+			r.residual = append(r.residual, aside)
+			r.printf("moved %s aside to %s: Windows cannot delete a running binary; delete that file once no DropinMiner or agent process is running it\n", owned, aside)
+			continue
+		}
 		if err := os.RemoveAll(p); err != nil {
-			r.fail("remove %s: %v", p, err)
+			r.fail("remove %s: %v; delete it once nothing is using it", p, err)
+			r.residual = append(r.residual, p)
 			continue
 		}
 		r.printf("removed %s\n", p)
+	}
+	// The update lock was held across all of that. It goes only once the
+	// canonical binary has left its path; while the binary is still there,
+	// the lock file stays for the next upgrade or uninstall to take.
+	if r.updateLock != "" && r.ex != nil {
+		if lexists(owned) {
+			r.printf("left %s: the binary is still at %s\n", r.updateLock, owned)
+		} else {
+			r.ex.releaseOperation(r.updateLock)
+			if err := os.Remove(r.updateLock); err == nil {
+				r.printf("removed %s\n", r.updateLock)
+			}
+		}
 	}
 	bin := filepath.Join(r.home, "bin")
 	if entries, err := os.ReadDir(bin); err == nil && len(entries) == 0 {
@@ -1051,6 +1114,12 @@ func (r *uninstallRun) closing(revocation string) {
 		r.printf("Uninstall finished with %d problem(s), each named above; run it again once they are fixed.\n", r.failures)
 	} else {
 		r.printf("Uninstall complete.\n")
+	}
+	if len(r.residual) > 0 {
+		r.printf("\nLeft behind, because something may still be running it; delete once nothing is:\n")
+		for _, p := range r.residual {
+			r.printf("  %s\n", p)
+		}
 	}
 	if !r.purge {
 		inside, _ := r.purgeSet()

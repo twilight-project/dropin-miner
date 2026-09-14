@@ -133,6 +133,23 @@ govulncheck.
     to scrub whole is omitted whole, never sliced, because a slice can cut a secret in half. Raw
     host history never enters a command line; hosts that expose less (Hermes) send less; the hook
     fails open and exits 0 on any internal error.
+17. **Verified replacement and explicit destruction.** `dropin-miner upgrade` fetches only from the
+    compiled-in canonical `twilight-project/dropin-miner` GitHub release origin — the one exception
+    to invariant 5 — over HTTPS, with no participant credential, following only its bounded GitHub
+    redirect allowlist, under the frozen size bounds and one three-minute operation deadline that
+    also bounds replacement. Every asset the verifier requires is verified before the archive is
+    inspected, and only the one root executable is taken out of it. The staged candidate must run
+    and report exactly the release's version before it is installed, and the canonical path itself
+    must run and report it again before the displaced binary is committed as the one-level
+    `.previous`. Before that commit, a recoverable failure restores the prior binary and leaves
+    `.previous` byte-identical; if restoration itself fails, the operation returns
+    `manual_intervention`, reports every surviving copy, and cleanup preserves every reported path.
+    Upgrade never moves to an older release: only `upgrade -rollback` does, by validating a fresh
+    copy of that one local `.previous` — never running it in place — with no network, and swapping
+    one level. An npm-managed copy is never replaced. Participant state is removed only by
+    `uninstall -purge-state` after an interactive typed confirmation, the wallet address or the
+    installation path, that `-yes` cannot supply and a non-terminal cannot reach: protection against
+    accidents and non-interactive automation, not against a program driving a terminal.
 
 ## Subsystems and where their rules live
 A subsystem's authority is one file, and a subsystem nobody has watched fail is a hypothesis — so
@@ -202,7 +219,9 @@ each line names the file that owns the rule and the test that proves it.
   silently, and the structural test proves the public ID set.
 - **Lifecycle coordination** — `cmd/dropin-miner/lifecycle.go` owns the gate `H.lifecycle.lock`
   (a sibling of the installation, never inside it and never deleted), the one lock order
-  (gate → `setup.lock` → `connect.lock` → `flush.lock`), how setup, connect and flush pass the gate
+  (gate → `setup.lock` → `connect.lock` → `flush.lock`; for `uninstall -binary` the same sequence
+  then `<resolved binary>.update.lock`, the same update-lock identity an upgrade holds after
+  gate → `setup.lock`), how setup, connect and flush pass the gate
   (a person's command waits at most five seconds; a detached child, marked by `spawnDetached`,
   makes one attempt and exits 0 recording nothing) and the exclusion a destructive operation holds:
   the gate, then every operation lock, located from the config only once the gate is held.
@@ -219,6 +238,22 @@ each line names the file that owns the rule and the test that proves it.
   classifier setup, `uninstall -binary` and upgrade consult. `uninstall_test.go`'s
   `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
   and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
+
+- **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
+  a durable same-directory copy, the candidate renamed over the binary, the canonical path run and
+  validated, and only then the copy committed as `.previous`; on Windows the probed sequence
+  (binary aside, candidate in, validate, aside replaces `.previous`) with `previous_in_use` when a
+  process still runs `.previous`. `rollback.go` owns restoring a validated copy of `.previous`
+  with no network. `cmd/dropin-miner/upgrade_locks.go` owns the gate, `setup.lock` and
+  `<binary>.update.lock` an upgrade holds, and `cmd/dropin-miner/upgrade.go` owns the command:
+  the launch classifier first, one operation deadline over everything after it, success only
+  after the transaction commits, `Prepared.DiscardAfterInstall` as the only cleanup, and failure
+  classes from typed kinds. `upgrade_test.go`'s
+  `TestUpgradeCarriesOneOperationDeadlineThroughEveryStage` and
+  `TestUpgradeCommandPrintsSuccessOnlyAfterTheCanonicalPathValidates` guard the command. `replace_test.go`'s
+  `TestAFailedSecondUpgradeLeavesPreviousByteIdentical` and `acceptance_test.go`'s
+  `TestReplacementAcceptanceWithTheRunningImage` (real processes, on every CI runner including
+  Windows arm64) guard them.
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
@@ -279,8 +314,8 @@ each line names the file that owns the rule and the test that proves it.
 - The flow, as actually practised since #10: bug and feature work starts from an issue where one
   applies — release-only work and documentation maintenance need not invent one; branch from
   canonical `upstream/main` as it stands, never from an unmerged branch; open a PR with the
-  template filled in; all seven CI checks green (the three-OS `test` matrix, plus `race`, `cross`,
-  `lint` and `vuln`); merge through GitHub, which produces a merge commit; and tag canonical
+  template filled in; all eight CI checks green (the `test` matrix on Linux, macOS, Windows and
+  Windows arm64, plus `race`, `cross`, `lint` and `vuln`); merge through GitHub, which produces a merge commit; and tag canonical
   upstream only when cutting a release, per `docs/RELEASING.md`. The older `merge <branch>:
   <phrase>` subject line described the hand-merged branches of the first ten PRs and is not what
   the history has looked like since.

@@ -20,6 +20,12 @@ package main
 // Lock order, everywhere, with no exceptions:
 //
 //	H.lifecycle.lock → setup.lock → connect.lock → flush.lock
+//	H.lifecycle.lock → setup.lock → <resolved binary>.update.lock   (upgrade)
+//	H.lifecycle.lock → setup.lock → connect.lock → flush.lock → <resolved binary>.update.lock   (uninstall -binary)
+//
+// The update lock uninstall -binary takes last is the same identity an
+// upgrade holds, <ResolveExecutable(binary)>.update.lock, so the two never
+// run on one binary at once.
 //
 // A process never takes an earlier lock while holding a later one. Setup's
 // in-process connect runs under setup's admission and does not take the gate

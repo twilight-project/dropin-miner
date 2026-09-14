@@ -43,10 +43,18 @@ unattended once claimed.
              the shell-profile block (Windows: the user PATH entry and
              TOKENDROP_CONFIG). The wallet, registration, stored key,
              recorded searches and config stay; nothing is revoked.
-             -binary also removes the installation's own binary (an npm
-             copy is npm's to remove). -purge-state also destroys the
-             participant state after you type the wallet address at a
-             terminal; -yes never answers it. -dry-run changes nothing
+             -binary also removes the installation's own binary and its
+             .previous (an npm copy is npm's to remove; on Windows the
+             running binary is moved aside, not deleted). -purge-state
+             also destroys the participant state after you type the
+             wallet address at a terminal; -yes never answers it.
+             -dry-run changes nothing
+  upgrade    replace this native binary with the latest canonical release
+             (-version X.Y.Z: exactly that one, never older), verified by
+             checksum and by running it before and after it is installed;
+             the replaced binary is kept as <binary>.previous. -rollback
+             puts that one back, with no network. An npm copy is updated
+             with npm install -g dropin-miner@latest
   connect    ask whether to mine, then register [-name …] (the answer hints
              the claim page's mining pre-tick); prints the claim URL and
              code and polls (bounded) until claimed. A second run resumes;
