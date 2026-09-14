@@ -64,13 +64,13 @@ does.
    it prints the tagged commit, canonical main, and the asset names it expects.
 6. **Run the `install.ps1` check** below. It and the upgrade acceptance in step 7 are
    the acceptance steps still done by hand; the workflow attempts neither.
-7. **From the first release after 0.3.0, accept the upgrade by hand.** A real native
-   installation of the previous release must run `dropin-miner upgrade` and land on the
-   release just published: `dropin-miner version` afterwards reports it, and
-   `dropin-miner upgrade -rollback` puts the previous one back. At least one of those
-   upgrades is on a Windows desktop, because CI's Windows runners do not represent the
-   antivirus and endpoint software a participant's machine runs. 0.3.0 itself cannot be
-   accepted this way: no earlier release has `upgrade`.
+7. **From the first release after v0.2.9, accept the upgrade by hand.** A real native
+   installation of v0.2.9 must run `dropin-miner upgrade` and land on the release just
+   published: `dropin-miner version` afterwards reports it, and `dropin-miner upgrade
+   -rollback` puts the previous one back. At least one of those upgrades is on a
+   Windows desktop, because CI's Windows runners do not represent the antivirus and
+   endpoint software a participant's machine runs. v0.2.9 itself cannot be accepted
+   this way: no earlier release has `upgrade`.
 
 ## Before you tag
 
@@ -93,6 +93,15 @@ that fails preflight is a tag already pushed, and a pushed tag is awkward to tak
   exception.** Saying "not live-smoked" in the entry is an acceptable answer; saying
   nothing is not. As of v0.2.6 the Pi and Hermes adapters carried that exception.
 - **`make verify` is green on that exact commit**, and `ci.yml` is green on `main`.
+- **For a release whose updater has never run under antivirus** (v0.2.9 is the first
+  such release; step 7's real acceptance only starts with the release after it): an
+  optional substitute is available. On a Windows desktop with real-time antivirus
+  protection **on**, at the commit to be tagged, run
+  `go test ./internal/selfupdate ./cmd/dropin-miner -run 'Replace|Rollback|Upgrade|Uninstall' -count=1`
+  — the acceptance test performs the replacement transaction inside the process
+  started from the pathname being moved, which is the running-image case CI's runners
+  cover with Defender off. If no such machine is available before the tag, the
+  changelog entry says so in one sentence, and the check is not claimed to have run.
 
 ## The automated half
 
@@ -159,8 +168,8 @@ fails" below.
 ### 2. `release-binaries` — goreleaser
 
 Unchanged in substance from what this repo has always done: six static binaries
-(linux/darwin/windows × amd64/arm64), each packaged with `LICENSE`, `README.md` and
-`scripts/setup.sh`, checksummed into `checksums.txt`, published as a non-draft GitHub
+(linux/darwin/windows × amd64/arm64), each packaged with the binary, `LICENSE` and
+`README.md`, checksummed into `checksums.txt`, published as a non-draft GitHub
 Release whose body is generated from `git log` between tags and opens with a link to
 `CHANGELOG.md` at this tag.
 
@@ -268,7 +277,7 @@ whether one operating system is broken or all three.
 
 ## What installed updaters depend on
 
-From 0.3.0 a native installation can upgrade itself, and every copy that can do so
+From v0.2.9 a native installation can upgrade itself, and every copy that can do so
 carries its expectations of a release compiled in. A release that breaks one of them
 cannot be upgraded into by any installed updater, and no later release can fix that for
 the copies already out there. So these are contracts, and each has a test that fails in
@@ -382,8 +391,9 @@ latest release, downloading the ZIP and `checksums.txt`, verifying the checksum,
 unpacking. That needs a real release over a real network, and `release.yml`'s Windows
 smoke job installs the npm package, which is a different path.
 
-**Until v0.3.0 is the latest release**, `install.ps1` on `main` downloads a binary with
-no `setup`, so what a participant actually runs is the legacy branch. The manual check
+**Until v0.2.9, the first release with `setup`, is the latest release**, `install.ps1`
+on `main` downloads a binary with no `setup`, so what a participant actually runs is
+the legacy branch. The manual check
 therefore covers both: the download and the branch it lands in. After cutting a release,
 run it once by hand (a real Windows machine, or `pwsh` elsewhere — the CIM
 processor-architecture query is its only genuinely Windows-only line):
@@ -402,8 +412,11 @@ processor-architecture query is its only genuinely Windows-only line):
 4. Either way, confirm `connect` actually ran: a claim URL printed, and
    `dropin-miner status` afterward showing the registration it made.
 
-Once v0.3.0 is the latest release, the legacy branch of both installers and
-`scripts/setup.sh` are removed together, and step 3 reduces to the setup branch.
+The legacy branches of both installers, and `scripts/setup.sh` itself, are kept
+through v0.2.10 and v0.3.0, so those releases carry no installer-code delta over
+what was validated on v0.2.9; the cleanup PR after v0.3.0 removes them. Once
+v0.2.9 is the latest release, though, step 3 above lands on the setup branch
+regardless — every release from here on ships a binary with `setup`.
 
 ## What this doesn't cover
 

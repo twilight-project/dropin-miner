@@ -15,8 +15,6 @@ archives:
     files:
       - LICENSE
       - README.md
-      - src: scripts/setup.sh
-        dst: setup.sh
     format_overrides:
       - goos: windows
         formats: [zip]

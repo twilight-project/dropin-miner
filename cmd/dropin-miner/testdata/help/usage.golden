@@ -36,8 +36,13 @@ unattended once claimed.
              -yes answers the profile and agents questions, terminal or not
              -yes may come from automated callers; the installers never add it
              -yes never answers the mining question or adopts without a terminal
+             -no-profile leaves the shell profile (Windows: user environment)
+             alone; -yes does not override it
+             -no-agents skips coding-agent detection; -with still sets up
+             what it names
              -dry-run changes nothing
-             -with <id> sets up one target whether or not it was found
+             -with <id> sets up one target whether or not it was found,
+             repeatable
   uninstall  take out what setup put here for one installation (-home dir):
              the agents' skills, hooks and plugins that run its binary, and
              the shell-profile block (Windows: the user PATH entry and

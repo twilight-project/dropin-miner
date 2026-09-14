@@ -26,10 +26,56 @@ npm install -g dropin-miner
 dropin-miner setup
 ```
 
+## Coming from an earlier version
+
+Nothing needs removing first. Run the installer again — npm:
+`npm install -g dropin-miner@latest`, then `dropin-miner setup`. If the old
+installation used a non-default home (`TOKENDROP_HOME` was set for the old
+installer), run the installer or `setup -home` with the same one; setup has
+no other way to find it.
+
+The installation in `~/.tokendrop` is used as it is: a directory holding an
+identity is the installation, and nothing set aside is offered. Your wallet,
+identity, search credential and recorded searches are preserved — setup
+creates no replacement for a healthy installation; `connect` still runs and
+resumes or repairs its own onboarding state under its normal rules (an
+unfinished registration is finished, a lost or unreadable record beside a
+working key is rebuilt from the platform, an expired unclaimed registration
+is replaced). Byte-identical auth state across the upgrade is not promised.
+
+The mining question is not asked again when the old installation already
+holds a decision: setup says whether mining is on or off for it; an
+interrupted old installation with no decision yet is asked.
+
+The config is parsed and, since the script's already has the `[platform]`
+and `[miner]` tables, left byte for byte.
+
+On macOS and Linux, the profile block uses the markers the script wrote, so
+there is never a second block; setup's block quotes its paths where the
+script's were bare, so the bytes can differ and the profile question may be
+asked again — yes replaces the one block in place. On Windows, the existing
+user PATH entry and `TOKENDROP_CONFIG` are reused, not duplicated: the first
+new setup records in `setup-env.json` that an already-present PATH entry
+was not added by setup, and what `TOKENDROP_CONFIG` held before, so a later
+`uninstall` removes only what setup itself added and prints what to remove
+by hand for the rest.
+
+Agent integrations are reconciled to the current plan: one already correct
+is left alone ("nothing to write: already set up"); stale files and hook
+entries are updated, not duplicated; a host never set up before is offered
+normally, which is the usual case for a Windows 0.2.x installation, whose
+installer only advised `agents install`. A second setup is idempotent for what
+it owns — its written files, the profile or environment, and the agent
+integrations — and keeps the same healthy participant identity;
+connect-managed authorization state may still advance.
+
+Want a clean start instead? Move `~/.tokendrop` aside and take it back at
+the **Use it?** question below.
+
 The installer fetches a checksummed release and hands off to `dropin-miner
 setup`, which asks as it goes, in this order:
 
-1. **Use a previous installation?** — only if one is set aside beside
+1. **Use it?** — only if one is set aside beside
    `~/.tokendrop` (see "Removing it, and coming back" below).
 2. The config is written, or an existing one is kept (see Config). Then
    `connect` registers with the search platform and stores the key it mints —
