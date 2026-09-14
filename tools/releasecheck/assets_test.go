@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/twilight-project/dropin-miner/internal/selfupdate"
 )
 
 // goreleaserFixture is the repository's current naming contract, written
@@ -41,6 +44,50 @@ var wantAssets028 = []string{
 	"dropin-miner_0.2.8_linux_arm64.tar.gz",
 	"dropin-miner_0.2.8_windows_amd64.zip",
 	"dropin-miner_0.2.8_windows_arm64.zip",
+}
+
+// TestSelfUpdaterAssetNamesMatchGoReleaser is the coupling between the
+// release pipeline and every installed updater. The updater computes asset
+// names with a small checked-in function, not GoReleaser's template engine;
+// this test derives the whole matrix from the real .goreleaser.yaml and
+// requires the two to agree, so a naming, matrix, format or checksum-name
+// change fails here before it can strand deployed updaters on names that no
+// longer exist.
+func TestSelfUpdaterAssetNamesMatchGoReleaser(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := ParseNamingContract(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"v0.2.8", "v0.3.0", "v1.10.0"} {
+		v := mustParseTag(t, tag)
+		want, err := contract.ExpectedAssets(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtimeVersion, err := selfupdate.ParseVersion(v.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := []string{selfupdate.ChecksumAssetName}
+		for _, goos := range contract.GOOS {
+			for _, goarch := range contract.GOARCH {
+				artifact, err := selfupdate.ArtifactFor(runtimeVersion, goos, goarch)
+				if err != nil {
+					t.Fatalf("%s: the updater has no artifact for GoReleaser's %s/%s: %v", tag, goos, goarch, err)
+				}
+				got = append(got, artifact.ArchiveName)
+			}
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s: the self-updater and .goreleaser.yaml disagree\n updater: %v\n release: %v", tag, got, want)
+		}
+	}
 }
 
 func expectedAssetsFor(t *testing.T, yaml, tag string) ([]string, error) {

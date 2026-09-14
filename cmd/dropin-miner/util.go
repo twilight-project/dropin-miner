@@ -36,6 +36,12 @@ const exitOutcomeUnknown = 5
 // plausible.
 const exitHumanDecisionRequired = -1
 
+// exitLifecycleBusy is connectRun's internal signal, in machine mode only,
+// that it never passed the lifecycle gate. cmdConnect's JSON wrapper
+// translates it to exitTransport with code lifecycle_busy; like
+// exitHumanDecisionRequired it is out of range so a leak would be obvious.
+const exitLifecycleBusy = -2
+
 func orDefaults(cfgSource string) string {
 	if cfgSource == "" {
 		return "defaults/env, no config file found"

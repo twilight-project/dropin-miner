@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -17,6 +18,7 @@ const (
 // window flashes on every search and the child outlives the tool call.
 func spawnDetached(exe string, args []string) error {
 	cmd := exec.Command(exe, args...) // #nosec G204 -- our own executable, fixed arguments
+	cmd.Env = detachedEnvironment(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup | detachedProcess | createNoWindow,
 		HideWindow:    true,

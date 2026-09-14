@@ -121,6 +121,31 @@ func cmdFlush(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		return exitOK
 	}
 
+	// Lifecycle admission, before the config is loaded or any directory
+	// made. A flush a search or hook started never waits and, when an
+	// uninstall or upgrade holds the gate, leaves quietly with no health
+	// record: its intake stays on disk for the next flush. A flush a person
+	// ran waits briefly, then says why it did nothing.
+	mode := admitForeground
+	if detachedChild(getenv) {
+		mode = admitDetached
+	}
+	gatePath, err := configGatePath(*cfgPath, getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "dropin-miner flush:", err)
+		return exitTransport
+	}
+	gate, err := admitOrdinary(gatePath, mode)
+	if err != nil {
+		if mode == admitDetached {
+			fmt.Fprintf(stderr, "flush: %v; not flushing now\n", err)
+			return exitOK
+		}
+		fmt.Fprintf(stderr, "dropin-miner flush: %v (%s); nothing was flushed, run it again shortly\n", err, gatePath)
+		return exitTransport
+	}
+	defer gate.release()
+
 	cfg, src, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "dropin-miner flush: config (%s): %v\n", orDefaults(src), err)
@@ -140,7 +165,7 @@ func cmdFlush(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		cancel()
 	}()
 
-	rep, code := runFlush(ctx, cfg, *cfgPath, *force, stdout, stderr)
+	rep, code := runFlushAdmitted(ctx, cfg, *cfgPath, *force, stdout, stderr, gate.release)
 	if code == exitOK {
 		fmt.Fprintf(stdout, "flush: epoch %d  promoted %d  delivered %d  pending %d\n",
 			rep.Epoch, rep.Promoted, rep.Delivered, rep.Pending)
@@ -154,6 +179,13 @@ func cmdFlush(args []string, stdout, stderr io.Writer, getenv func(string) strin
 // runFlush is the pass itself, split from the flag parsing so a test can
 // drive it against a fake AS and a temp dir.
 func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force bool, stdout, stderr io.Writer) (flushReport, int) {
+	return runFlushAdmitted(ctx, cfg, cfgPath, force, stdout, stderr, nil)
+}
+
+// runFlushAdmitted is runFlush for a caller that passed the lifecycle gate:
+// endAdmission releases it the moment flush.lock has been tried, so the gate
+// is never held through the pass itself.
+func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, force bool, stdout, stderr io.Writer, endAdmission func()) (flushReport, int) {
 	var rep flushReport
 	m := cfg.Mining
 	mn := cfg.Miner
@@ -163,6 +195,9 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		return rep, exitTransport
 	}
 	lock, held, err := tryLockFile(flushLockPath(mn))
+	if endAdmission != nil {
+		endAdmission()
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner flush: lock:", err)
 		return rep, exitTransport
@@ -172,6 +207,7 @@ func runFlush(ctx context.Context, cfg *config.Config, cfgPath string, force boo
 		return rep, exitOK
 	}
 	defer func() { _ = unlockFile(lock) }()
+	lifecycleEvent("operation locked")
 
 	// Read the persisted authority before constructing any OAuth/DPoP client.
 	// OFF, undecided, and degraded states must not create mining credentials or

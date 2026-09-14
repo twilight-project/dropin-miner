@@ -60,6 +60,24 @@ func TestPkgDoesNotImportCmd(t *testing.T) {
 	}
 }
 
+// TestSelfupdateImportsNoWrapperAndNoCredential is the self-updater's
+// boundary: internal/selfupdate fetches public release assets and must never
+// reach the cmd/ wrapper, the authorization and key store (pkg/auth) or the
+// platform client (pkg/platform) — directly or transitively — so no
+// participant credential can ride along with a release download.
+func TestSelfupdateImportsNoWrapperAndNoCredential(t *testing.T) {
+	deps := goList(t, "./internal/selfupdate/...")
+	if len(deps) == 0 {
+		t.Fatal("go list found no dependencies for internal/selfupdate")
+	}
+	for _, dep := range deps {
+		switch dep {
+		case module + "/cmd/dropin-miner", module + "/pkg/auth", module + "/pkg/platform":
+			t.Errorf("internal/selfupdate reaches %s (AGENTS.md import boundaries)", dep)
+		}
+	}
+}
+
 // TestNoChainImportsAnywhere is AGENTS.md invariant 9. Ported from the
 // proxy's cmd/tokendrop/boundary_test.go rule 1, adapted to this module:
 // twilight-core is the same forbidden chain application, and the

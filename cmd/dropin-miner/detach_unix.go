@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -13,6 +14,7 @@ import (
 // and the next `status`, never through a stream nobody is reading.
 func spawnDetached(exe string, args []string) error {
 	cmd := exec.Command(exe, args...) // #nosec G204 G702 -- our own executable, fixed arguments
+	cmd.Env = detachedEnvironment(os.Environ())
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

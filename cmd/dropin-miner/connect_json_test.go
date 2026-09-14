@@ -658,7 +658,7 @@ func TestThePreParserAcceptsExactlyWhatConnectRunDoes(t *testing.T) {
 		// connectRun's own parse, observed through its exit code: it
 		// returns exitUsage for exactly the arguments it cannot parse.
 		var narration bytes.Buffer
-		runCode := connectRun(args, strings.NewReader(""), io.Discard, &narration, noEnv, false)
+		runCode := connectRun(args, strings.NewReader(""), io.Discard, &narration, noEnv, false, false)
 		runRejected := runCode == exitUsage
 		if (preErr != nil) != runRejected {
 			t.Errorf("%v: pre-parser err=%v, connectRun rejected=%v", args, preErr, runRejected)

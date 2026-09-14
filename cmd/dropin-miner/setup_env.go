@@ -99,6 +99,99 @@ func rewriteProfile(existing []byte, block string) ([]byte, error) {
 	}
 }
 
+// profileTarget resolves the file an edit of path must actually replace.
+// A profile that is a symlink is edited through the link: the regular file
+// it points at is replaced in its own directory, and the link stays. A
+// target that is not a regular file is refused like malformed markers.
+func profileTarget(path string) (target string, existing []byte, mode fs.FileMode, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return path, nil, 0o644, nil
+	}
+	if err != nil {
+		return "", nil, 0, err
+	}
+	target = path
+	if info.Mode()&fs.ModeSymlink != 0 {
+		resolved, rerr := filepath.EvalSymlinks(path)
+		if rerr != nil {
+			return "", nil, 0, fmt.Errorf("it is a symlink whose target cannot be resolved: %w", rerr)
+		}
+		target = resolved
+		if info, err = os.Lstat(target); err != nil {
+			return "", nil, 0, err
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, 0, fmt.Errorf("%s is not a regular file", target)
+	}
+	data, err := os.ReadFile(target) // #nosec G304 -- the participant's own shell profile, chosen from $SHELL
+	if err != nil {
+		return "", nil, 0, err
+	}
+	return target, data, info.Mode().Perm(), nil
+}
+
+// removeProfileBlock is rewriteProfile's inverse: the profile without its one
+// dropin-miner block, and the block's own lines. Zero markers is found=false
+// and the bytes unchanged; anything but exactly one start followed by one
+// end is errProfileMalformed, and nothing is guessed.
+func removeProfileBlock(existing []byte) (next []byte, block []string, found bool, err error) {
+	lines := strings.SplitAfter(string(existing), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	start, end := -1, -1
+	starts, ends := 0, 0
+	for i, l := range lines {
+		switch strings.TrimRight(l, "\r\n") {
+		case profileMarkerStart:
+			starts++
+			start = i
+		case profileMarkerEnd:
+			ends++
+			end = i
+		}
+	}
+	switch {
+	case starts == 0 && ends == 0:
+		return existing, nil, false, nil
+	case starts == 1 && ends == 1 && start < end:
+		var b strings.Builder
+		for _, l := range lines[:start] {
+			b.WriteString(l)
+		}
+		for _, l := range lines[end+1:] {
+			b.WriteString(l)
+		}
+		for _, l := range lines[start+1 : end] {
+			block = append(block, strings.TrimRight(l, "\r\n"))
+		}
+		return []byte(b.String()), block, true, nil
+	default:
+		return nil, nil, false, fmt.Errorf("%w (%d start, %d end)", errProfileMalformed, starts, ends)
+	}
+}
+
+// profileBlockConfig is the TOKENDROP_CONFIG a block exports, as written:
+// shell-quoted by setup, bare by the setup.sh that preceded it.
+func profileBlockConfig(block []string) (string, bool) {
+	const prefix = "export TOKENDROP_CONFIG="
+	for _, l := range block {
+		if strings.HasPrefix(l, prefix) {
+			return strings.TrimPrefix(l, prefix), true
+		}
+	}
+	return "", false
+}
+
+// profileBlockNamesConfig reports whether a block exports exactly cfgPath,
+// in either form setup has written it.
+func profileBlockNamesConfig(block []string, cfgPath string) bool {
+	value, ok := profileBlockConfig(block)
+	return ok && (value == shellQuote(cfgPath) || value == cfgPath)
+}
+
 // ── Windows: the User environment and its journal ─────────────────────────
 
 // userEnvironment is the User-scope environment store. The registry backs it
@@ -106,6 +199,8 @@ func rewriteProfile(existing []byte, block string) ([]byte, error) {
 type userEnvironment interface {
 	Get(name string) (value string, present bool, err error)
 	Set(name, value string) error
+	// Delete removes the value; an absent one is not an error.
+	Delete(name string) error
 	Broadcast()
 }
 
@@ -260,6 +355,96 @@ func applyUserEnvironment(env userEnvironment, journalPath string, c envChange) 
 	}
 	if changed {
 		env.Broadcast()
+	}
+	return nil
+}
+
+// ── uninstall: compare and revert ──────────────────────────────────────────
+
+// configRevert is what an uninstall does with TOKENDROP_CONFIG.
+type configRevert int
+
+const (
+	configUntouched configRevert = iota // absent now: nothing of setup's is left
+	configRestore                       // still setup's value: put the previous one back
+	configDelete                        // still setup's value, and there was none before
+	configCeded                         // changed since setup: the participant's now
+)
+
+// envRevert is an uninstall's plan against the User environment, computed
+// from the journal and the environment as they are now, never from a
+// snapshot: a PATH entry the participant added since setup survives it.
+type envRevert struct {
+	removePath bool
+	newPath    string
+	config     configRevert
+	restore    string
+}
+
+func (r envRevert) changes() bool {
+	return r.removePath || r.config == configRestore || r.config == configDelete
+}
+
+// planUserEnvironmentRevert takes out one entry equivalent to the journal's
+// PATH entry only if setup added it, and reverts TOKENDROP_CONFIG only while
+// it still holds the value setup set.
+func planUserEnvironmentRevert(env userEnvironment, j envJournal) (envRevert, error) {
+	var r envRevert
+	if j.Path.AddedBySetup {
+		pathValue, _, err := env.Get("Path")
+		if err != nil {
+			return envRevert{}, fmt.Errorf("read the user Path: %w", err)
+		}
+		entries := strings.Split(pathValue, ";")
+		for i, e := range entries {
+			if pathEntryEquivalent(e, j.Path.Entry) {
+				r.removePath = true
+				r.newPath = strings.Join(append(entries[:i:i], entries[i+1:]...), ";")
+				break
+			}
+		}
+	}
+	cfgValue, present, err := env.Get("TOKENDROP_CONFIG")
+	if err != nil {
+		return envRevert{}, fmt.Errorf("read the user TOKENDROP_CONFIG: %w", err)
+	}
+	switch {
+	case !present:
+		r.config = configUntouched
+	case cfgValue != j.TokendropConfig.ValueSet:
+		r.config = configCeded
+	case j.TokendropConfig.PreviousPresent:
+		r.config, r.restore = configRestore, j.TokendropConfig.PreviousValue
+	default:
+		r.config = configDelete
+	}
+	return r, nil
+}
+
+// applyUserEnvironmentRevert changes the environment and only then removes
+// the journal. A failed change keeps the journal, so the next uninstall can
+// finish the same revert instead of guessing.
+func applyUserEnvironmentRevert(env userEnvironment, journalPath string, r envRevert) error {
+	if r.removePath {
+		if err := env.Set("Path", r.newPath); err != nil {
+			return fmt.Errorf("remove setup's entry from the user Path: %w", err)
+		}
+	}
+	switch r.config {
+	case configRestore:
+		if err := env.Set("TOKENDROP_CONFIG", r.restore); err != nil {
+			return fmt.Errorf("restore the user TOKENDROP_CONFIG: %w", err)
+		}
+	case configDelete:
+		if err := env.Delete("TOKENDROP_CONFIG"); err != nil {
+			return fmt.Errorf("remove the user TOKENDROP_CONFIG: %w", err)
+		}
+	}
+	if r.changes() {
+		env.Broadcast()
+	}
+	if err := os.Remove(journalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", journalPath, err)
 	}
 	return nil
 }

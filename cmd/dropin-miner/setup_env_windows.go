@@ -90,6 +90,22 @@ func (e registryUserEnvironment) Set(name, value string) error {
 	return k.SetStringValue(name, value)
 }
 
+// Delete removes a value from HKCU\<key>; an absent value or key is fine.
+func (e registryUserEnvironment) Delete(name string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, e.key, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if err := k.DeleteValue(name); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Broadcast tells running programs — Explorer, and through it every window
 // opened from now on — that the environment changed, as
 // [Environment]::SetEnvironmentVariable does. x/sys/windows does not wrap

@@ -164,6 +164,15 @@ type commandEnvelope struct {
 	Error *machineError `json:"error,omitempty"`
 }
 
+// lifecycleBusyEnvelope is a command's answer when another setup, uninstall
+// or upgrade held the lifecycle gate for the whole wait: retryable, with the
+// hint a caller should honor, and nothing of the installation read.
+type lifecycleBusyEnvelope struct {
+	machineHeader
+	RetryAfterMS *int64        `json:"retry_after_ms,omitempty"`
+	Error        *machineError `json:"error,omitempty"`
+}
+
 // jsonRequested reports whether -json appears in args, without consuming
 // it. The flag is parsed normally by each command; this exists only so a
 // command can know its output mode before flag parsing can fail, and still

@@ -61,7 +61,7 @@ govulncheck.
    than by code review.
 4. **Secrets never in argv.** stdin or owner-only (0600) files, never a flag. The one documented
    exception is the search *query* (not a credential), called out where it happens.
-5. **Never assemble or call an unadvertised URL.** Endpoints come from the discovery document; the
+5. **Never assemble or call an unadvertised operational URL.** Endpoints come from the discovery document; the
    AS origin is **configured, not discovered**; service-document endpoints are same-origin checked; an
    off-origin provider-authorization template is refused unless on the compiled `providerhosts`
    allowlist. `as_url`, `router_url`, `platform.base_url` and `platform.agents_api_url` are all
@@ -71,7 +71,10 @@ govulncheck.
    `platform.base_url` carries no credential — nothing is ever dialed there — it is the portal
    origin a printed `claim_url` is checked against (invariant 12); live testing found the real
    deployment splits the human portal and the machine API across two separate hosts, which the
-   original single-URL design missed.
+   original single-URL design missed. The sole exception is the self-updater: `internal/selfupdate`
+   contacts only the compiled-in canonical `twilight-project/dropin-miner` GitHub release origin,
+   carries no participant credential, follows only its bounded HTTPS GitHub redirect allowlist, and
+   no environment variable, config or flag may redirect that origin.
 6. **Strict for the AS wire, permissive for the provider response.** AS-facing types conform to the
    frozen, checksum-verified fixtures. The provider **response** shape is not frozen and is decoded
    permissively (no `DisallowUnknownFields`) on purpose — we own the AS contract, not the provider's
@@ -197,6 +200,25 @@ each line names the file that owns the rule and the test that proves it.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
   silently, and the structural test proves the public ID set.
+- **Lifecycle coordination** — `cmd/dropin-miner/lifecycle.go` owns the gate `H.lifecycle.lock`
+  (a sibling of the installation, never inside it and never deleted), the one lock order
+  (gate → `setup.lock` → `connect.lock` → `flush.lock`), how setup, connect and flush pass the gate
+  (a person's command waits at most five seconds; a detached child, marked by `spawnDetached`,
+  makes one attempt and exits 0 recording nothing) and the exclusion a destructive operation holds:
+  the gate, then every operation lock, located from the config only once the gate is held.
+  `lifecycle_test.go`'s `TestConnectCannotStartUnderAHeldExclusion` and
+  `TestFlushCannotStartUnderAHeldExclusion` prove an operation starting after the check meets the
+  gate before it reads or writes anything; `TestSetupHoldsSetupLockThroughItsWholeRun` proves setup
+  excludes a destructive operation until its closing message.
+
+- **Uninstall** — `cmd/dropin-miner/uninstall.go` owns the order (plan everything, confirm,
+  then integrations, environment, revocation, state, binary), what "this installation's" means
+  for a skill, hook or profile block, the purge set and its target guard, and the typed
+  confirmation `-yes` cannot supply; `setup_env.go` owns the profile-block removal and the
+  compare-and-revert of the Windows user environment; `ownership.go` owns the one npm/native
+  classifier setup, `uninstall -binary` and upgrade consult. `uninstall_test.go`'s
+  `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
+  and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
@@ -237,6 +259,14 @@ each line names the file that owns the rule and the test that proves it.
 - No package in the module graph reaches the chain application or the Cosmos/CometBFT SDK
   (invariant 9) — `TestNoChainImportsAnywhere`. `wallet_tx.go` hand-encodes the six protobuf
   messages a bank send needs instead.
+- `internal/selfupdate` ⊄ `cmd/`, `pkg/auth`, `pkg/platform`: the self-updater fetches public release
+  assets and holds no participant credential, so it reaches neither the wrapper nor the key and
+  authorization store nor the platform client — `TestSelfupdateImportsNoWrapperAndNoCredential` and
+  the `selfupdate-boundary` depguard rule. Its one HTTP client (`NewHTTPClient`) is invariant 3's
+  explicit choice: it follows a redirect only over HTTPS, at most five hops, and only to
+  `api.github.com`, `github.com`, `objects.githubusercontent.com` and
+  `release-assets.githubusercontent.com`; anything else is refused with advice to reinstall. The
+  release origin is compiled in and no environment variable redirects it.
 - State YOUR forbidden edges here and nowhere else. Don't import another repo's edges; a boundary with
   no argument you can state should not exist.
 

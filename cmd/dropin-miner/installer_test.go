@@ -133,7 +133,7 @@ func (s *setupSandbox) deps(stdin io.Reader, stdout, stderr io.Writer, interacti
 		agents:      s.agentOps(interactive),
 		connect: func(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 			s.connectCalls++
-			return cmdConnect(args, stdin, stdout, stderr, getenv)
+			return connectAdmitted(args, stdin, stdout, stderr, getenv)
 		},
 		userEnv:  s.userEnv,
 		now:      fixedSetupClock,
@@ -205,6 +205,11 @@ type fakeUserEnv struct {
 
 func newFakeUserEnv() *fakeUserEnv { return &fakeUserEnv{values: map[string]string{}} }
 
+func (e *fakeUserEnv) Delete(name string) error {
+	delete(e.values, name)
+	return nil
+}
+
 func (e *fakeUserEnv) Get(name string) (string, bool, error) {
 	v, ok := e.values[name]
 	return v, ok, nil
@@ -265,12 +270,14 @@ func within(path, owned string) bool {
 
 // assertOwnership fails for every path that changed between before and after
 // and is not inside an owned path. A directory created as an ancestor of an
-// owned path is allowed, because creating the owned path creates it.
+// owned path is allowed, because creating the owned path creates it. An owned
+// directory's lifecycle gate (lifecycle.go) is owned with it: the gate is a
+// sibling by design, so the directory's removal never removes it.
 func assertOwnership(t *testing.T, before, after map[string]fileSig, owned ...string) {
 	t.Helper()
 	allowed := func(path string, created bool, sig fileSig) bool {
 		for _, o := range owned {
-			if within(path, o) {
+			if within(path, o) || path == lifecycleGatePath(o) {
 				return true
 			}
 			if created && sig.dir && within(o, path) {
