@@ -62,8 +62,15 @@ does.
    can find.
 5. **Watch the run**, and read the preflight job's diagnostics even when it passes —
    it prints the tagged commit, canonical main, and the asset names it expects.
-6. **Run the `install.ps1` check** below. It is the one acceptance step still done by
-   hand, and the workflow does not attempt it.
+6. **Run the `install.ps1` check** below. It and the upgrade acceptance in step 7 are
+   the acceptance steps still done by hand; the workflow attempts neither.
+7. **From the first release after 0.3.0, accept the upgrade by hand.** A real native
+   installation of the previous release must run `dropin-miner upgrade` and land on the
+   release just published: `dropin-miner version` afterwards reports it, and
+   `dropin-miner upgrade -rollback` puts the previous one back. At least one of those
+   upgrades is on a Windows desktop, because CI's Windows runners do not represent the
+   antivirus and endpoint software a participant's machine runs. 0.3.0 itself cannot be
+   accepted this way: no earlier release has `upgrade`.
 
 ## Before you tag
 

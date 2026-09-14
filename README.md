@@ -105,6 +105,7 @@ Uninstall removes exactly those, and only hook entries that name this binary.
 ```
 dropin-miner setup [-yes] [-dry-run] [-with id] [-no-profile] [-no-agents] [-home dir]
 dropin-miner uninstall [-binary] [-purge-state] [-dry-run] [-yes] [-home dir]
+dropin-miner upgrade [-version X.Y.Z | -rollback] [-home dir]
 dropin-miner search --stdin                       # the agent/SDK path: JSON in, JSON out
 dropin-miner search [-tier fast] [-format json|model] [-timeout 60s] <query>
 dropin-miner agents install|status|uninstall
@@ -392,6 +393,46 @@ Your first reward takes an hour or two: you join an epoch two ahead, and it
 has to close and settle. One verified search per epoch makes you eligible,
 and the pot splits equally among everyone eligible.
 
+## Upgrading
+
+```
+dropin-miner upgrade                    # the latest release
+dropin-miner upgrade -version 0.3.1     # exactly that release, never an older one
+dropin-miner upgrade -rollback          # put back the binary the last upgrade replaced
+npm install -g dropin-miner@latest      # an npm install is updated with npm
+```
+
+`upgrade` replaces a native binary — the one the installer put in
+`~/.tokendrop/bin` — with a release from the canonical
+`twilight-project/dropin-miner` GitHub repository and nowhere else. It checks the
+download against the release's `checksums.txt`, takes only the `dropin-miner`
+executable out of the archive, runs the new binary's `version` before installing
+it and runs the installed path again afterwards, and only then keeps the binary
+it replaced as `dropin-miner.previous`. Before that point, a failure it can recover
+from puts the binary you had back and leaves `dropin-miner.previous` exactly as it
+was; if putting it back fails too, `upgrade` stops with `manual_intervention`,
+lists every copy that survives, and removes none of them.
+It never moves to an older release; `-rollback` is the one way back, restoring
+`dropin-miner.previous` with no network, and running it again swaps back. It
+refuses a development build, and a copy npm installed. The whole operation is
+bounded at three minutes, and it will not run while setup or another upgrade of
+the same binary is running. Your wallet, registration and config are not touched.
+
+On Windows the running binary is moved aside, the new one moved into its name,
+checked, and the old one kept as `dropin-miner.exe.previous`. If an older
+DropinMiner process is still running from that `.previous` file, the upgrade
+stops with `previous_in_use` and puts the binary you had back, as with any
+recoverable failure; close old DropinMiner or agent processes and run it again. This is tested on Windows x64 and Windows
+arm64.
+
+When it fails, the first word after `upgrade:` says what to do: `retry` (try
+again later; nothing changed), `release_invalid` (the release itself is wrong;
+don't retry blindly), `ownership` (this copy is not one `upgrade` may replace),
+`filesystem` (fix permissions or the file named), `lifecycle_busy` (another
+setup or upgrade is running), `refused` (an older version was asked for), or
+`manual_intervention` (a failure's own recovery failed; every surviving copy is
+listed).
+
 ## Removing it, and coming back
 
 ```
@@ -418,9 +459,13 @@ nothing is revoked; it ends by saying how to keep using them (`-config
 afterwards would register this machine anew.
 
 `-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
-binary running and no package manager owns it; a copy npm installed is
-refused with the npm command to use instead. On Windows `-binary` is not
-available in this version, because Windows cannot delete a running executable.
+binary running and no package manager owns it, together with the
+`dropin-miner.previous` an upgrade kept and anything an interrupted upgrade left
+beside it — nothing else in that directory. A copy npm installed is refused with
+the npm command to use instead. On Windows a running binary cannot be deleted,
+so `-binary` moves it out of its name to `bin\.dropin-miner.displaced-<random>`
+and prints that path; delete the file once no DropinMiner or agent process is
+running it.
 
 `-purge-state` is separate from `-binary` and destroys the participant state in
 the installation directory: the wallet, the identity and stored key, recorded

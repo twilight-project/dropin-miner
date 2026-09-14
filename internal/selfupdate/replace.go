@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/twilight-project/dropin-miner/pkg/fsx"
 )
@@ -245,4 +246,44 @@ func reservePath(dir string) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+// stagingPrefixes are the only names this package creates beside an
+// executable: staged candidates, POSIX snapshots and Windows displaced
+// binaries.
+var stagingPrefixes = []string{".dropin-miner.candidate-", ".dropin-miner.snapshot-", ".dropin-miner.displaced-"}
+
+// StagingLeftovers lists the regular files in dir that this package named and
+// an interrupted operation may have left, and nothing else in dir.
+func StagingLeftovers(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		for _, prefix := range stagingPrefixes {
+			if strings.HasPrefix(e.Name(), prefix) && len(e.Name()) > len(prefix) && e.Type().IsRegular() {
+				out = append(out, filepath.Join(dir, e.Name()))
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// MoveAside renames executable to a fresh displaced name in its directory
+// with the same no-replace rename the Windows transaction uses, and returns
+// that name. On Windows it is what can be done to a running binary: the probe
+// showed a running image can be renamed but not deleted, so the file stays,
+// under the returned name, until nothing runs it.
+func MoveAside(executable string) (string, error) {
+	aside, err := reservePath(filepath.Dir(executable))
+	if err != nil {
+		return "", err
+	}
+	if err := platformRenameNew(executable, aside); err != nil {
+		return "", err
+	}
+	return aside, nil
 }

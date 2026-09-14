@@ -377,6 +377,24 @@ somewhere further in. `join` names it as the next step only after asking the
 AS whether this Slot accepts that profile; if it does not, `join` says the
 next step is nothing.
 
+## Upgrading
+
+Run `dropin-miner upgrade`. It downloads the newest DropinMiner release from the
+project's own GitHub repository, checks it, runs it once before installing it
+and once after, and keeps the binary it replaced as `dropin-miner.previous`. If
+something goes wrong before that, it puts the binary you had back and leaves
+`dropin-miner.previous` as it was. In the rare case that putting it back fails as
+well, it stops with `manual_intervention` and lists every copy that still
+exists, and it deletes none of them. `dropin-miner upgrade
+-rollback` puts the previous one back, without downloading anything, and running
+it again swaps back. `-version X.Y.Z` picks an exact release, but never an older
+one than you have. Installed with npm? Use `npm install -g dropin-miner@latest`
+instead; `upgrade` will tell you so.
+
+On Windows, if an older DropinMiner or agent process is still running, the
+upgrade may stop with `previous_in_use` and put the binary you had back; close
+those programs and run it again.
+
 ## Removing it, and coming back
 
 `dropin-miner uninstall` takes out what setup put on this machine: the skills,
@@ -388,8 +406,10 @@ stay, nothing is revoked, and it tells you how to keep using them. Run it with
 `-dry-run` first to see the list. Installed with npm? `npm uninstall -g
 dropin-miner` removes the binary.
 
-`-binary` also deletes `~/.tokendrop/bin/dropin-miner` (not yet on Windows,
-which cannot delete a running program). `-purge-state` is the one that
+`-binary` also deletes `~/.tokendrop/bin/dropin-miner`, its
+`dropin-miner.previous`, and anything an interrupted upgrade left beside it. On
+Windows, which cannot delete a running program, it moves the binary out of the
+way instead and tells you the file to delete later. `-purge-state` is the one that
 destroys things: the wallet, your registration and key, unsent searches and
 the config. It asks you, at a terminal, to type your wallet's address; `-yes`
 cannot answer it, and neither can a script without a terminal. It tries
