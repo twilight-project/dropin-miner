@@ -827,6 +827,11 @@ func TestUninstallBinaryLeavesTheUpdateLockWhenTheBinaryStays(t *testing.T) {
 	if !lexists(s.exe) || !lexists(lock) {
 		t.Errorf("the binary stayed, so its update lock must stay: binary %v, lock %v", lexists(s.exe), lexists(lock))
 	}
+	// The directory is unwritable, so the lock file would survive a removal
+	// attempt too; the report line is the proof the lock was kept on purpose.
+	if !strings.Contains(out, "left "+lock+": the binary is still at "+s.exe) {
+		t.Errorf("the kept lock must be reported as kept:\n%s", out)
+	}
 }
 
 func TestUninstallBinaryRefusesAnUpgradeOfTheSameBinaryBeforeChangingAnything(t *testing.T) {
