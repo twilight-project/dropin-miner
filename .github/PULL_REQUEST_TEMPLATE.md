@@ -20,9 +20,10 @@
 - [ ] `pkg/wire` / `testdata/fixtures` — the frozen AS wire contract (**conform upward, see AGENTS.md — never edit a mirrored fixture**)
 - [ ] `pkg/redact` — trace redaction
 - [ ] `pkg/fsx` — the durable writer (atomic rename, fsync, Windows write-through)
-- [ ] `cmd/dropin-miner` — CLI commands (search, hook, flush, connect, mining enable/disable, wallet, agents, doctor, status)
+- [ ] `cmd/dropin-miner` — CLI commands (search, hook, flush, connect, setup, uninstall, upgrade, mining enable/disable, wallet, agents, doctor, status)
 - [ ] machine protocol (`search --stdin` / `-json` envelope) — a change to the mandatory header or to what `ok`, `status`, `code`, `retryable`, `action` or `exit_code` mean is a protocol version change (`machineVersion`); a command-specific payload addition that preserves the header is not
-- [ ] `pkg/config` / install scripts (`setup.sh`, `install.ps1`)
+- [ ] `pkg/config` / installers (`install.sh`, `install.ps1`; `scripts/setup.sh` is the legacy bridge for binaries older than v0.2.9)
+- [ ] lifecycle: `setup` / `uninstall` / `upgrade`, `internal/selfupdate`, the lifecycle locks — a destructive or replacing operation; see invariant 17
 - [ ] docs / CHANGELOG
 
 ## Checklist

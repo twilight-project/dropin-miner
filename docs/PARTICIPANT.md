@@ -51,6 +51,50 @@ npm install -g dropin-miner
 dropin-miner setup
 ```
 
+### Coming from an earlier version
+
+Nothing needs removing first. Run the installer again (npm: `npm install -g
+dropin-miner@latest`, then `dropin-miner setup`). If your old installation used a
+non-default home (you had `TOKENDROP_HOME` set for the old installer), run the
+installer or `setup -home` with that same one — setup has no other way to find it.
+
+The installation in `~/.tokendrop` is used as it is: a directory holding an identity
+is the installation, and nothing set aside is offered. Your existing wallet,
+identity, search credential and recorded searches are kept; setup creates no
+replacement for a healthy installation. `connect` still runs and resumes or repairs
+its own onboarding under its normal rules: an unfinished registration is finished,
+a lost or unreadable record beside a working key is rebuilt from the platform, and
+an expired unclaimed registration is replaced. Your auth state afterward is not
+promised to be byte-identical to what it was.
+
+The mining question is not asked again if your old installation already holds a
+decision: setup tells you whether mining is on or off for it. If it was interrupted
+before that decision was made, you are asked.
+
+Your config is parsed and, since the script's already has the `[platform]` and
+`[miner]` tables, left byte for byte.
+
+On macOS and Linux, the profile block uses the markers the script wrote, so you
+never get a second block; setup's block quotes its paths where the script's were
+bare, so the bytes can differ and you may be asked the profile question again —
+saying yes replaces the one block in place. On Windows, your existing user PATH
+entry and `TOKENDROP_CONFIG` are reused, not duplicated: the first new setup
+records in `setup-env.json` whether an already-present PATH entry was added by it,
+and what `TOKENDROP_CONFIG` held before, so a later `uninstall` only removes what
+setup itself added and prints the rest for you to remove by hand.
+
+Your agent integrations are reconciled to the current plan: one already correct is
+left alone ("nothing to write: already set up"); stale files and hook entries are
+updated, never duplicated; a host you never set up before is offered normally —
+the usual case if you installed on Windows before v0.2.9, since that installer
+only told you to run `agents install`. A second setup is idempotent for what
+it owns — the files it writes, your profile or environment, and your agent
+integrations — and keeps the same healthy identity; your connect-managed
+authorization state may still advance.
+
+Want a clean start instead? Move `~/.tokendrop` aside and take it back at the
+**Use it?** question below.
+
 Globally, not with `npx`: setup writes this binary's location into your agents'
 skills and hooks, and a copy npm keeps only for one `npx` run, or inside one
 project's `node_modules`, would disappear from under them. Setup refuses to run
@@ -74,8 +118,10 @@ run through them, you answer at the terminal. Without `-yes` and without
 a terminal, setup leaves your profile and your agents alone and prints the
 command for each. `-yes` answers **Use it?** only at a terminal: a set-aside
 installation is never reused by a script. And it never answers **Enable mining
-rewards?**, which is always yours. `dropin-miner setup -dry-run` lists every file it would
-write or move and changes nothing.
+rewards?**, which is always yours. `-no-profile` leaves the shell profile (Windows: the
+user environment) alone, and `-no-agents` skips coding-agent detection (`-with <id>` still
+sets up a named agent even so) — `-yes` does not override either one. `dropin-miner setup
+-dry-run` lists every file it would write or move and changes nothing.
 
 Then it prints a claim link and waits a few minutes for you to visit it. Not
 required right there and then: search already works, and revisiting the link

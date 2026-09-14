@@ -47,7 +47,8 @@ body:
         - flush / mining plane (join, promote, submit)
         - connect / mining enable / mining disable (agent onboarding)
         - wallet / payout
-        - config / install (setup.sh, install.ps1)
+        - setup / installers (install.sh, install.ps1)
+        - uninstall / upgrade
         - agents (skill/hook install for coding agents)
         - doctor / status / earnings
         - unsure

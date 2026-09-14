@@ -13,6 +13,114 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.9 — 2026-09-14
+
+0.2.9 is the field-validation release for the upcoming 0.3.0 line. It contains the new
+setup, uninstall and native upgrade lifecycle so those paths can be exercised through the
+real GitHub and npm distribution channels before 0.3.0 is declared ready. The next
+release is the first real native upgrade acceptance from 0.2.9.
+
+Coming from an earlier version: nothing needs removing first — run the installer again
+(npm: `npm install -g dropin-miner@latest`, then `dropin-miner setup`), or `setup -home`
+with the same `TOKENDROP_HOME` your old installer used, if it had one. The installation
+in `~/.tokendrop` is used as it is — your wallet, identity, search credential and
+recorded searches are preserved, and setup creates no replacement for a healthy
+installation. The mining question is not asked again once a decision is on file; your
+config is parsed and, since the script's already carries `[platform]` and `[miner]`,
+left byte for byte; your shell profile or Windows user environment is reused rather than
+duplicated; and your agent integrations are reconciled to the current plan rather than
+rewritten. A second `setup` run is idempotent for setup-owned files, the profile or
+environment, and the agent integrations, and keeps the same healthy participant
+identity — connect-managed authorization state may still advance.
+
+- **`setup` lives in the binary now.** The same questions as before, in the same order,
+  and now also on Windows: a previous installation set aside beside `~/.tokendrop` is
+  offered and moved back whole — identity and key together, wallet whole, unsent
+  searches merged, config only if none is present — and only when a person says yes at a
+  terminal. An existing config is migrated, never overwritten. The installation
+  directory is made owner-only before anything is written into it. `setup -yes` answers
+  the profile and agents questions and never the mining one; `-dry-run` changes nothing;
+  `-no-profile` and `-no-agents` each skip their own step, and `-yes` overrides neither;
+  `-with <id>` sets up a named target whether or not it was detected.
+
+- **The installers fetch, verify and hand off.** `install.sh` and `install.ps1` download
+  a checksummed release and run `dropin-miner setup`. A binary older than 0.2.9 has no
+  `setup`, so the same scripts fall back to the old flow for it while such a binary is
+  the latest release; from 0.2.9 on, a fresh install no longer takes that branch.
+  `TOKENDROP_INSTALL_NO_SETUP=1` stops after fetching the binary and prints the next
+  step by hand.
+
+- **Installed through npm, it stays npm's.** Setup refuses to run from an `npx` cache, a
+  project's own `node_modules`, or npm's binary run directly around its launcher — the
+  supported route is a global `npm install -g dropin-miner`, then `dropin-miner setup`.
+  `upgrade` and `uninstall -binary` refuse an npm-installed copy the same way and print
+  the npm command to use instead.
+
+- **`uninstall`.** The default removes only what setup put there: the coding agents'
+  skills, hooks and plugins that run this binary, and the shell-profile block (on
+  Windows, the user PATH entry and `TOKENDROP_CONFIG` — reverted only against setup's
+  own record, and only while they still hold what setup set). Nothing is revoked and
+  your wallet, registration, stored key, recorded searches and config stay; it tells you
+  how to keep using them. `-binary` also removes the installation's own binary; on
+  Windows, where a running binary cannot be deleted, it is moved aside instead and the
+  path is printed. `-purge-state` is the one that destroys participant state, and it
+  needs a terminal and the typed wallet address (or the installation path) — `-yes`
+  cannot answer it. Before removing anything it tries, for at most eight seconds, to
+  revoke this installation's authorization at the rewards service; the platform's own
+  grant is revoked only at the console, never by a purge. `-dry-run` changes nothing.
+
+- **`upgrade`.** Present from this release, though its first real use is the upgrade
+  into the next one — until then it reports that 0.2.9 is already the latest. It fetches
+  only from the canonical GitHub repository, with no participant credential, verifies
+  the release by checksum, and runs the new binary both before and after it is
+  installed, keeping the replaced one as `.previous`. A recoverable failure before that
+  point restores the old binary byte-identical; if the restoration itself fails, the
+  operation reports `manual_intervention` and lists every surviving copy rather than
+  guessing. `-rollback` puts `.previous` back with no network; `-version X.Y.Z` never
+  installs something older than what is running. When it fails, the first word after
+  `upgrade:` says what to do — `retry`, `release_invalid`, `ownership`, `filesystem`,
+  `lifecycle_busy`, `refused` or `manual_intervention`. The whole operation is bounded
+  at three minutes. On Windows, a `.previous` a process is still running gives
+  `previous_in_use` rather than a bare failure. The replacement transaction runs in CI
+  on every runner, native Windows arm64 included.
+
+- **Commands no longer cross each other.** `setup`, `connect`, `flush`, `uninstall` and
+  `upgrade` now share one lifecycle gate beside the installation
+  (`~/.tokendrop.lifecycle.lock`, safe to delete when nothing runs), with each
+  operation's own lock behind it. A person's command waits five seconds for the gate,
+  then refuses rather than risk crossing a destructive operation; a background child
+  gives up quietly and records nothing. `connect -json` answers a held gate with
+  `lifecycle_busy`, `retry_after_ms` and action `retry`; the envelope's mandatory header
+  is unchanged, so `machineVersion` is not bumped.
+
+- **On Windows, a second `agents install` no longer duplicates hooks, and `agents
+  uninstall` now actually removes them.** The matching that decided whether a hook entry
+  or a Claude Code permission rule was already ours compared raw substrings against text
+  that quoting had changed on Windows paths, so the exact bytes never matched. It now
+  matches the exact prefix each is written with instead.
+
+- **`dropin-miner version` is now a release-compatibility contract.** It prints exactly
+  `dropin-miner X.Y.Z` and nothing else, on stdout only; the updater accepts nothing
+  else from a candidate before installing it. Anyone building the binary themselves for
+  the updater to trust stamps it the same bare way: `-X main.version=1.2.3`, no `v`.
+
+- **Groundwork, nothing shipped on it yet.** The install registry puts every installable
+  surface — currently the same six coding-agent hosts as before — behind one interface,
+  so a later integration installs by name instead of a new hand-wired branch. The
+  registry itself adds no new host or participant-facing integration in this release,
+  and no OpenRouter earning is advertised.
+
+- **CI now runs the suite on Windows arm64 too.** A pull request shows eight checks, not
+  seven: the `test` matrix across Linux, macOS, Windows and Windows arm64, plus `race`,
+  `cross`, `lint` and `vuln`.
+
+- **Stated exceptions.** Neither adapter has been live-smoked against its real host —
+  Pi and Hermes are still covered only by tests that execute the installed artifacts,
+  carried forward from v0.2.6 with no live run yet performed. Separately, this release's
+  replacement transaction has not been exercised on a Windows desktop with real-time
+  antivirus protection on — no such machine was available before this tag — so that
+  proof is where the upgrade into the next release stands, not here.
+
 ## v0.2.8 — 2026-09-13
 
 - **Releases are published by the repository now, not by hand.** Pushing an annotated
