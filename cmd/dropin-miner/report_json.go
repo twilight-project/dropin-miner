@@ -19,6 +19,13 @@ import (
 // ── doctor ──────────────────────────────────────────────────────────────
 
 type doctorReport struct {
+	// ConfigSource is the file describeConfigSource resolved (ruling
+	// D-R1); ConfigDefaulted is true when resolution found none and this
+	// report is against built-in defaults — told apart explicitly so an
+	// empty ConfigSource is never read as "no config" by accident.
+	ConfigSource     string            `json:"config_source,omitempty"`
+	ConfigDefaulted  bool              `json:"config_defaulted"`
+	StateDir         string            `json:"state_dir,omitempty"`
 	Mining           doctorMiningJSON  `json:"mining"`
 	ASConfigured     *bool             `json:"as_configured,omitempty"`
 	ASBaseURL        string            `json:"as_base_url,omitempty"`
@@ -53,6 +60,9 @@ type doctorCheckJSON struct {
 
 func doctorEnvelope(f doctorFacts, checks []doctorCheck, exitCode int) commandEnvelope {
 	report := doctorReport{
+		ConfigSource:    f.ConfigSource,
+		ConfigDefaulted: f.ConfigSource == "",
+		StateDir:        f.StateDir,
 		Mining: doctorMiningJSON{
 			State:      string(f.MiningDecision.State),
 			StateKnown: f.LocalStateKnown,
@@ -105,12 +115,17 @@ func doctorEnvelope(f doctorFacts, checks []doctorCheck, exitCode int) commandEn
 // ── status ──────────────────────────────────────────────────────────────
 
 type statusReport struct {
-	Mining     statusMiningJSON       `json:"mining"`
-	Agent      *statusAgentJSON       `json:"agent,omitempty"`
-	AgentErr   string                 `json:"agent_error,omitempty"`
-	PayoutHold *statusPayoutHoldJSON  `json:"payout_hold,omitempty"`
-	Conflicts  []auth.ConflictedEpoch `json:"epoch_conflicts,omitempty"`
-	AS         *statusASJSON          `json:"authorization_server,omitempty"`
+	// ConfigSource/ConfigDefaulted/StateDir: see doctorReport's fields of
+	// the same name (ruling D-R1).
+	ConfigSource    string                 `json:"config_source,omitempty"`
+	ConfigDefaulted bool                   `json:"config_defaulted"`
+	StateDir        string                 `json:"state_dir,omitempty"`
+	Mining          statusMiningJSON       `json:"mining"`
+	Agent           *statusAgentJSON       `json:"agent,omitempty"`
+	AgentErr        string                 `json:"agent_error,omitempty"`
+	PayoutHold      *statusPayoutHoldJSON  `json:"payout_hold,omitempty"`
+	Conflicts       []auth.ConflictedEpoch `json:"epoch_conflicts,omitempty"`
+	AS              *statusASJSON          `json:"authorization_server,omitempty"`
 }
 
 type statusMiningJSON struct {
@@ -181,6 +196,9 @@ type statusBindingJSON struct {
 
 func statusEnvelope(f agentIdentityFacts, as *statusASFacts) commandEnvelope {
 	report := statusReport{
+		ConfigSource:    f.ConfigSource,
+		ConfigDefaulted: f.ConfigSource == "",
+		StateDir:        f.StateDir,
 		Mining: statusMiningJSON{
 			State:                 string(f.Decision.State),
 			ASConfigured:          miningASConfigured(f.Mining),

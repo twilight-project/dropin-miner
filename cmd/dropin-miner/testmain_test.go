@@ -11,12 +11,19 @@ package main
 // The guard is a refusal, not a best effort: if the user config directory or
 // the home directory does not resolve under the test root after the
 // redirect, no test runs.
+//
+// The same test run also gets a network fence (internal/networkfence): no
+// test in this package may reach a non-loopback host. See that package for
+// the mechanism; client_network_fence_test.go is this package's own set of
+// guard tests proving every client it builds is actually covered.
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/twilight-project/dropin-miner/internal/networkfence"
 )
 
 func TestMain(m *testing.M) {
@@ -73,5 +80,6 @@ func runWithUserDirsUnderTestRoot(m *testing.M) int {
 			cfg, cfgErr, home, homeErr, root)
 		return 2
 	}
-	return m.Run()
+
+	return networkfence.Guard(m)
 }

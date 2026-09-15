@@ -108,6 +108,12 @@ type doctorFacts struct {
 	SlotID    uint64
 	SpoolDir  string
 
+	// ConfigSource is the file describeConfigSource resolved (ruling
+	// D-R1), empty when resolution found none and built-in defaults are in
+	// use. StateDir is the state directory that config led to.
+	ConfigSource string
+	StateDir     string
+
 	// The AS, in the order the checks consume it. A nil value with a nil
 	// error means the AS answered and the answer was "nothing".
 	Doc    *wire.DiscoveryDocument
@@ -453,6 +459,8 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	f := gatherDoctorFactsFor(ctx, mining, cfg.Mining, cfg.Miner, realIntakeProbeOps())
 	f.ASConfigured = miningASConfigured(cfg.Mining)
 	f.ASConfigKnown = true
+	f.ConfigSource = src
+	f.StateDir = cfg.Mining.StateDir
 	checks := assembleDoctor(f)
 	if *asJSON {
 		code := doctorExit(checks)
@@ -655,6 +663,7 @@ const (
 )
 
 func printDoctor(w io.Writer, checks []doctorCheck, f doctorFacts) {
+	printConfigSource(w, f.ConfigSource, f.StateDir)
 	if f.LocalStateKnown {
 		detail := "persisted runtime decision"
 		switch f.MiningDecision.State {

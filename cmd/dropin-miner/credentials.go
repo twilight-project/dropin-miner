@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -58,6 +60,21 @@ const (
 	// does not answer in this long is reported, not waited on.
 	loginProbeTimeout = 30 * time.Second
 )
+
+// loginProbeDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses (net/http's own DefaultTransport literal), named here rather than
+// left inside a closure so a test can read its Timeout/KeepAlive directly.
+var loginProbeDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// loginProbeTransport is a clone of http.DefaultTransport — its
+// ForceAttemptHTTP2, TLSHandshakeTimeout, IdleConnTimeout, MaxIdleConns and
+// ExpectContinueTimeout all carried over unchanged, since this probe
+// legitimately behaves like any other client on the participant's network,
+// the same as leaving Transport nil did before — with only DialContext
+// replaced, by netdial.For(loginProbeDialer): the same dialer
+// DefaultTransport's own DialContext already used, now named explicitly so
+// a test can intercept it via netdial.Hook. Cloned once, at package init.
+var loginProbeTransport = cloneDefaultTransport(loginProbeDialer)
 
 // keySource names where a resolved key came from, for messages that must
 // say which source to fix.
@@ -241,7 +258,7 @@ func probeKey(ctx context.Context, routerURL, key string) (probeOutcome, string,
 	// CheckRedirect: this probe exists to verify the key before it is ever
 	// stored, and it carries that key in Authorization to do it — the same
 	// reasoning as search.go's client, and it is the same key.
-	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects}).Do(req)
+	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects, Transport: loginProbeTransport}).Do(req)
 	if err != nil {
 		return probeUnavailable, "", err
 	}
