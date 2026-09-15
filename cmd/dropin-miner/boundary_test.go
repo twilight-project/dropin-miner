@@ -192,43 +192,35 @@ func isHTTPClientLiteral(e ast.Expr) bool {
 	return ok && pkg.Name == "http" && sel.Sel.Name == "Client"
 }
 
-// EVERY CUSTOM TRANSPORT EITHER HAS A DIAL SEAM OR IS A NAMED, REVIEWED GAP.
+// EVERY http.Transport IN NON-TEST CODE DIALS THROUGH internal/netdial'S SHARED SEAM.
 //
-// D1b's network_fence_test.go refuses every non-loopback dial this test
-// binary attempts, but it can only do that by replacing http.DefaultTransport
-// — which reaches any `&http.Client{}` that leaves Transport nil, and
-// nothing else. A client that builds its own `*http.Transport` (this module's
-// own AS-isolation discipline: `Proxy: nil` so no environment proxy can
-// interpose on a credential-bearing client's identity) dials through its own,
-// separate default dialer instead, invisible to that swap.
+// internal/networkfence's Guard (called from every package's TestMain that
+// builds a network client) reassigns internal/netdial.DialContext for the
+// duration of a test run. That only reaches a Transport that names
+// netdial.Dial in its own DialContext field — one left unset (which
+// net/http resolves to a bare, unbounded net.Dialer) or pointed at
+// anything else is invisible to it.
 //
-// unfencedCustomTransports is the reviewed list of exactly which files do
-// that today with no seam of their own — pkg/auth's discovery and DPoP
-// transports, out of scope for a seam until a separate ruling accepts one
-// there (client_network_fence_test.go's
-// TestPkgAuthTransportsAreNotYetCoveredByTheNetworkFence is the guard-side
-// half of this same fact). wallet_tx.go builds the same shape but is NOT
-// listed here, because it also gives itself a DialContext seam
-// (rpcClientDialContext) that a guard test arms — this sweep accepts that as
-// covered by checking for the word DialContext anywhere in the same file,
-// not just inside the Transport literal itself, since the seam is wired in a
-// separate statement after construction, not inside the literal.
+// This sweep is why "invisible to it" is not hypothetical: D1c found that
+// naming netdial.DialContext directly — the variable, not the Dial function
+// — instead copies whatever function value the variable held at that
+// Transport's construction time into the struct field permanently. Every
+// package-level Transport var in this module (constructed once, at init,
+// before any TestMain ever runs) was built that way for one commit and was
+// never actually reachable by the fence at all; it looked covered only
+// because of an unrelated proxy-environment masking bug producing the same
+// symptom for a different reason. internal/netdial's own
+// TestDialIndirectsThroughAReassignedDialContext guards the mechanism;
+// this sweep guards every call site that has to use it correctly.
 //
-// The point of running this test at all, rather than trusting the four rows
-// above to stay current by review: a FUTURE file that builds a fifth isolated
-// Transport, anywhere in the module, trips this test instead of silently
-// opening a hole the fence cannot see — exactly what "give it a test seam and
-// cover that" has to mean for the client that comes after this one.
-var unfencedCustomTransports = map[string]bool{
-	"pkg/auth/discovery.go": true,
-	"pkg/auth/transport.go": true,
-}
-
-func TestEveryCustomTransportEitherHasADialSeamOrIsAReviewedGap(t *testing.T) {
+// A future file that builds a Transport any other way — its own
+// net.Dialer, DialContext left unset, or a copy of netdial.DialContext
+// instead of netdial.Dial — trips this test rather than silently opening a
+// hole the fence cannot see.
+func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 	checked := 0
-	seen := map[string]bool{}
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -250,25 +242,20 @@ func TestEveryCustomTransportEitherHasADialSeamOrIsAReviewedGap(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
-		hasDialSeamInFile := fileMentionsDialContext(file)
+		local := netdialLocalName(file)
 		ast.Inspect(file, func(n ast.Node) bool {
 			lit, ok := n.(*ast.CompositeLit)
-			if !ok || !isHTTPTransportLiteral(lit.Type) || !literalIsolatesProxy(lit) {
+			if !ok || !isHTTPTransportLiteral(lit.Type) {
 				return true
 			}
 			checked++
-			if hasDialSeamInFile {
+			if transportLiteralDialsThroughSeam(lit, local) {
 				return true
 			}
-			if unfencedCustomTransports[rel] {
-				seen[rel] = true
-				return true
-			}
-			t.Errorf("%s:%d: a new http.Transport{Proxy: nil} with no DialContext seam anywhere in the file — "+
-				"the network fence's http.DefaultTransport swap cannot reach a client built from this.\n"+
-				"  Give it a DialContext seam (wallet_tx.go's rpcClientDialContext is the pattern) and a guard "+
-				"test in client_network_fence_test.go, or add this file to unfencedCustomTransports with the "+
-				"ruling that accepts the gap.",
+			t.Errorf("%s:%d: an http.Transport is built without DialContext: netdial.Dial — "+
+				"internal/networkfence's test fence cannot reach a client built from this.\n"+
+				"  Name the seam explicitly, exactly as every other Transport in the module does "+
+				"(netdial.Dial, never netdial.DialContext itself — see internal/netdial's own doc comment).",
 				rel, fset.Position(lit.Pos()).Line)
 			return true
 		})
@@ -278,39 +265,58 @@ func TestEveryCustomTransportEitherHasADialSeamOrIsAReviewedGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if checked == 0 {
-		t.Fatal("no isolated http.Transport{Proxy: nil} was found anywhere in the module; " +
+		t.Fatal("no http.Transport construction was found anywhere in the module; " +
 			"this test is no longer looking at anything")
 	}
-	for rel := range unfencedCustomTransports {
-		if !seen[rel] {
-			t.Errorf("unfencedCustomTransports names %s but no Transport{Proxy: nil} literal was found there "+
-				"anymore — remove the row, or check whether it moved", rel)
-		}
-	}
+	t.Logf("checked %d http.Transport construction(s) module-wide", checked)
 }
 
-// fileMentionsDialContext reports whether the identifier DialContext
-// appears anywhere in file — as a struct field key inside a composite
-// literal, or as a plain identifier such as a package-local seam variable
-// or an assignment to one (wallet_tx.go's rpcClientDialContext is the
-// latter shape: the seam is wired in a statement after the Transport
-// literal, not inside it). An AST walk rather than a source-text search:
-// this file already parses every candidate with go/parser, and gosec's
-// filesystem-in-a-WalkDir-callback rule (G122) is exactly the reason not to
-// also read the raw bytes separately just for a substring check.
-func fileMentionsDialContext(file *ast.File) bool {
-	found := false
-	ast.Inspect(file, func(n ast.Node) bool {
-		if found {
+// netdialImportPath is internal/netdial's import path, quoted exactly as
+// go/ast represents an ImportSpec's Path.Value.
+const netdialImportPath = `"github.com/twilight-project/dropin-miner/internal/netdial"`
+
+// netdialLocalName returns the identifier file uses to refer to
+// internal/netdial — its import alias if it has one, else the package's
+// own name "netdial" — or "" if the file does not import it at all.
+func netdialLocalName(file *ast.File) string {
+	for _, imp := range file.Imports {
+		if imp.Path.Value != netdialImportPath {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		return "netdial"
+	}
+	return ""
+}
+
+// transportLiteralDialsThroughSeam reports whether lit's DialContext key,
+// if present, is exactly netdialLocal.Dial — a selector on the file's own
+// import of internal/netdial, named Dial. Naming the DialContext variable
+// itself (a different identifier, Sel.Name == "DialContext") does not
+// count: that is precisely the bug this sweep exists to catch.
+func transportLiteralDialsThroughSeam(lit *ast.CompositeLit, netdialLocal string) bool {
+	if netdialLocal == "" {
+		return false
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		id, ok := kv.Key.(*ast.Ident)
+		if !ok || id.Name != "DialContext" {
+			continue
+		}
+		sel, ok := kv.Value.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Dial" {
 			return false
 		}
-		if id, ok := n.(*ast.Ident); ok && id.Name == "DialContext" {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == netdialLocal
+	}
+	return false
 }
 
 func isHTTPTransportLiteral(e ast.Expr) bool {
@@ -320,26 +326,6 @@ func isHTTPTransportLiteral(e ast.Expr) bool {
 	}
 	pkg, ok := sel.X.(*ast.Ident)
 	return ok && pkg.Name == "http" && sel.Sel.Name == "Transport"
-}
-
-// literalIsolatesProxy reports whether the composite literal sets
-// Proxy: nil — the isolation shape every custom Transport in this module
-// uses instead of leaving Transport nil, so that no environment proxy can
-// silently interpose on a credential-bearing client's identity.
-func literalIsolatesProxy(lit *ast.CompositeLit) bool {
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		id, ok := kv.Key.(*ast.Ident)
-		if !ok || id.Name != "Proxy" {
-			continue
-		}
-		v, ok := kv.Value.(*ast.Ident)
-		return ok && v.Name == "nil"
-	}
-	return false
 }
 
 // TestConnectAndMiningNeverImportOSExec is invariant 11 (agent

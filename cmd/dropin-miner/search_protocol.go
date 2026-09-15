@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 )
 
 // defaultSearchTimeout is the whole-operation budget for one search: not
@@ -42,10 +44,20 @@ var searchMaxBody int64 = 32 << 20
 const traceUnsupportedCode = "trace_unsupported"
 
 // searchTransport is a package-local seam: nil in production, so the
-// search client uses net/http's default transport. A test sets it to
-// inspect the deadline each request carries, which a loopback server
-// cannot show and a sleep could only approximate.
+// search client uses searchDefaultTransport. A test sets it to inspect the
+// deadline each request carries, which a loopback server cannot show and a
+// sleep could only approximate — a different purpose from netdial.Dial,
+// which searchDefaultTransport itself dials through, and which a network-fence
+// test reassigns module-wide rather than per client.
 var searchTransport http.RoundTripper
+
+// searchDefaultTransport dials through netdial's shared seam, preserving
+// http.DefaultTransport's own Proxy, the same reasoning as
+// loginProbeTransport in credentials.go (this is the same router, reached
+// the same way). Package-level and constructed once rather than per search,
+// so repeated searches in one process still share a connection pool — the
+// same sharing DefaultTransport gave every search before this.
+var searchDefaultTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
 
 // Why a body the client read is not usable. These are values rather than
 // message text because the machine envelope classifies from them.

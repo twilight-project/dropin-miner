@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/internal/networkfence"
 )
 
 const (
@@ -38,7 +40,14 @@ func TestMain(m *testing.M) {
 	if len(os.Args) >= 2 && os.Args[1] == acceptanceHelper {
 		os.Exit(runAcceptanceHelper(os.Args[2:]))
 	}
-	os.Exit(m.Run())
+	if os.Getenv("DROPIN_MINER_LIVE_RELEASE") == "1" {
+		// TestLiveReleaseVerification (live_test.go) is the one test in this
+		// package deliberately opted into reaching the real GitHub release
+		// API; the fence would refuse it exactly as it would any other real
+		// host, so this one env-gated path skips installing it.
+		os.Exit(m.Run())
+	}
+	os.Exit(networkfence.Guard(m))
 }
 
 func trailerVersion(path string) (string, error) {

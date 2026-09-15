@@ -12,16 +12,18 @@ package main
 // the home directory does not resolve under the test root after the
 // redirect, no test runs.
 //
-// The same test run also gets a network fence (network_fence_test.go): no
-// test in this package may reach a non-loopback host. See that file for the
-// mechanism; this file only installs it and fails the run if anything it
-// refused went unexamined.
+// The same test run also gets a network fence (internal/networkfence): no
+// test in this package may reach a non-loopback host. See that package for
+// the mechanism; client_network_fence_test.go is this package's own set of
+// guard tests proving every client it builds is actually covered.
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/twilight-project/dropin-miner/internal/networkfence"
 )
 
 func TestMain(m *testing.M) {
@@ -79,26 +81,5 @@ func runWithUserDirsUnderTestRoot(m *testing.M) int {
 		return 2
 	}
 
-	if err := installNetworkFence(); err != nil {
-		fmt.Fprintln(os.Stderr, "TestMain: refusing to run:", err)
-		return 2
-	}
-
-	code := m.Run()
-
-	// A refusal nothing consumed is a dial some test made toward a real
-	// host without a guard test examining it — the exact shape of an
-	// accidental leak (or a regression in the guard the leak used to need).
-	// Loud and fatal, not a log line: the whole point of the fence is that
-	// this case never passes quietly.
-	if left := networkFenceRemaining(); len(left) > 0 {
-		fmt.Fprintf(os.Stderr, "TestMain: the network fence refused %d dial(s) no test examined:\n", len(left))
-		for _, r := range left {
-			fmt.Fprintf(os.Stderr, "  %s\n", r)
-		}
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
+	return networkfence.Guard(m)
 }

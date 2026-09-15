@@ -28,13 +28,13 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -200,34 +200,25 @@ func buildSignedSend(key *auth.WalletKey, p sendParams) ([]byte, error) {
 
 // ---- CometBFT JSON-RPC ----
 
-// rpcClientDialContext is a package-local seam, the same idiom as
-// search.go's searchTransport: nil in production, so newRPCClient's
-// Transport dials for real with no environment proxy in the way (the
-// comment on that Transport literal explains why). A test sets it to
-// prove the module's network fence still reaches this client even though
-// it builds its own *http.Transport rather than using
-// http.DefaultTransport — a global DefaultTransport swap alone would not,
-// since this Transport's DialContext is otherwise unset.
-var rpcClientDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-
 type rpcClient struct {
 	base string
 	http *http.Client
 }
 
 func newRPCClient(base string) *rpcClient {
-	transport := &http.Transport{Proxy: nil}
-	if rpcClientDialContext != nil {
-		transport.DialContext = rpcClientDialContext
-	}
 	return &rpcClient{
 		base: strings.TrimRight(base, "/"),
 		// Never consult HTTP_PROXY for a node endpoint the operator named.
 		// CheckRedirect: no bearer credential here, but a broadcast body
 		// (a signed transaction) would still be replayed to whatever host a
-		// 307/308 named, on the operator-configured chain node.
+		// 307/308 named, on the operator-configured chain node. DialContext:
+		// netdial's shared seam — this Transport isolates itself from the
+		// proxy environment (Proxy: nil), unlike http.DefaultTransport, so
+		// leaving DialContext unset would have meant a bare net.Dialer with
+		// no explicit timeout; naming the seam here instead gives it the
+		// same bounded dialer as everything else in the module.
 		http: &http.Client{
-			Transport:     transport,
+			Transport:     &http.Transport{Proxy: nil, DialContext: netdial.Dial},
 			Timeout:       30 * time.Second,
 			CheckRedirect: auth.SameOriginRedirects,
 		},

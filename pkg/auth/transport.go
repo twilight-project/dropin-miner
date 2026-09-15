@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 )
 
 type dpopTransport struct {
@@ -23,7 +25,12 @@ type dpopTransport struct {
 }
 
 func newDPoPTransport(proofer *Proofer) *dpopTransport {
-	return &dpopTransport{base: &http.Transport{Proxy: nil}, proofer: proofer}
+	// Proxy: nil, same discipline as discovery.go's client — no environment
+	// proxy may silently interpose on AS identity. DialContext: netdial's
+	// shared seam, so this transport's dialer is bounded the same as every
+	// other client in the module rather than the bare, timeout-less
+	// net.Dialer a Transport with neither field set would otherwise use.
+	return &dpopTransport{base: &http.Transport{Proxy: nil, DialContext: netdial.Dial}, proofer: proofer}
 }
 
 func (t *dpopTransport) currentNonce() string {

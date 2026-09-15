@@ -478,8 +478,14 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	// router legitimately redirecting within its own origin must not break
 	// every search. Timeout stays 0: the deadline is ctx's, so it covers
 	// the body read too, which a client Timeout would also do but could
-	// not share across the two attempts.
-	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects, Transport: searchTransport}
+	// not share across the two attempts. Transport: searchTransport's own
+	// test override takes priority; production leaves it nil and falls
+	// back to searchDefaultTransport.
+	transport := searchTransport
+	if transport == nil {
+		transport = searchDefaultTransport
+	}
+	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects, Transport: transport}
 
 	out.Started = now()
 	attempt, err := postSearch(ctx, client, call, body)

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 )
 
@@ -63,6 +64,14 @@ const (
 // the same answer (§5.2), one no oracle.
 var ErrAgentNotFound = errors.New("platform: agent not found")
 
+// platformTransport dials through netdial's shared seam, preserving
+// http.DefaultTransport's own Proxy — the search platform is reached over
+// the participant's ordinary network path, the same as a browser visiting
+// the claim URL would be. Package-level and constructed once: every Client
+// this package builds shares one connection pool, the same sharing
+// DefaultTransport gave every request before this.
+var platformTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
+
 // newPlatformClient is the only kind of http.Client this package may
 // construct, mirroring pkg/auth/credentialclient.go's
 // newCredentialClient in shape: bounded, same-origin redirects via
@@ -76,6 +85,7 @@ func newPlatformClient() *http.Client {
 	return &http.Client{
 		Timeout:       clientTimeout,
 		CheckRedirect: auth.SameOriginRedirects,
+		Transport:     platformTransport,
 	}
 }
 

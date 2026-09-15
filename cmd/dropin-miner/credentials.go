@@ -44,6 +44,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -58,6 +59,15 @@ const (
 	// does not answer in this long is reported, not waited on.
 	loginProbeTimeout = 30 * time.Second
 )
+
+// loginProbeTransport dials through netdial's shared seam, preserving
+// http.DefaultTransport's own Proxy (this probe legitimately honors the
+// participant's proxy settings, same as a browser would) while naming the
+// dial function explicitly instead of leaving Transport nil and relying on
+// DefaultTransport implicitly. Package-level and constructed once, the same
+// shape as http.DefaultTransport itself, so repeated logins in one process
+// still share one connection pool.
+var loginProbeTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
 
 // keySource names where a resolved key came from, for messages that must
 // say which source to fix.
@@ -241,7 +251,7 @@ func probeKey(ctx context.Context, routerURL, key string) (probeOutcome, string,
 	// CheckRedirect: this probe exists to verify the key before it is ever
 	// stored, and it carries that key in Authorization to do it — the same
 	// reasoning as search.go's client, and it is the same key.
-	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects}).Do(req)
+	resp, err := (&http.Client{Timeout: loginProbeTimeout, CheckRedirect: auth.SameOriginRedirects, Transport: loginProbeTransport}).Do(req)
 	if err != nil {
 		return probeUnavailable, "", err
 	}

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 )
 
 // The one release origin, compiled in. No environment variable, flag or
@@ -66,14 +68,23 @@ func NewHTTPSource(client *http.Client) *HTTPSource {
 	return &HTTPSource{client: client, apiBase: githubAPIBase, downloadBase: githubDownloadBase}
 }
 
-// NewHTTPClient is the updater's only client: the default transport (so the
-// participant's proxy settings and TLS defaults apply), a per-request timeout,
-// and a redirect policy that follows only HTTPS, at most five hops, to
-// releaseHosts. It sends no credential.
+// selfupdateTransport dials through netdial's shared seam, preserving
+// http.DefaultTransport's own Proxy so the participant's proxy settings
+// still apply, same as before this named the dial function explicitly.
+// Package-level and constructed once: every client this package builds
+// shares one connection pool.
+var selfupdateTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
+
+// NewHTTPClient is the updater's only client: the shared dial seam (so the
+// participant's proxy settings and TLS defaults apply, same as
+// http.DefaultTransport), a per-request timeout, and a redirect policy that
+// follows only HTTPS, at most five hops, to releaseHosts. It sends no
+// credential.
 func NewHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout:       RequestTimeout,
 		CheckRedirect: checkReleaseRedirect,
+		Transport:     selfupdateTransport,
 	}
 }
 

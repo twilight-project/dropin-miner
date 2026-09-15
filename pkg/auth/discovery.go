@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/wire"
 )
 
@@ -97,6 +98,13 @@ func NewDiscoverer(cfg DiscoveryConfig) (*Discoverer, error) {
 			// Same discipline as the upstream path: no environment
 			// proxy may silently interpose on AS identity.
 			Proxy: nil,
+			// netdial's shared seam: previously left unset, which
+			// net/http resolves to a bare net.Dialer with no explicit
+			// connect timeout — naming it here gives this transport the
+			// same bounded dialer as every other client in the module,
+			// still bounded overall by this Client's own 30s Timeout
+			// either way.
+			DialContext: netdial.Dial,
 		},
 		// §19: endpoint origins must not silently redirect the proxy to
 		// a different Authorization Server identity (AUTH-022). Same-
