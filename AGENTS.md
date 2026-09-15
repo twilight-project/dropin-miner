@@ -194,7 +194,17 @@ each line names the file that owns the rule and the test that proves it.
 - **Wallet custody and the send journal** — `wallet_store.go` owns the creation lock and the
   wallet directory's layout; `wallet_journal.go` owns `pending_tx.json` and its resolution;
   `wallet_tx.go` hand-encodes the signed bytes. `wallet_lock_test.go` proves creation is exclusive
-  and `wallet_journal_test.go` proves a rebroadcast never resolves a journal.
+  and `wallet_journal_test.go` proves a rebroadcast never resolves a journal. `wallet_acl.go` owns
+  who can read the wallet: on Windows the wallet directory and every file in it carry their own
+  protected owner-only DACL — set by `openWalletDir` on a directory it creates and by
+  `writeWalletFile` on every write, repaired recursively by setup and set-aside adoption (a link,
+  a reparse point or an object whose DACL cannot be set fails the run), reported by `doctor`'s
+  `wallet access` — because neither a search nor a flush reads the wallet, while
+  `credentials.json` and `state\`, which a sandboxed search and flush do read, are deliberately
+  left to inherit. POSIX is unchanged: a sandboxed agent runs as the participant, which modes
+  cannot express. `wallet_acl_test.go` proves the walk and the repair decision on every OS;
+  `wallet_acl_windows_test.go` proves, as a second principal holding an inherited read entry on
+  the installation, that `credentials.json` opens and the wallet does not.
 - **Durable evidence delivery** — `pkg/fsx` owns the atomic, fsync'd write (Windows included);
   `pkg/mining/spool` owns the queue and its quarantine; `pkg/mining/collector` owns attempts and
   the next-attempt time; `pkg/auth/submit.go` owns the AS exchange and what counts as an ack.

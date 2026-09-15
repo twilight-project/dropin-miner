@@ -30,6 +30,19 @@ this machine only ever receives; spending needs the passphrase you chose.
 If you would rather be paid into a wallet you already control, paste that
 address when asked. Nothing else changes.
 
+The wallet setup makes lives in `~/.tokendrop/wallet`. Nothing but you needs to
+read it: a search uses the stored key in `credentials.json` and a flush uses the
+state folder, and neither touches the wallet. On Windows, setup gives the wallet
+folder and every file in it an access list of their own with only you on it, so
+access another program adds to `~/.tokendrop` — a coding agent's sandbox, for
+instance — reaches the rest of the installation and not the wallet. Running
+`dropin-miner setup` again puts that right for a wallet an earlier version made
+(and stops, saying why, if something in the wallet folder cannot be secured, such
+as a link to somewhere else); `doctor`'s `wallet access` line says whether anyone
+else can read it. On macOS and Linux an agent's sandbox runs as you, and file
+permissions cannot tell the two apart, so a sandboxed command can read the
+wallet file there; the key inside only spends with your passphrase.
+
 ## Setup
 
 macOS and Linux:
@@ -152,7 +165,8 @@ dropin-miner payout show     # ACTIVE, and the address as the chain renders it
 dropin-miner agents status   # which agents are set up
 dropin-miner doctor          # authorization server, enrolled, joined this
                              # epoch, payout address, earning, intake
-                             # writable, recording
+                             # writable, recording (on Windows, also
+                             # wallet access)
 ```
 
 Restart any agent that was already open, and search as you normally would.
@@ -257,7 +271,11 @@ join it when `[miner] enabled` is set, which is where the mining observation
 is recorded. Deliberately those directories and
 never the home itself: `tokendrop.toml`, `credentials.json` and `wallet/`
 stay read-only to sandboxed commands, so a command that goes wrong inside
-Codex cannot rewrite where your credentials are sent. Without the block,
+Codex cannot rewrite where your credentials are sent. Reading is a different
+matter: a sandboxed command can read `credentials.json`, because a search needs
+your key, and the state directory, because a flush needs it. On Windows it
+cannot read `wallet/`, which keeps an access list of its own (see
+[Where rewards land](#where-rewards-land)). Without the block,
 Codex's default `workspace-write` sandbox lets the search return results but
 silently blocks the write, so searches earn nothing and the claim is never
 picked up.

@@ -315,6 +315,9 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 			r.changed = true
 		}
 	}
+	if code := r.walletAccess(); code != exitOK {
+		return code
+	}
 	r.miningDecisionNote()
 
 	// ── 4. config ──
@@ -500,6 +503,37 @@ func (r *setupRun) directories() int {
 		}
 	}
 	return exitOK
+}
+
+// walletAccess gives the installation's wallet directory, and every directory
+// and file beneath it, its own owner-only access list where the platform has
+// access lists to manage (wallet_acl.go). It runs after adoption, which has
+// already secured a wallet it moved, and before connect. A wallet object it
+// cannot secure stops setup rather than being a warning: a setup that finished
+// would leave that object readable by whoever else the installation directory
+// admits, while saying the installation is set up. A dry run changes no access
+// list, as it creates no directory.
+func (r *setupRun) walletAccess() int {
+	dir := filepath.Join(r.home, "wallet")
+	if r.dry || !lexists(dir) {
+		return exitOK
+	}
+	changed, err := secureWalletTree(dir, r.d.restrictFn())
+	if err != nil {
+		fmt.Fprintf(r.d.stderr, "\ndropin-miner setup: could not make the wallet in %s readable only by you:\n%s\n"+
+			"connect was not run. Fix the reason above, then run setup again.\n",
+			dir, indentLines(err.Error(), "  "))
+		return exitTransport
+	}
+	if changed {
+		r.changed = true
+		r.say("Made the wallet in " + dir + " readable only by you")
+	}
+	return exitOK
+}
+
+func indentLines(s, prefix string) string {
+	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
 }
 
 // miningDecisionNote says what a decision that came with this installation
