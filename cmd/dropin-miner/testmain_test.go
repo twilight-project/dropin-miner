@@ -11,6 +11,11 @@ package main
 // The guard is a refusal, not a best effort: if the user config directory or
 // the home directory does not resolve under the test root after the
 // redirect, no test runs.
+//
+// The same test run also gets a network fence (network_fence_test.go): no
+// test in this package may reach a non-loopback host. See that file for the
+// mechanism; this file only installs it and fails the run if anything it
+// refused went unexamined.
 
 import (
 	"fmt"
@@ -73,5 +78,27 @@ func runWithUserDirsUnderTestRoot(m *testing.M) int {
 			cfg, cfgErr, home, homeErr, root)
 		return 2
 	}
-	return m.Run()
+
+	if err := installNetworkFence(); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: refusing to run:", err)
+		return 2
+	}
+
+	code := m.Run()
+
+	// A refusal nothing consumed is a dial some test made toward a real
+	// host without a guard test examining it — the exact shape of an
+	// accidental leak (or a regression in the guard the leak used to need).
+	// Loud and fatal, not a log line: the whole point of the fence is that
+	// this case never passes quietly.
+	if left := networkFenceRemaining(); len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "TestMain: the network fence refused %d dial(s) no test examined:\n", len(left))
+		for _, r := range left {
+			fmt.Fprintf(os.Stderr, "  %s\n", r)
+		}
+		if code == 0 {
+			code = 1
+		}
+	}
+	return code
 }
