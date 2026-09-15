@@ -6,12 +6,32 @@ package main
 
 import (
 	"context"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 )
+
+// cloneDefaultTransport returns a clone of http.DefaultTransport with only
+// DialContext replaced, by netdial.For(dialer). Every field DefaultTransport
+// itself tunes — ForceAttemptHTTP2, TLSHandshakeTimeout, IdleConnTimeout,
+// MaxIdleConns, ExpectContinueTimeout, its own Proxy — carries over
+// unchanged; a client that used to leave Transport nil and rely on
+// DefaultTransport implicitly gets the identical shape back, with only the
+// dial function named explicitly so a test can intercept it. dialer is
+// named by the caller (not built here) so a test can read its own
+// Timeout/KeepAlive directly, which a value captured inside this
+// function's own closure could not offer.
+func cloneDefaultTransport(dialer *net.Dialer) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = netdial.For(dialer)
+	return t
+}
 
 // describeConfigSource is the one function ruling D-R1 names: the config a
 // command reads is resolved in this order — -config, TOKENDROP_CONFIG,

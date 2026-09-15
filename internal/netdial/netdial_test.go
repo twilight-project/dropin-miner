@@ -10,25 +10,13 @@ import (
 )
 
 // TestDefaultMatchesHTTPDefaultTransport proves DefaultTimeout/DefaultKeepAlive
-// (and so DialContext's default) really do reproduce http.DefaultTransport's
-// own dialer, not just a value this package's author believed was the same
-// one. If net/http's own DefaultTransport literal ever changes these values,
-// this test is what notices — the alternative (this package silently
-// drifting from what "the same dialer as before" actually means for the
-// four clients that used to rely on DefaultTransport implicitly) is exactly
-// the kind of behavior change the doc comment promises does not happen.
+// really do reproduce http.DefaultTransport's own dialer values, not just a
+// value this package's author believed was the same one.
 func TestDefaultMatchesHTTPDefaultTransport(t *testing.T) {
 	dt, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		t.Fatalf("http.DefaultTransport is a %T, not *http.Transport", http.DefaultTransport)
 	}
-	// http.DefaultTransport's own DialContext is built from a *net.Dialer
-	// closure (net/http's defaultTransportDialContext), which is not
-	// itself inspectable — so this asserts the one thing that is: this
-	// package's constants match the literal values net/http's own source
-	// constructs DefaultTransport's dialer from (Timeout: 30s, KeepAlive:
-	// 30s), named here rather than hardcoded a second time so a change to
-	// either constant is caught in one place.
 	if DefaultTimeout != 30*time.Second {
 		t.Errorf("DefaultTimeout = %v, want 30s (http.DefaultTransport's own dialer)", DefaultTimeout)
 	}
@@ -40,49 +28,55 @@ func TestDefaultMatchesHTTPDefaultTransport(t *testing.T) {
 	}
 }
 
-// TestDialContextDefaultsToTheDefaultDialer checks what a test CAN check
-// about a func value in Go (nothing compares equal to another func except
-// nil): that DialContext is set at package init, not left nil for the first
-// caller to panic on, and that the dialer its initializer names has the
-// values this package promises.
-func TestDialContextDefaultsToTheDefaultDialer(t *testing.T) {
-	if defaultDialer.Timeout != DefaultTimeout || defaultDialer.KeepAlive != DefaultKeepAlive {
-		t.Fatalf("defaultDialer = %+v, want Timeout=%v KeepAlive=%v", defaultDialer, DefaultTimeout, DefaultKeepAlive)
+// TestForCallsTheGivenDialerWhenNoHookIsInstalled is the behavior For
+// promises production code: with Hook nil, the returned function is
+// indistinguishable from naming base.DialContext directly. Proven by a
+// short-timeout dialer against an address that never accepts a connection
+// (TEST-NET-1, RFC 5737) — if For called anything other than base, the
+// short timeout it was given would not be what bounds the failure.
+func TestForCallsTheGivenDialerWhenNoHookIsInstalled(t *testing.T) {
+	orig := Hook
+	Hook = nil
+	t.Cleanup(func() { Hook = orig })
+
+	base := &net.Dialer{Timeout: 50 * time.Millisecond}
+	dial := For(base)
+	start := time.Now()
+	_, err := dial(context.Background(), "tcp", "192.0.2.1:80")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("dialing TEST-NET-1 succeeded — that address must never be reachable")
 	}
-	if DialContext == nil {
-		t.Fatal("DialContext is nil at package init — every production Transport that names it would panic on first dial")
+	if elapsed > 2*time.Second {
+		t.Fatalf("dial took %v, want roughly base.Timeout (50ms) — For is not using the given dialer", elapsed)
 	}
 }
 
-// TestDialIndirectsThroughAReassignedDialContext is the injection-checked
-// guarantee this package exists to make true: a Transport built as a
-// package-level var (constructed once, at init, before any test's TestMain
-// ever runs) and given DialContext: Dial must still be reachable after a
-// test reassigns DialContext later. The bug this guards against is real
-// and was found building D1c: a Transport built with `DialContext:
-// DialContext` (naming the variable directly) copies whatever function
-// value DialContext held AT THAT MOMENT into the struct field permanently
-// — reassigning the package variable afterward has no effect on a Transport
-// already built that way, so cmd/dropin-miner's own package-level
-// Transports (the login probe, the search client, wallet_tx.go before this
-// package existed) were never actually reached by the test fence at all;
-// they just happened to look refused because of an unrelated proxy-env
-// masking bug that produced the same symptom for a different reason.
-func TestDialIndirectsThroughAReassignedDialContext(t *testing.T) {
-	// Mimics exactly what a package-level var elsewhere in the module does:
-	// captured once, before DialContext is ever reassigned.
-	capturedAtInitTime := Dial
+// TestForObservesAHookInstalledAfterConstruction is the injection-checked
+// guarantee this package exists to make true: a DialContext function
+// built as a package-level var (constructed once, at init, before any
+// test's TestMain ever runs) via For(base) must still be reachable after a
+// test reassigns Hook later. The bug this guards against is real and was
+// found building D1c: naming a package variable directly in a Transport
+// literal (DialContext: someVar) copies whatever function value the
+// variable held AT THAT MOMENT into the struct field permanently —
+// reassigning the variable afterward has no effect on a Transport already
+// built that way. For's closure reads Hook fresh on every call instead, so
+// this must pass even when dial was obtained before Hook is set.
+func TestForObservesAHookInstalledAfterConstruction(t *testing.T) {
+	// Mimics exactly what a package-level var elsewhere in the module
+	// does: obtained once, before Hook is ever installed.
+	dial := For(&net.Dialer{})
 
-	orig := DialContext
-	t.Cleanup(func() { DialContext = orig })
-
-	sentinel := errors.New("sentinel: DialContext was called")
-	DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	orig := Hook
+	t.Cleanup(func() { Hook = orig })
+	sentinel := errors.New("sentinel: Hook was called")
+	Hook = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return nil, sentinel
 	}
 
-	_, err := capturedAtInitTime(context.Background(), "tcp", "example.invalid:443")
+	_, err := dial(context.Background(), "tcp", "example.invalid:443")
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("Dial captured before reassignment did not observe the reassigned DialContext: got %v, want the sentinel", err)
+		t.Fatalf("a dial function obtained before Hook was installed did not observe it: got %v, want the sentinel", err)
 	}
 }

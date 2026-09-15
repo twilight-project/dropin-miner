@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,18 +47,25 @@ const traceUnsupportedCode = "trace_unsupported"
 // searchTransport is a package-local seam: nil in production, so the
 // search client uses searchDefaultTransport. A test sets it to inspect the
 // deadline each request carries, which a loopback server cannot show and a
-// sleep could only approximate — a different purpose from netdial.Dial,
-// which searchDefaultTransport itself dials through, and which a network-fence
-// test reassigns module-wide rather than per client.
+// sleep could only approximate — a different purpose from netdial.Hook,
+// which searchDefaultTransport itself dials through (via searchDialer) and
+// which internal/networkfence reassigns module-wide rather than per client.
 var searchTransport http.RoundTripper
 
-// searchDefaultTransport dials through netdial's shared seam, preserving
-// http.DefaultTransport's own Proxy, the same reasoning as
-// loginProbeTransport in credentials.go (this is the same router, reached
-// the same way). Package-level and constructed once rather than per search,
-// so repeated searches in one process still share a connection pool — the
-// same sharing DefaultTransport gave every search before this.
-var searchDefaultTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
+// searchDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses, named here rather than left inside a closure so a test can read
+// its Timeout/KeepAlive directly.
+var searchDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// searchDefaultTransport is a clone of http.DefaultTransport, the same
+// reasoning as loginProbeTransport in credentials.go (this is the same
+// router, reached the same way): every field DefaultTransport itself tunes
+// carries over unchanged, with only DialContext replaced by
+// netdial.For(searchDialer). Package-level and constructed once rather
+// than per search, so repeated searches in one process still share a
+// connection pool — the same sharing DefaultTransport gave every search
+// before this.
+var searchDefaultTransport = cloneDefaultTransport(searchDialer)
 
 // Why a body the client read is not usable. These are values rather than
 // message text because the machine envelope classifies from them.

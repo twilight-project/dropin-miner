@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -205,6 +206,13 @@ type rpcClient struct {
 	http *http.Client
 }
 
+// walletRPCDialer is the same zero-value *net.Dialer this Transport always
+// used (no explicit connect timeout, net/http's 15s default keep-alive) —
+// named here, rather than left as an implicit zero net.Dialer{} inside the
+// Transport literal, only so a test can read its Timeout/KeepAlive
+// directly and confirm this commit did not change them.
+var walletRPCDialer = &net.Dialer{}
+
 func newRPCClient(base string) *rpcClient {
 	return &rpcClient{
 		base: strings.TrimRight(base, "/"),
@@ -212,13 +220,11 @@ func newRPCClient(base string) *rpcClient {
 		// CheckRedirect: no bearer credential here, but a broadcast body
 		// (a signed transaction) would still be replayed to whatever host a
 		// 307/308 named, on the operator-configured chain node. DialContext:
-		// netdial's shared seam — this Transport isolates itself from the
-		// proxy environment (Proxy: nil), unlike http.DefaultTransport, so
-		// leaving DialContext unset would have meant a bare net.Dialer with
-		// no explicit timeout; naming the seam here instead gives it the
-		// same bounded dialer as everything else in the module.
+		// netdial.For(walletRPCDialer) — walletRPCDialer's own dial, unless
+		// a test installs netdial.Hook; the dialer itself is unchanged from
+		// what this Transport always used.
 		http: &http.Client{
-			Transport:     &http.Transport{Proxy: nil, DialContext: netdial.Dial},
+			Transport:     &http.Transport{Proxy: nil, DialContext: netdial.For(walletRPCDialer)},
 			Timeout:       30 * time.Second,
 			CheckRedirect: auth.SameOriginRedirects,
 		},

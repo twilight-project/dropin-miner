@@ -195,28 +195,35 @@ func isHTTPClientLiteral(e ast.Expr) bool {
 // EVERY http.Transport IN NON-TEST CODE DIALS THROUGH internal/netdial'S SHARED SEAM.
 //
 // internal/networkfence's Guard (called from every package's TestMain that
-// builds a network client) reassigns internal/netdial.DialContext for the
-// duration of a test run. That only reaches a Transport that names
-// netdial.Dial in its own DialContext field — one left unset (which
-// net/http resolves to a bare, unbounded net.Dialer) or pointed at
-// anything else is invisible to it.
+// builds a network client) reassigns internal/netdial.Hook for the
+// duration of a test run. Every Transport this module builds reaches that
+// hook only by setting its own DialContext field to netdial.For(itsOwnDialer)
+// — one built with its own net.Dialer instead, or with DialContext left
+// unset, is invisible to it.
 //
-// This sweep is why "invisible to it" is not hypothetical: D1c found that
-// naming netdial.DialContext directly — the variable, not the Dial function
-// — instead copies whatever function value the variable held at that
-// Transport's construction time into the struct field permanently. Every
-// package-level Transport var in this module (constructed once, at init,
-// before any TestMain ever runs) was built that way for one commit and was
-// never actually reachable by the fence at all; it looked covered only
-// because of an unrelated proxy-environment masking bug producing the same
-// symptom for a different reason. internal/netdial's own
-// TestDialIndirectsThroughAReassignedDialContext guards the mechanism;
-// this sweep guards every call site that has to use it correctly.
+// A DialContext field is set two ways in this module: inline, inside an
+// &http.Transport{...} composite literal (pkg/auth's two, wallet_tx.go's),
+// or as a separate assignment after http.DefaultTransport.Clone() (the
+// login probe and the search client, via client.go's shared
+// cloneDefaultTransport; pkg/platform's client; internal/selfupdate's
+// source) — Clone() itself produces no composite literal to inspect, so
+// this sweep has to catch both an *ast.KeyValueExpr with key DialContext
+// and an *ast.AssignStmt whose left side is some value's .DialContext
+// field, and require the same thing of either: the value assigned is
+// exactly netdial.For(...), a call, never netdial.Hook (or any other name)
+// named directly.
 //
-// A future file that builds a Transport any other way — its own
-// net.Dialer, DialContext left unset, or a copy of netdial.DialContext
-// instead of netdial.Dial — trips this test rather than silently opening a
-// hole the fence cannot see.
+// "Named directly" is not a hypothetical failure mode: D1c found that
+// naming a package variable directly in a Transport literal
+// (DialContext: someVar) copies whatever function value the variable held
+// at that Transport's construction time into the struct field permanently.
+// Every package-level Transport var in this module (constructed once, at
+// init, before any TestMain ever runs) was built that way for one commit
+// and was never actually reachable by the fence at all; it looked covered
+// only because of an unrelated proxy-environment masking bug producing the
+// same symptom for a different reason. internal/netdial's own
+// TestForObservesAHookInstalledAfterConstruction guards the mechanism this
+// sweep exists to make every call site use correctly.
 func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
@@ -229,6 +236,15 @@ func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
 		if d.IsDir() {
 			switch d.Name() {
 			case ".git", "bin", "dist", "testdata", "node_modules":
+				return filepath.SkipDir
+			case "networkfence":
+				// internal/networkfence is test-only infrastructure (its
+				// own doc comment: "no production code anywhere in this
+				// module imports it") and its own DialContext field
+				// assignments are test comparison plumbing
+				// (AssertTransportFieldsMatch nils both sides' DialContext
+				// before comparing them), not a client this sweep needs to
+				// prove is fenced.
 				return filepath.SkipDir
 			}
 			return nil
@@ -243,20 +259,36 @@ func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
 		local := netdialLocalName(file)
-		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.CompositeLit)
-			if !ok || !isHTTPTransportLiteral(lit.Type) {
-				return true
-			}
-			checked++
-			if transportLiteralDialsThroughSeam(lit, local) {
-				return true
-			}
-			t.Errorf("%s:%d: an http.Transport is built without DialContext: netdial.Dial — "+
+		fail := func(pos token.Pos) {
+			t.Errorf("%s:%d: DialContext is not set to netdial.For(...) — "+
 				"internal/networkfence's test fence cannot reach a client built from this.\n"+
-				"  Name the seam explicitly, exactly as every other Transport in the module does "+
-				"(netdial.Dial, never netdial.DialContext itself — see internal/netdial's own doc comment).",
-				rel, fset.Position(lit.Pos()).Line)
+				"  Name the seam explicitly (netdial.For(itsOwnDialer)), the way every other "+
+				"Transport in the module does.",
+				rel, fset.Position(pos).Line)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.KeyValueExpr:
+				id, ok := node.Key.(*ast.Ident)
+				if !ok || id.Name != "DialContext" {
+					return true
+				}
+				checked++
+				if !isNetdialFor(node.Value, local) {
+					fail(node.Pos())
+				}
+			case *ast.AssignStmt:
+				for i, lhs := range node.Lhs {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "DialContext" {
+						continue
+					}
+					checked++
+					if i >= len(node.Rhs) || !isNetdialFor(node.Rhs[i], local) {
+						fail(node.Pos())
+					}
+				}
+			}
 			return true
 		})
 		return nil
@@ -265,10 +297,9 @@ func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	if checked == 0 {
-		t.Fatal("no http.Transport construction was found anywhere in the module; " +
-			"this test is no longer looking at anything")
+		t.Fatal("no DialContext field was set anywhere in the module; this test is no longer looking at anything")
 	}
-	t.Logf("checked %d http.Transport construction(s) module-wide", checked)
+	t.Logf("checked %d DialContext assignment(s) module-wide", checked)
 }
 
 // netdialImportPath is internal/netdial's import path, quoted exactly as
@@ -291,41 +322,24 @@ func netdialLocalName(file *ast.File) string {
 	return ""
 }
 
-// transportLiteralDialsThroughSeam reports whether lit's DialContext key,
-// if present, is exactly netdialLocal.Dial — a selector on the file's own
-// import of internal/netdial, named Dial. Naming the DialContext variable
-// itself (a different identifier, Sel.Name == "DialContext") does not
-// count: that is precisely the bug this sweep exists to catch.
-func transportLiteralDialsThroughSeam(lit *ast.CompositeLit, netdialLocal string) bool {
+// isNetdialFor reports whether e is exactly netdialLocal.For(...) — a call,
+// on the file's own import of internal/netdial, to the function named For.
+// Anything else (a bare identifier, a different function, a call to
+// something else entirely) does not count.
+func isNetdialFor(e ast.Expr, netdialLocal string) bool {
 	if netdialLocal == "" {
 		return false
 	}
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		id, ok := kv.Key.(*ast.Ident)
-		if !ok || id.Name != "DialContext" {
-			continue
-		}
-		sel, ok := kv.Value.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Dial" {
-			return false
-		}
-		pkg, ok := sel.X.(*ast.Ident)
-		return ok && pkg.Name == netdialLocal
-	}
-	return false
-}
-
-func isHTTPTransportLiteral(e ast.Expr) bool {
-	sel, ok := e.(*ast.SelectorExpr)
+	call, ok := e.(*ast.CallExpr)
 	if !ok {
 		return false
 	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "For" {
+		return false
+	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "http" && sel.Sel.Name == "Transport"
+	return ok && pkg.Name == netdialLocal
 }
 
 // TestConnectAndMiningNeverImportOSExec is invariant 11 (agent

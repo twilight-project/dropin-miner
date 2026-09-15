@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,14 +61,20 @@ const (
 	loginProbeTimeout = 30 * time.Second
 )
 
-// loginProbeTransport dials through netdial's shared seam, preserving
-// http.DefaultTransport's own Proxy (this probe legitimately honors the
-// participant's proxy settings, same as a browser would) while naming the
-// dial function explicitly instead of leaving Transport nil and relying on
-// DefaultTransport implicitly. Package-level and constructed once, the same
-// shape as http.DefaultTransport itself, so repeated logins in one process
-// still share one connection pool.
-var loginProbeTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
+// loginProbeDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses (net/http's own DefaultTransport literal), named here rather than
+// left inside a closure so a test can read its Timeout/KeepAlive directly.
+var loginProbeDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// loginProbeTransport is a clone of http.DefaultTransport — its
+// ForceAttemptHTTP2, TLSHandshakeTimeout, IdleConnTimeout, MaxIdleConns and
+// ExpectContinueTimeout all carried over unchanged, since this probe
+// legitimately behaves like any other client on the participant's network,
+// the same as leaving Transport nil did before — with only DialContext
+// replaced, by netdial.For(loginProbeDialer): the same dialer
+// DefaultTransport's own DialContext already used, now named explicitly so
+// a test can intercept it via netdial.Hook. Cloned once, at package init.
+var loginProbeTransport = cloneDefaultTransport(loginProbeDialer)
 
 // keySource names where a resolved key came from, for messages that must
 // say which source to fix.

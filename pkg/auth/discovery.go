@@ -65,6 +65,13 @@ type Discoverer struct {
 	fetchedAt time.Time
 }
 
+// discoveryDialer is the same zero-value *net.Dialer this Transport always
+// used (no explicit connect timeout, net/http's 15s default keep-alive) —
+// named here, rather than left as an implicit zero net.Dialer{} inside the
+// Transport literal, only so a test can read its Timeout/KeepAlive
+// directly and confirm this commit did not change them.
+var discoveryDialer = &net.Dialer{}
+
 // NewDiscoverer validates the configured base URL up front: a malformed
 // or non-HTTPS public URL never produces a single request.
 func NewDiscoverer(cfg DiscoveryConfig) (*Discoverer, error) {
@@ -98,13 +105,12 @@ func NewDiscoverer(cfg DiscoveryConfig) (*Discoverer, error) {
 			// Same discipline as the upstream path: no environment
 			// proxy may silently interpose on AS identity.
 			Proxy: nil,
-			// netdial's shared seam: previously left unset, which
-			// net/http resolves to a bare net.Dialer with no explicit
-			// connect timeout — naming it here gives this transport the
-			// same bounded dialer as every other client in the module,
-			// still bounded overall by this Client's own 30s Timeout
-			// either way.
-			DialContext: netdial.Dial,
+			// netdial.For(discoveryDialer): discoveryDialer's own dial
+			// (the same zero-value net.Dialer this Transport always used —
+			// no explicit connect timeout, net/http's 15s default
+			// keep-alive, unchanged by naming the seam), unless a test
+			// installs netdial.Hook.
+			DialContext: netdial.For(discoveryDialer),
 		},
 		// §19: endpoint origins must not silently redirect the proxy to
 		// a different Authorization Server identity (AUTH-022). Same-

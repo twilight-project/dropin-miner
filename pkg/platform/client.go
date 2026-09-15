@@ -64,13 +64,25 @@ const (
 // the same answer (§5.2), one no oracle.
 var ErrAgentNotFound = errors.New("platform: agent not found")
 
-// platformTransport dials through netdial's shared seam, preserving
-// http.DefaultTransport's own Proxy — the search platform is reached over
-// the participant's ordinary network path, the same as a browser visiting
-// the claim URL would be. Package-level and constructed once: every Client
-// this package builds shares one connection pool, the same sharing
-// DefaultTransport gave every request before this.
-var platformTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: netdial.Dial}
+// platformDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses, named here rather than left inside a closure so a test can read
+// its Timeout/KeepAlive directly.
+var platformDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// platformTransport is a clone of http.DefaultTransport — the search
+// platform is reached over the participant's ordinary network path, the
+// same as a browser visiting the claim URL would be, and every field
+// DefaultTransport itself tunes (ForceAttemptHTTP2, TLSHandshakeTimeout,
+// IdleConnTimeout, MaxIdleConns, ExpectContinueTimeout, its own Proxy)
+// carries over unchanged from what leaving Transport nil gave every
+// request before this — only DialContext is replaced, by
+// netdial.For(platformDialer). Package-level and constructed once: every
+// Client this package builds shares one connection pool.
+var platformTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = netdial.For(platformDialer)
+	return t
+}()
 
 // newPlatformClient is the only kind of http.Client this package may
 // construct, mirroring pkg/auth/credentialclient.go's

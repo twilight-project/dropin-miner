@@ -1,35 +1,31 @@
 // Package netdial is the one dial seam every http.Transport this module
-// builds in production code goes through, instead of each package building
-// its own net.Dialer (or, worse, several different ones with quietly
-// different timeouts). Before this package existed, half of this module's
-// clients (the search client, the login probe, pkg/platform's client,
-// internal/selfupdate's source) relied on http.DefaultTransport's own
-// dialer implicitly, by leaving Transport nil, while the other half
-// (pkg/auth's discovery and DPoP transports, wallet_tx.go's RPC client)
-// built their own *http.Transport with no DialContext at all, which
-// net/http resolves to a bare net.Dialer{} — no explicit connect timeout,
-// the platform's default keep-alive — silently different from
-// DefaultTransport's own 30s/30s. Neither difference was a deliberate
-// choice; it was just what a plain composite literal happened to do.
+// builds in production code goes through — not by sharing one dialer, but
+// by sharing one hook every transport's own dialer checks first.
 //
-// DialContext's default reproduces http.DefaultTransport's own dialer
-// exactly (30s connect timeout, 30s keep-alive — see net/http's own
-// DefaultTransport literal): every production client that used to rely on
-// DefaultTransport implicitly gets byte-for-byte the same dialer by naming
-// this var explicitly instead, and every client that used to build its own
-// Proxy: nil Transport with no DialContext gets an explicit, bounded connect
-// timeout where none existed before — a real difference at the net.Dialer
-// level, but not an observable one: every client in this module already
-// bounds its whole request with an http.Client.Timeout of 30 seconds or
-// more (netdial_test.go's TestDefaultMatchesEveryClientsOwnOuterTimeout
-// checks this), so the raw TCP connect phase was never the constraint that
-// actually governed how long a caller could wait.
+// D1c's first attempt shared a single default dialer (30s timeout, 30s
+// keep-alive, matching http.DefaultTransport) and pointed every Transport
+// at it. That changed production behavior in two directions at once: the
+// four clients that used to rely on http.DefaultTransport implicitly
+// (leaving Transport nil) got a bare &http.Transport{} in its place,
+// losing DefaultTransport's ForceAttemptHTTP2, TLSHandshakeTimeout,
+// IdleConnTimeout, MaxIdleConns and ExpectContinueTimeout — a custom
+// DialContext with none of those set does not behave like
+// DefaultTransport just because the dial timing matches. And the three
+// clients that built their own Proxy: nil Transport with no DialContext at
+// all (net/http's zero net.Dialer: no connect timeout, a 15s keep-alive)
+// got the 30s/30s values instead, a real change this module's own review
+// ruled out.
 //
-// A test — in this package or any other — reassigns DialContext to
-// intercept every dial the whole module attempts, from any package, without
-// needing a seam per client. internal/networkfence is that seam's one
-// consumer: it is what TestMain in every package that builds a network
-// client sets DialContext to.
+// This package fixes both by not choosing a dialer at all. For takes the
+// *net.Dialer a Transport would have used — a fresh zero-value one for a
+// client that built its own Transport, or one built from DefaultTimeout/
+// DefaultKeepAlive for a client cloning http.DefaultTransport — and
+// returns a DialContext function that calls it directly, unchanged from
+// what naming that dialer's own DialContext method would already do. Hook
+// is the only thing that changes that: nil in production, and reassigned
+// to internal/networkfence's fence for the duration of a test run, which
+// then intercepts every Transport built this way at once, regardless of
+// which dialer each would otherwise use.
 package netdial
 
 import (
@@ -39,41 +35,46 @@ import (
 )
 
 // DefaultTimeout and DefaultKeepAlive are http.DefaultTransport's own
-// dialer values (net/http's DefaultTransport literal), named here so a test
-// can assert against them directly rather than against a magic 30 that
-// could silently drift from what net/http actually does.
+// dialer values (net/http's DefaultTransport literal), named here so a
+// client cloning DefaultTransport can build its own equivalent *net.Dialer
+// from named constants rather than a repeated magic 30 — see each such
+// client's own dialer var for why it needs one at all instead of just
+// reading DefaultTransport's.
 const (
 	DefaultTimeout   = 30 * time.Second
 	DefaultKeepAlive = 30 * time.Second
 )
 
-// defaultDialer is unexported and never reassigned: it exists so a test can
-// restore DialContext to production behavior by name (DialContext =
-// defaultDialer.DialContext) without having to reconstruct the same values
-// itself.
-var defaultDialer = &net.Dialer{Timeout: DefaultTimeout, KeepAlive: DefaultKeepAlive}
-
-// DialContext is the seam a test reassigns. Production code never names it
-// directly — see Dial.
-var DialContext func(ctx context.Context, network, addr string) (net.Conn, error) = defaultDialer.DialContext
-
-// Dial is what every http.Transport this module builds in non-test code
-// sets its own DialContext field to — boundary_test.go's
-// TestEveryHTTPTransportDialsThroughTheSharedSeam is what proves that
-// holds module-wide, and a future client that instead builds its own
-// net.Dialer trips that sweep rather than silently opening a hole no test
-// can see.
+// Hook, when non-nil, replaces every dial made by a Transport built with
+// For — internal/networkfence's Install is the only thing that ever
+// assigns it, for the duration of a test run. nil in production.
 //
-// Dial exists, rather than every consumer naming the DialContext variable
-// itself, because several of this module's Transports are package-level
-// vars (constructed once, at package init, so repeated requests share one
-// connection pool) — and DialContext: DialContext in that shape would copy
-// whatever function value the variable held AT INIT TIME into the
-// Transport's own field permanently, before any test's TestMain ever ran
-// to reassign it. Dial is a stable function value that looks up the
-// current DialContext on every call instead, so reassigning DialContext
-// changes what every already-constructed Transport does on its next dial,
-// not just the ones built after the reassignment.
-func Dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	return DialContext(ctx, network, addr)
+// Checked at call time inside the function For returns, never copied at
+// construction: a Transport built as a package-level var, before any
+// TestMain ever runs, still observes a later reassignment of Hook, because
+// the closure For returns reads this variable fresh on every dial rather
+// than capturing whatever it held when the Transport was built. D1c found
+// the alternative the hard way — a seam named directly (DialContext:
+// DialContext, this variable) instead of through an indirecting function
+// copies the function value it held at that moment permanently into the
+// struct field, and a later reassignment has no effect on a Transport
+// already built that way. TestForObservesAHookInstalledAfterConstruction
+// guards the mechanism.
+var Hook func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// For returns a DialContext function for a Transport that would otherwise
+// dial with base directly. In production (Hook nil) it calls
+// base.DialContext for every dial — exactly what naming base.DialContext
+// itself would do, so a client's own choice of dialer (a zero net.Dialer,
+// or one matching DefaultTransport's) is preserved byte for byte. A test
+// installing Hook is the only thing that changes behavior, and it reaches
+// every Transport built this way, not just the ones built after the
+// installation.
+func For(base *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if Hook != nil {
+			return Hook(ctx, network, addr)
+		}
+		return base.DialContext(ctx, network, addr)
+	}
 }

@@ -9,6 +9,7 @@ package auth
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -24,13 +25,20 @@ type dpopTransport struct {
 	nonce string // last server-issued nonce, per AS (one AS per client)
 }
 
+// dpopDialer is the same zero-value *net.Dialer this Transport always used
+// (no explicit connect timeout, net/http's 15s default keep-alive) — named
+// here, rather than left as an implicit zero net.Dialer{} inside the
+// Transport literal, only so a test can read its Timeout/KeepAlive
+// directly and confirm this commit did not change them.
+var dpopDialer = &net.Dialer{}
+
 func newDPoPTransport(proofer *Proofer) *dpopTransport {
 	// Proxy: nil, same discipline as discovery.go's client — no environment
-	// proxy may silently interpose on AS identity. DialContext: netdial's
-	// shared seam, so this transport's dialer is bounded the same as every
-	// other client in the module rather than the bare, timeout-less
-	// net.Dialer a Transport with neither field set would otherwise use.
-	return &dpopTransport{base: &http.Transport{Proxy: nil, DialContext: netdial.Dial}, proofer: proofer}
+	// proxy may silently interpose on AS identity. DialContext:
+	// netdial.For(dpopDialer) — dpopDialer's own dial, unless a test
+	// installs netdial.Hook; the dialer itself is unchanged from what this
+	// Transport always used.
+	return &dpopTransport{base: &http.Transport{Proxy: nil, DialContext: netdial.For(dpopDialer)}, proofer: proofer}
 }
 
 func (t *dpopTransport) currentNonce() string {
