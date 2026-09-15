@@ -157,15 +157,17 @@ connect): enroll -> payout -> join -> login
 is it working, was I paid:
   doctor     checks in a participant's terms — authorization server,
              enrolled, joined this epoch, payout address, earning, intake
-             writable, recording — each saying what to do. Exits non-zero
-             only when every check came back UNKNOWN: a NO is a successful
-             diagnosis. "intake writable", when that check is active, runs
-             one bounded probe operation using at most one inert non-.json
-             file in the directory a search records into; cleanup is
-             attempted and a leftover is reported by pathname.
-             "recording" flags recent miner activity with
-             nothing queued locally or verified at the AS. -json reports as
-             one JSON object instead of text
+             writable, recording and, on Windows, wallet access — each
+             saying what to do. Exits non-zero only when every check came
+             back UNKNOWN: a NO is a successful diagnosis. "intake
+             writable", when that check is active, runs one bounded probe
+             operation using at most one inert non-.json file in the
+             directory a search records into; cleanup is attempted and a
+             leftover is reported by pathname. "recording" flags recent
+             miner activity with nothing queued locally or verified at the
+             AS. "wallet access" names anyone but you who can read the
+             installation's wallet. -json reports as one JSON object
+             instead of text
   earnings   what the chain has paid to your payout address
 
 wallet (a reward address this installation controls):

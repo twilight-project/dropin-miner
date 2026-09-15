@@ -19,13 +19,13 @@ import (
 // owner bits (a read-only key stays read-only) and loses the rest.
 func restrictToOwner(path string, dir bool) error {
 	if dir {
-		return os.Chmod(path, 0o700) // #nosec G302 -- a directory: owner rwx is the most restrictive mode it can be used with
+		return os.Chmod(path, 0o700) // #nosec G302 G703 -- a directory: owner rwx is the most restrictive mode it can be used with; path is inside the installation or wallet directory setup owns
 	}
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path is inside the installation or wallet directory setup owns
 	if err != nil {
 		return err
 	}
-	return os.Chmod(path, info.Mode().Perm()&0o700)
+	return os.Chmod(path, info.Mode().Perm()&0o700) // #nosec G703 -- as above
 }
 
 // systemUserEnvironment has no POSIX meaning: the profile block is the
