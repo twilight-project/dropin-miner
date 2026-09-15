@@ -383,6 +383,49 @@ func TestHookLineageSkipsTheSkillsIsMetaEntryOnAWindowsTranscriptPath(t *testing
 	}
 }
 
+// isMeta alone is not the floor-exclusion signal: it also marks a "user"
+// entry that STARTS a turn with no tool call behind it at all — a
+// continuation prompt, an autonomous-loop tick, a scheduled wake-up. Those
+// must still floor the scan (sourceToolUseID is what's absent on all of
+// them, and present on every isMeta entry the Skill tool injects). Both
+// fixtures here have no assistant text anywhere in the current turn, so a
+// correct floor sends no history; the previous turn's assistant prose
+// ("Answering the earlier question...") must not leak in as a substitute.
+func testHookLineageFloorsAtANoToolCallIsMetaEntry(t *testing.T, fixture, toolUseID string) {
+	fs, ops := newFakeHookOps(nil)
+	fs.files["/t/s.jsonl"] = readHookFixture(t, fixture)
+	hc := hookContext{}
+	out, _ := runHook(t, ops, hc, "lineage", map[string]any{
+		"session_id": "s", "prompt_id": "p", "tool_use_id": toolUseID,
+		"transcript_path": "/t/s.jsonl",
+		"tool_input":      map[string]any{"command": `dropin-miner search -format model "latest stable Go release version"`},
+	})
+	var resp struct {
+		Out struct {
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("output: %s", out)
+	}
+	cmd, ok := resp.Out.Input["command"].(string)
+	if !ok {
+		t.Fatalf("no rewritten command for fixture %s: %s", fixture, out)
+	}
+	env := decodeBridgeFromCommand(t, cmd)
+	if len(env.History) != 0 {
+		t.Errorf("%s: floored past the turn-starting isMeta entry, leaking the previous turn's prose: %+v", fixture, env.History)
+	}
+}
+
+func TestHookLineageFloorsAtAContinuationIsMetaEntryWithNoToolCall(t *testing.T) {
+	testHookLineageFloorsAtANoToolCallIsMetaEntry(t, "claude_code_ismeta_continuation.jsonl", "toolu_bash2")
+}
+
+func TestHookLineageFloorsAtAnAutonomousLoopTickIsMetaEntryWithNoToolCall(t *testing.T) {
+	testHookLineageFloorsAtANoToolCallIsMetaEntry(t, "claude_code_ismeta_autonomous_loop.jsonl", "toolu_bash3")
+}
+
 func TestHookWindowCountsExactlyOnePerCompactionAndSessionStartFlushes(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{cfgPath: "/c.toml", sessionsDir: "/sessions"}

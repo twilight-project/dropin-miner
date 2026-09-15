@@ -297,11 +297,16 @@ func orString(v, fallback string) string {
 //     search made first in a turn inherits the PREVIOUS turn's prose. When
 //     no turn start is in the tail, send nothing rather than guess.
 //   - the floor is a REAL user turn: a `type: "user"` entry the host wrote
-//     for itself — `isMeta: true`, the Skill tool's injected skill body
-//     being the case that reaches every search made through this skill —
-//     is not one. Without this, that entry floors the scan one step too
-//     late and the assistant's sentence right before the Skill call is
-//     never found (#65).
+//     for itself IN RESPONSE TO A TOOL CALL — carrying a non-empty
+//     `sourceToolUseID` — is not one. The Skill tool's injected skill body
+//     is the case that reaches every search made through this skill, and it
+//     always carries this field; without the exclusion that entry floors
+//     the scan one step too late and the assistant's sentence right before
+//     the Skill call is never found (#65). `isMeta` alone is NOT the signal:
+//     it also marks entries that START a turn or sit between turns with no
+//     tool call behind them at all — "Continue from where you left off.",
+//     an autonomous-loop tick, a scheduled wake-up — and those are exactly
+//     the turn starts the floor exists to find.
 //
 // Bounded, fail-open to "".
 func currentAssistantText(ops hookOps, p hookPayload) string {
@@ -317,10 +322,10 @@ func currentAssistantText(ops hookOps, p hookPayload) string {
 		return ""
 	}
 	type entry struct {
-		Type          string          `json:"type"`
-		ToolUseResult json.RawMessage `json:"toolUseResult"`
-		IsMeta        bool            `json:"isMeta"`
-		Message       struct {
+		Type            string          `json:"type"`
+		ToolUseResult   json.RawMessage `json:"toolUseResult"`
+		SourceToolUseID string          `json:"sourceToolUseID"`
+		Message         struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
@@ -350,13 +355,16 @@ func currentAssistantText(ops hookOps, p hookPayload) string {
 		return bs
 	}
 	isAssistant := func(e entry) bool { return e.Type == "assistant" || e.Message.Role == "assistant" }
-	// A real user turn, not a host-injected "user"-typed record: the
-	// tool-result the host also writes (toolUseResult, or only tool_result
-	// blocks) or an isMeta entry such as the Skill tool's injected skill
-	// body (#65) — any other host-injected user record of that kind is
-	// excluded the same way.
+	// A real user turn, not a host-injected "user"-typed record written IN
+	// RESPONSE TO A TOOL CALL: the tool-result the host also writes
+	// (toolUseResult, or only tool_result blocks) or an entry carrying a
+	// non-empty sourceToolUseID, such as the Skill tool's injected skill
+	// body (#65). isMeta on its own is not the signal — it also marks
+	// entries that start a turn with no tool call behind them at all
+	// ("Continue from where you left off.", an autonomous-loop tick), and
+	// those must still floor the scan.
 	isUserTurn := func(e entry) bool {
-		if e.Type != "user" || len(e.ToolUseResult) > 0 || e.IsMeta {
+		if e.Type != "user" || len(e.ToolUseResult) > 0 || e.SourceToolUseID != "" {
 			return false
 		}
 		if len(e.Message.Content) > 0 && e.Message.Content[0] == '"' {
