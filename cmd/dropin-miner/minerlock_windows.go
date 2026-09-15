@@ -49,21 +49,46 @@ func tryFlushLock(path string) (*os.File, bool, flushLockMode, error) {
 	mode := flushLockReadWrite
 	h, err := syscall.CreateFile(name, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil,
 		syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
-	if errors.Is(err, syscall.ERROR_ACCESS_DENIED) {
+	if err != nil {
+		switch classifyFlushLockOpenError(err, false) {
+		case flushOpenBusy:
+			return nil, false, mode, nil
+		case flushOpenFallBack:
+		default:
+			return nil, false, mode, err
+		}
 		mode = flushLockReadOnly
 		h, err = syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil,
 			syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
-		if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
-			return nil, false, mode, errFlushLockAbsent
+		if err != nil {
+			switch classifyFlushLockOpenError(err, true) {
+			case flushOpenBusy:
+				return nil, false, mode, nil
+			case flushOpenAbsent:
+				return nil, false, mode, errFlushLockAbsent
+			default:
+				return nil, false, mode, err
+			}
 		}
-	}
-	if err != nil {
-		if errors.Is(err, errSharingViolation) || errors.Is(err, errLockViolation) {
-			return nil, false, mode, nil
-		}
-		return nil, false, mode, err
 	}
 	return os.NewFile(uintptr(h), path), true, mode, nil
+}
+
+// classifyFlushLockOpenError is the Windows fallback decision. The exclusive
+// open is the lock, so a sharing or lock violation is busy on either open. A
+// read-write open denied with ERROR_ACCESS_DENIED falls back; on the
+// read-only retry, ERROR_FILE_NOT_FOUND is errFlushLockAbsent. Nothing else
+// falls back.
+func classifyFlushLockOpenError(err error, readOnly bool) flushOpenOutcome {
+	switch {
+	case errors.Is(err, errSharingViolation) || errors.Is(err, errLockViolation):
+		return flushOpenBusy
+	case !readOnly && errors.Is(err, syscall.ERROR_ACCESS_DENIED):
+		return flushOpenFallBack
+	case readOnly && errors.Is(err, syscall.ERROR_FILE_NOT_FOUND):
+		return flushOpenAbsent
+	}
+	return flushOpenFailed
 }
 
 func unlockFile(f *os.File) error { return f.Close() }

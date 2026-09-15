@@ -39,15 +39,15 @@ func tryFlushLock(path string) (*os.File, bool, flushLockMode, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- the configured flush lock
 	mode := flushLockReadWrite
 	if err != nil {
-		if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
+		if classifyFlushLockOpenError(err, false) != flushOpenFallBack {
 			return nil, false, mode, err
 		}
 		mode = flushLockReadOnly
 		f, err = os.Open(path) // #nosec G304 -- the configured flush lock
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, mode, errFlushLockAbsent
-		}
 		if err != nil {
+			if classifyFlushLockOpenError(err, true) == flushOpenAbsent {
+				return nil, false, mode, errFlushLockAbsent
+			}
 			return nil, false, mode, err
 		}
 	}
@@ -61,6 +61,21 @@ func tryFlushLock(path string) (*os.File, bool, flushLockMode, error) {
 		_ = f.Close()
 		return nil, false, mode, err
 	}
+}
+
+// classifyFlushLockOpenError is the POSIX fallback decision. A read-write open
+// denied for permission falls back: EACCES from file modes, and EPERM, which
+// is what Codex's macOS sandbox returns. Nothing else does. On the read-only
+// retry, a missing file is errFlushLockAbsent. An open never reports a held
+// lock here; flock does.
+func classifyFlushLockOpenError(err error, readOnly bool) flushOpenOutcome {
+	switch {
+	case !readOnly && (errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)):
+		return flushOpenFallBack
+	case readOnly && errors.Is(err, fs.ErrNotExist):
+		return flushOpenAbsent
+	}
+	return flushOpenFailed
 }
 
 func unlockFile(f *os.File) error {

@@ -46,6 +46,17 @@ func (m flushLockMode) String() string {
 	return "read-write"
 }
 
+// flushOpenOutcome is what one failed open of the flush lock means, decided
+// per platform by classifyFlushLockOpenError from the error alone.
+type flushOpenOutcome int
+
+const (
+	flushOpenFailed   flushOpenOutcome = iota // stop the flush with the error
+	flushOpenFallBack                         // permission denied read-write: retry read-only
+	flushOpenBusy                             // another flush holds the lock
+	flushOpenAbsent                           // the read-only retry found no file
+)
+
 // errFlushLockAbsent is a lock file that does not exist and cannot be
 // created by this process.
 var errFlushLockAbsent = errors.New("the flush lock does not exist and this process cannot create it")

@@ -167,14 +167,20 @@ each line names the file that owns the rule and the test that proves it.
   the lock cannot be split across paths or generations. Where a sandbox denies writing it (Codex's
   block never grants the miner root), `tryFlushLock` in `minerlock_unix.go`/`minerlock_windows.go`
   opens the existing file read-only and takes the same exclusive lock; only a permission denial
-  falls back, and an absent lock it cannot create stops the flush with `flush_state_unavailable`.
+  falls back — `classifyFlushLockOpenError`, one per platform: `EACCES` or `EPERM` (what Codex's
+  macOS sandbox returns), `ERROR_ACCESS_DENIED` — and an absent lock it cannot create stops the flush
+  with `flush_state_unavailable`.
   Setup, the upgrade transaction and every read-write flush create the file; nothing else uses the
   fallback, because the gate, setup, connect and the destructive exclusion run outside any sandbox
   and must refuse a lock they cannot open read-write. The stamp is a cache under `mining.state_dir`,
   written only through `saveFlushStamp`; a failure never stops delivery. `flushlock_test.go`'s
-  `TestSandboxedFlushTakesTheLockReadOnlyAndDelivers` (with its fixture self-proof),
-  `TestFlushLockExcludesAcrossProcessesInEveryOpenMode` and
-  `TestAFlushPausedAfterReadingIntakeMakesASandboxedFlushBusy` guard it.
+  `TestSandboxedFlushTakesTheLockReadOnlyAndDelivers` (with its fixture self-proof, `EACCES`),
+  `TestSandboxedFlushFallsBackOnEPERM` (macOS `chflags uchg`), the per-platform
+  `…FlushLockOpenErrorDecision` tables, `TestFlushLockExcludesAcrossProcessesInEveryOpenMode` and
+  `TestAFlushPausedAfterReadingIntakeMakesASandboxedFlushBusy` guard it. A permission test that
+  cannot establish its condition leaves through `skipPermissionTest`, which fails instead of
+  skipping under `CI=true`: CI runs `go test` without `-v`, so only that makes a green job mean the
+  test ran.
 - **The registration journal and the rebuild** — `cmd/dropin-miner/connect.go` owns the order
   (journal, publish, clear); `pkg/auth/store.go` owns the journal and the agent record;
   `pkg/platform/client.go` owns `Register`, `Status` and `Me`. Its guards, in
