@@ -1,0 +1,9 @@
+{"type":"user","message":{"role":"user","content":"Earlier question from the previous turn."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Answering the earlier question. This prose must not leak into a later turn's search."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<<autonomous-loop-dynamic>>"}]},"isMeta":true}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_skill3","name":"Skill","input":{"skill":"dropin-miner","args":"{\"version\":1,\"query\":\"latest stable Go release version\"}"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_skill3","content":"Launching skill: dropin-miner"}]},"toolUseResult":{"success":true,"commandName":"dropin-miner"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/dropin-miner\n\n# Web search (dropin-miner)\n\nSend one JSON request on stdin and read one JSON object back.\n\nARGUMENTS: {\"version\":1,\"query\":\"latest stable Go release version\"}"}]},"isMeta":true,"turnCompanion":true,"sourceToolUseID":"toolu_skill3"}
+{"type":"attachment","attachment":{"type":"command_permissions","allowedTools":[]}}
+{"type":"attachment","attachment":{"type":"total_tokens_reminder","text":"<total_tokens>14700000 tokens left</total_tokens>"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash3","name":"Bash","input":{"command":"\"/tokendrop/bin/dropin-miner\" search -config \"/tokendrop/tokendrop.toml\" --stdin <<'JSON'\n{\"version\":1,\"query\":\"latest stable Go release version\"}\nJSON","description":"Execute the dropin-miner search per skill instructions, JSON on stdin"},"caller":{"type":"direct"}}]}}

@@ -1,0 +1,10 @@
+{"type":"user","message":{"role":"user","content":"Earlier, unrelated question from the previous turn."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Older prose from a previous turn that must not leak into a later search."}]}}
+{"type":"user","message":{"role":"user","content":"Search the web for the latest stable Go release version and tell me what it is."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Now performing one web search through my own dropin-miner skill (the Skill tool), per the test spec."}]},"uuid":"d7000615-72bd-4a41-b45d-0a717229814b"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_skill1","name":"Skill","input":{"skill":"dropin-miner","args":"{\"version\":1,\"query\":\"latest stable Go release version\"}"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_skill1","content":"Launching skill: dropin-miner"}]},"toolUseResult":{"success":true,"commandName":"dropin-miner"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/dropin-miner\n\n# Web search (dropin-miner)\n\nSend one JSON request on stdin and read one JSON object back.\n\nARGUMENTS: {\"version\":1,\"query\":\"latest stable Go release version\"}"}]},"isMeta":true,"turnCompanion":true,"sourceToolUseID":"toolu_skill1"}
+{"type":"attachment","attachment":{"type":"command_permissions","allowedTools":[]}}
+{"type":"attachment","attachment":{"type":"total_tokens_reminder","text":"<total_tokens>14901903 tokens left</total_tokens>"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash1","name":"Bash","input":{"command":"\"/tokendrop/bin/dropin-miner\" search -config \"/tokendrop/tokendrop.toml\" --stdin <<'JSON'\n{\"version\":1,\"query\":\"latest stable Go release version\"}\nJSON","description":"Execute the dropin-miner search per skill instructions, JSON on stdin"},"caller":{"type":"direct"}}]}}
