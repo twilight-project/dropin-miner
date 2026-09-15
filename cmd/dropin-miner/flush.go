@@ -81,6 +81,61 @@ func clearCurrentTargetHealth(store *auth.Store) {
 	}
 }
 
+const (
+	flushLockHealthPrefix  = "flush lock: "
+	flushStampHealthPrefix = "flush stamp: "
+)
+
+// markFlushStateHealth records that a flush could not take its lock, best
+// effort: when the state directory is what cannot be written, no record can
+// be guaranteed.
+func markFlushStateHealth(stateDir, detail string) {
+	store, err := auth.OpenStoreExisting(stateDir)
+	if err != nil {
+		return
+	}
+	_ = store.MarkHealth(auth.HealthFlush, auth.HealthFlushStateUnavailable, detail)
+}
+
+// clearFlushStateHealth clears a flush_state_unavailable record whose detail
+// names the part (lock or stamp) this run has just shown to work.
+func clearFlushStateHealth(store *auth.Store, prefix string) {
+	if store == nil {
+		return
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err == nil && ok && record.Reason == auth.HealthFlushStateUnavailable && strings.HasPrefix(record.Detail, prefix) {
+		_ = store.ClearHealth(auth.HealthFlush)
+	}
+}
+
+// saveFlushStamp is the one way a flush writes its stamp. The stamp is a
+// cache: a failure is reported and recorded best-effort, and the caller goes
+// on to promote and deliver.
+func saveFlushStamp(store *auth.Store, path string, st flushStamp, stderr io.Writer) error {
+	if err := writeFlushStamp(path, st); err != nil {
+		fmt.Fprintln(stderr, "dropin-miner flush: stamp:", err)
+		if store != nil {
+			_ = store.MarkHealth(auth.HealthFlush, auth.HealthFlushStateUnavailable, flushStampHealthPrefix+err.Error())
+		}
+		return err
+	}
+	clearFlushStateHealth(store, flushStampHealthPrefix)
+	return nil
+}
+
+// keepFlushStampHealth restores this run's stamp failure when delivery left
+// no flush record: an accepted delivery clears the record, but it does not
+// make the stamp writable.
+func keepFlushStampHealth(store *auth.Store, stampErr error) {
+	if store == nil || stampErr == nil {
+		return
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err == nil && !ok {
+		_ = store.MarkHealth(auth.HealthFlush, auth.HealthFlushStateUnavailable, flushStampHealthPrefix+stampErr.Error())
+	}
+}
+
 func markFlushHealthFromConfig(cfgPath string, getenv func(string) string, reason auth.HealthReason, detail string) {
 	cfg, _, err := loadConfig(cfgPath, getenv)
 	if err != nil {
@@ -190,30 +245,40 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 	m := cfg.Mining
 	mn := cfg.Miner
 
-	if err := os.MkdirAll(minerRoot(mn), 0o700); err != nil {
+	// MkdirAll succeeds on an existing directory it cannot write, which is
+	// the miner root under a sandbox.
+	if err := os.MkdirAll(minerRoot(mn), 0o700); err != nil { // #nosec G703 -- the configured intake directory's parent
+		if endAdmission != nil {
+			endAdmission()
+		}
+		markFlushStateHealth(m.StateDir, flushLockHealthPrefix+err.Error())
 		fmt.Fprintln(stderr, "dropin-miner flush: state dir:", err)
 		return rep, exitTransport
 	}
-	lock, held, err := tryLockFile(flushLockPath(mn))
+	lock, held, lockMode, err := tryFlushLock(flushLockPath(mn))
 	if endAdmission != nil {
 		endAdmission()
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "dropin-miner flush: lock:", err)
+		markFlushStateHealth(m.StateDir, flushLockHealthPrefix+err.Error())
+		fmt.Fprintf(stderr, "dropin-miner flush: lock %s: %v\n", flushLockPath(mn), err)
 		return rep, exitTransport
 	}
 	if !held {
+		flushEvent(ctx, "busy "+lockMode.String())
 		fmt.Fprintln(stdout, "flush: another flush is running; nothing to do")
 		return rep, exitOK
 	}
 	defer func() { _ = unlockFile(lock) }()
 	lifecycleEvent("operation locked")
+	flushEvent(ctx, "locked "+lockMode.String())
 
 	// Read the persisted authority before constructing any OAuth/DPoP client.
 	// OFF, undecided, and degraded states must not create mining credentials or
 	// promote intake. A missing directory is a normal undecided first-run
 	// state; unsafe inspection is degraded and remains fail-closed.
 	decision, store := inspectMiningState(m.StateDir)
+	clearFlushStateHealth(store, flushLockHealthPrefix)
 	if store == nil && decision.State == auth.MiningDegraded {
 		fmt.Fprintf(stderr, "dropin-miner flush: mining state cannot be safely trusted%s\n", miningDecisionDetail(decision))
 		return rep, exitTransport
@@ -268,8 +333,8 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 	driver := newEpochDriver(mining, caps, m.TargetEpoch, logger, enrolled).withStore(store)
 
 	// 1. target, join, capability — or the stamp's answer when fresh.
-	stampPath := flushStampPath(mn)
-	stamp := readFlushStamp(stampPath)
+	stampPath := flushStampPath(m)
+	stamp := loadFlushStamp(stampPath, legacyFlushStampPath(mn))
 	now := time.Now()
 	fresh := !force && stamp.TargetEpoch != 0 && stamp.SlotID == m.SlotID && now.Sub(stamp.LastAS) < mn.FlushInterval
 	var epoch uint64
@@ -287,8 +352,10 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 			// next flush; the spool may still drain if it holds records
 			// for an epoch we joined earlier.
 			stamp.LastFlush = now
-			_ = writeFlushStamp(stampPath, stamp)
-			return rep, deliverOnly(ctx, cfg, mining, caps, store, &rep, stderr)
+			stampErr := saveFlushStamp(store, stampPath, stamp, stderr)
+			code := deliverOnly(ctx, cfg, mining, caps, store, &rep, stderr)
+			keepFlushStampHealth(store, stampErr)
+			return rep, code
 		}
 		if target.queried {
 			clearCurrentTargetHealth(store)
@@ -301,9 +368,8 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 	}
 	rep.Epoch = epoch
 	stamp.LastFlush = now
-	if err := writeFlushStamp(stampPath, stamp); err != nil {
-		fmt.Fprintln(stderr, "dropin-miner flush: stamp:", err)
-	}
+	stampErr := saveFlushStamp(store, stampPath, stamp, stderr)
+	defer keepFlushStampHealth(store, stampErr)
 
 	// WP4b (design aba1245 §2.3/§5.5): now that this run's target is
 	// resolved, drop any previously-recorded conflicted epoch the AS has
@@ -319,7 +385,11 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 		return rep, exitTransport
 	}
 	writer := &collector.SpoolWriter{Spool: sp}
-	promoted, unreadable, err := promoteIntake(mn.IntakeDir, writer, m.SlotID, epoch)
+	var out intakeEnqueuer = writer
+	if flushTestHook != nil {
+		out = &firstEnqueueHook{next: writer, fire: func() { flushEvent(ctx, "intake read") }}
+	}
+	promoted, unreadable, err := promoteIntake(mn.IntakeDir, out, m.SlotID, epoch)
 	rep.Promoted, rep.Unreadable = promoted, unreadable
 	promotionErr := err
 	if err != nil {
@@ -496,6 +566,36 @@ func deliverOnly(ctx context.Context, cfg *config.Config, mining *auth.MiningCli
 	updateFlushDeliveryHealth(store, coll.Health(), before, after, rep.Delivered, stderr)
 	fmt.Fprintln(stderr, "flush: no target epoch this run; intake kept for the next flush")
 	return exitOK
+}
+
+// flushTestHook is inert in production: nothing outside a _test.go file ever
+// sets it, so every flushEvent is a nil check. A test sets it to observe or
+// pause a pass at a named point: "locked read-write" or "locked read-only"
+// once the flush lock is held, "busy read-write" or "busy read-only" when
+// another flush holds it, and "intake read" after intake has been read and
+// before the first record is spooled.
+var flushTestHook func(ctx context.Context, event string)
+
+func flushEvent(ctx context.Context, event string) {
+	if flushTestHook != nil {
+		flushTestHook(ctx, event)
+	}
+}
+
+// firstEnqueueHook fires once, after intake has been read and before the
+// first record is spooled. It is installed only while flushTestHook is set.
+type firstEnqueueHook struct {
+	next  intakeEnqueuer
+	fire  func()
+	fired bool
+}
+
+func (h *firstEnqueueHook) Enqueue(slotID, targetEpoch uint64, observation any) (string, error) {
+	if !h.fired {
+		h.fired = true
+		h.fire()
+	}
+	return h.next.Enqueue(slotID, targetEpoch, observation)
 }
 
 // intakeEnqueuer is the one method promoteIntake needs from the spool,

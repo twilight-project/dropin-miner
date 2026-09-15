@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"syscall"
 )
@@ -28,6 +29,37 @@ func tryLockFile(path string) (*os.File, bool, error) {
 	default:
 		_ = f.Close()
 		return nil, false, err
+	}
+}
+
+// tryFlushLock is tryLockFile with the flush's read-only fallback (see
+// flushlock.go): a permission-denied read-write open retries read-only on the
+// existing file and takes the same exclusive flock.
+func tryFlushLock(path string) (*os.File, bool, flushLockMode, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- the configured flush lock
+	mode := flushLockReadWrite
+	if err != nil {
+		if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
+			return nil, false, mode, err
+		}
+		mode = flushLockReadOnly
+		f, err = os.Open(path) // #nosec G304 -- the configured flush lock
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, mode, errFlushLockAbsent
+		}
+		if err != nil {
+			return nil, false, mode, err
+		}
+	}
+	switch err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); {
+	case err == nil:
+		return f, true, mode, nil
+	case errors.Is(err, syscall.EWOULDBLOCK):
+		_ = f.Close()
+		return nil, false, mode, nil
+	default:
+		_ = f.Close()
+		return nil, false, mode, err
 	}
 }
 
