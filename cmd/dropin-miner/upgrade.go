@@ -213,6 +213,7 @@ func upgradeRun(d upgradeDeps, homeFlag string, requested *selfupdate.Version, r
 		return fail(err)
 	}
 	defer ex.release()
+	ensureUpgradeFlushLock(home, d.getenv, d.stderr)
 
 	updater := selfupdate.Updater{Runner: d.runner, GOOS: d.goos, GOARCH: d.goarch}
 	if rollback {
@@ -242,6 +243,21 @@ func upgradeRun(d upgradeDeps, homeFlag string, requested *selfupdate.Version, r
 	fmt.Fprintf(d.stdout, "upgraded %s from %s to %s\nthe binary it replaced is kept as %s; `dropin-miner upgrade -rollback` restores it\n",
 		prepared.Executable, prepared.From, prepared.To, selfupdate.PreviousPath(prepared.Executable))
 	return exitOK
+}
+
+// ensureUpgradeFlushLock creates the installation's flush lock when it is
+// absent, so a flush a sandboxed agent starts after the upgrade can take it
+// read-only. It runs inside the upgrade's exclusion and never fails the
+// upgrade: a lock it cannot create is said, and the first flush outside a
+// sandbox creates it.
+func ensureUpgradeFlushLock(home string, getenv func(string) string, stderr io.Writer) {
+	_, path, err := operationLockPaths(home, getenv)
+	if err == nil {
+		_, err = ensureFlushLockFile(path)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "dropin-miner upgrade: note: the flush lock could not be created (%v); a flush inside an agent's sandbox will not run until one outside it has\n", err)
+	}
 }
 
 func selectedRelease(requested *selfupdate.Version) string {

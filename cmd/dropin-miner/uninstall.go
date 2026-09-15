@@ -800,18 +800,20 @@ type configuredPath struct {
 }
 
 // configuredStatePaths is every participant path a config names — state,
-// spool, intake, sessions — and the ones derived beside the intake: the
-// stored credentials, the flush stamp and the flush lock.
+// spool, intake, sessions — and the ones derived from them: the flush stamp
+// in the state directory, and beside the intake the stored credentials, the
+// earlier flush stamp and the flush lock.
 func configuredStatePaths(cfg *config.Config) []configuredPath {
 	m, mn := cfg.Mining, cfg.Miner
 	out := []configuredPath{
 		{"mining.state_dir", m.StateDir}, {"mining.spool_dir", m.SpoolDir},
 		{"miner.intake_dir", mn.IntakeDir}, {"miner.sessions_dir", mn.SessionsDir},
+		{"the flush stamp in mining.state_dir", flushStampPath(m)},
 	}
 	if mn.IntakeDir != "" {
 		out = append(out,
 			configuredPath{"the stored credentials beside miner.intake_dir", filepath.Join(minerRoot(mn), credentialsFile)},
-			configuredPath{"the flush stamp beside miner.intake_dir", flushStampPath(mn)},
+			configuredPath{"the earlier flush stamp beside miner.intake_dir", legacyFlushStampPath(mn)},
 			configuredPath{"the flush lock beside miner.intake_dir", flushLockPath(mn)})
 	}
 	var named []configuredPath

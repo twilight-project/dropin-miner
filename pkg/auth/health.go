@@ -41,9 +41,13 @@ const (
 	HealthIntakeUnwritable   HealthReason = "intake_unwritable"
 	HealthSandboxRestricted  HealthReason = "sandbox_restricted"
 	HealthFlushSpawnFailed   HealthReason = "flush_spawn_failed"
-	HealthAuthUnavailable    HealthReason = "auth_state_unavailable"
-	HealthSubmissionFailed   HealthReason = "submission_failed"
-	HealthSpoolBacklog       HealthReason = "spool_backlog"
+	// HealthFlushStateUnavailable is a flush that could not take its lock for
+	// a reason other than another flush holding it, or could not write its
+	// stamp.
+	HealthFlushStateUnavailable HealthReason = "flush_state_unavailable"
+	HealthAuthUnavailable       HealthReason = "auth_state_unavailable"
+	HealthSubmissionFailed      HealthReason = "submission_failed"
+	HealthSpoolBacklog          HealthReason = "spool_backlog"
 )
 
 // HealthRecord is the bounded persistent last-known degradation for one
@@ -72,8 +76,8 @@ func healthFile(component HealthComponent) (string, error) {
 func validHealthReason(reason HealthReason) bool {
 	switch reason {
 	case HealthDecisionUnreadable, HealthIntakeUnwritable, HealthSandboxRestricted,
-		HealthFlushSpawnFailed, HealthAuthUnavailable, HealthSubmissionFailed,
-		HealthSpoolBacklog:
+		HealthFlushSpawnFailed, HealthFlushStateUnavailable, HealthAuthUnavailable,
+		HealthSubmissionFailed, HealthSpoolBacklog:
 		return true
 	default:
 		return false

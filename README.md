@@ -114,9 +114,15 @@ Everything happens at four moments the agent already has.
 
 A **flush** is the mining plane as one pass: ask the AS which epoch is open,
 join it if not joined, hold a participation capability, promote recorded
-searches into the spool, submit once, exit. Two flushes at once queue on a
-lock. Searches are what give a flush something to submit, but they are not
-what starts one: the session-start and session-end hooks each start a flush
+searches into the spool, submit once, exit. Two flushes never overlap: every
+flush, whatever version and wherever it runs, takes the one `flush.lock`
+beside the intake directory, and a second flush finds it held and leaves.
+Inside a sandbox that lets an agent write the state and intake directories
+but not the installation directory itself (Codex), the flush opens that same
+lock read-only and holds it just as exclusively. It keeps its stamp,
+`flush.json`, in the state directory. Searches are what give a flush
+something to submit, but they are not what starts one: the session-start and
+session-end hooks each start a flush
 of their own, and `dropin-miner flush` runs one by hand. A flush with nothing
 recorded simply finds nothing to promote.
 
@@ -138,7 +144,7 @@ transmission. Mining/AS receives metadata observations only.
 |---|---|---|---|
 | Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and two `permissions.allow` rules — the quoted and the bare spelling of the same search command — in `~/.claude/settings.json` |
 | Cursor | skill | full: lineage file from sessionStart, shell, thought, response, compaction and stop hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
-| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes |
+| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | Pi | skill | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
 | Hermes | skill | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
@@ -333,7 +339,9 @@ flush_interval = "3m"                              # default 3m: how often a flu
 `[miner]`'s two directories default beside the state directory —
 `<parent of state_dir>/intake` and `.../sessions` — and `intake_dir`'s
 parent is also where `credentials.json` and the flush lock are looked for,
-so moving it moves those too. `[mining] enabled` has no default worth
+so moving it moves those too. The flush stamp lives in the state directory;
+a `flush.json` beside the intake directory, from before 0.2.10, is read
+once as a starting value and otherwise left alone until a purge. `[mining] enabled` has no default worth
 printing, because absence and an explicit `false` are different answers:
 the config records which of the two you gave (`MiningEnabledExplicit`), and
 an explicit `false` at a terminal is a deliberate opt-out that `connect`
@@ -383,8 +391,10 @@ stops mining for safety. Search still returns the router's successful answer
 when mining capture or flush startup fails. Those unresolved failures are
 kept as separate `decision`, `capture`, and `flush` health records, using the
 stable reasons `decision_unreadable`, `intake_unwritable`,
-`sandbox_restricted`, `flush_spawn_failed`, `auth_state_unavailable`,
-`submission_failed`, and `spool_backlog`. `status` and `doctor` show them;
+`sandbox_restricted`, `flush_spawn_failed`, `flush_state_unavailable` (a flush
+could not take its lock for a reason other than another flush holding it, or
+could not write its stamp), `auth_state_unavailable`, `submission_failed`, and
+`spool_backlog`. `status` and `doctor` show them;
 stopping mining retains earlier capture/flush diagnostics as previous
 unresolved degradation.
 
