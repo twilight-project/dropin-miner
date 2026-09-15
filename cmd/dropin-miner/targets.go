@@ -59,6 +59,147 @@ type preferenceTarget interface {
 	PlanPreference(ops agentOps, paths agentPaths, entry binEntry, prefer string, p *agentPlan)
 }
 
+// ── the shell each host runs ─────────────────────────────────────────────
+//
+// Every string this client renders for a host is run by something: a command
+// the skill hands the host, by the shell the host executes tool calls in; a
+// hook entry the install writes, by the host's hook runner. v0.2.9 rendered
+// all of them with Go's %q and a Bash heredoc, as though every host on every
+// OS ran Bash, and the soak's Windows defects (#66–#69) are that one
+// assumption failing in four places. So each host declares, per OS, what
+// actually runs each kind of string and where that fact comes from.
+//
+// The fence language our own skill writes is not evidence for either: a
+// host that ran `bash` because our skill said `bash` has shown only that it
+// follows fences. A cell is established by the host's documentation or
+// source, or by a live run of the host; a cell nobody has established is
+// unknown, and a renderer asked for it refuses (undeclaredShellError) rather
+// than falling back to a guess.
+
+// shellKind is one grammar a rendered string may have to be valid in.
+type shellKind string
+
+const (
+	// shellPOSIX is sh, bash or zsh running the string as -c text: the POSIX
+	// grammar those three share for everything rendered here.
+	shellPOSIX shellKind = "posix"
+	// shellPowerShell is Windows PowerShell 5.1 and PowerShell 7 (pwsh). A
+	// string declared for it must run under both: which one a host starts
+	// depends on what is installed, not on anything this client controls.
+	shellPowerShell shellKind = "powershell"
+	// shellCmd is cmd.exe, as a Node or Win32 host starts it: /d /s /c.
+	shellCmd shellKind = "cmd"
+	// shellArgv is no shell at all: the host splits the string into an
+	// argument vector itself and executes it directly (Hermes'
+	// split_command_line, shell=False).
+	shellArgv shellKind = "argv"
+)
+
+// shellEvidence says how a cell is known.
+type shellEvidence string
+
+const (
+	// evidenceNone: the host has no such channel on this OS (Codex has no
+	// hooks; opencode's and Pi's lineage run in-process, not as commands).
+	evidenceNone shellEvidence = "none"
+	// evidenceEstablished: the host's documentation or source, or a live run.
+	evidenceEstablished shellEvidence = "established"
+	// evidenceRuled: not directly observed; a maintainer ruling fixes the set
+	// of shells a rendered string must be proven to run in, every one of them.
+	evidenceRuled shellEvidence = "ruled"
+	// evidenceUnknown: nothing establishes it. Renderers refuse this cell.
+	evidenceUnknown shellEvidence = "unknown"
+)
+
+// shellCell is one declared fact: for one host on one OS, what runs one kind
+// of string. shells lists every grammar a rendered string must be valid in;
+// source names where the fact comes from, so a reviewer can check it.
+type shellCell struct {
+	evidence shellEvidence
+	shells   []shellKind
+	source   string
+}
+
+// hostShells is one host's declaration on one OS.
+type hostShells struct {
+	// tool runs a command the skill or the rules line hands the host.
+	tool shellCell
+	// hook runs a hook command the install writes into the host's config.
+	hook shellCell
+}
+
+// shellDeclaringTarget is the capability every coding-agent host carries:
+// what runs its strings on a given GOOS. An integration renders no host
+// shell strings and does not implement it; TestEveryHostDeclaresItsShells
+// holds every host to it.
+type shellDeclaringTarget interface {
+	installTarget
+	Shells(goos string) hostShells
+}
+
+// shellChannel names which of a host's two cells a renderer is asking about.
+type shellChannel string
+
+const (
+	channelTool shellChannel = "tool"
+	channelHook shellChannel = "hook"
+)
+
+// undeclaredShellError is the refusal a renderer returns for a cell nothing
+// has established: the install plan reports it instead of writing a string
+// for a shell nobody has shown is the one that runs it.
+type undeclaredShellError struct {
+	host    string
+	goos    string
+	channel shellChannel
+}
+
+func (e *undeclaredShellError) Error() string {
+	what := "tool calls"
+	if e.channel == channelHook {
+		what = "hook commands"
+	}
+	return fmt.Sprintf("%s on %s: which shell runs its %s is not established, so nothing is rendered for it", e.host, e.goos, what)
+}
+
+// declaredShells is the one question a renderer asks before writing a
+// string for a host: the shells it must be valid in. A channel the host does
+// not have on this OS answers nil and no error — there is nothing to render.
+// An unknown cell, an OS the host declares nothing for, or a host that
+// declares nothing at all is an *undeclaredShellError, never a default.
+func declaredShells(t installTarget, goos string, ch shellChannel) ([]shellKind, error) {
+	refuse := &undeclaredShellError{host: t.Label(), goos: goos, channel: ch}
+	d, ok := t.(shellDeclaringTarget)
+	if !ok {
+		return nil, refuse
+	}
+	decl := d.Shells(goos)
+	cell := decl.tool
+	if ch == channelHook {
+		cell = decl.hook
+	}
+	switch cell.evidence {
+	case evidenceNone:
+		return nil, nil
+	case evidenceEstablished, evidenceRuled:
+		if len(cell.shells) > 0 {
+			return cell.shells, nil
+		}
+	}
+	return nil, refuse
+}
+
+// The cells below are the H1 evidence table. Each source is short; the full
+// quotes and links are in the commit that introduced this declaration.
+var (
+	cellUnknown   = shellCell{evidence: evidenceUnknown}
+	cellNoChannel = shellCell{evidence: evidenceNone}
+)
+
+func established(source string, shells ...shellKind) shellCell {
+	return shellCell{evidence: evidenceEstablished, shells: shells, source: source}
+}
+
 // installTargets is every target this binary knows how to install, in the
 // order install, status, help and the detected-agents line report them.
 // Registry order is part of the contract: claude, codex, cursor, opencode,
@@ -195,6 +336,28 @@ func (claudeTarget) ID() string       { return "claude" }
 func (claudeTarget) Label() string    { return "Claude Code" }
 func (claudeTarget) Kind() targetKind { return targetHost }
 
+// Claude Code runs the Bash tool in the user's shell, and hooks through sh -c
+// on macOS and Linux; on Windows both go through Git Bash. Its docs also say
+// the Windows PowerShell tool is on by default for claude.ai accounts and is
+// then "the primary shell", and that without Git for Windows PowerShell is
+// the only one: the soak observed Git Bash, and that cell is a ruling
+// question, not a settled one.
+func (claudeTarget) Shells(goos string) hostShells {
+	switch goos {
+	case "darwin", "linux":
+		return hostShells{
+			tool: established("docs tools-reference (sources ~/.zshrc, ~/.bashrc or ~/.profile); live: soak #57 macOS", shellPOSIX),
+			hook: established("docs hooks: \"sh -c on macOS and Linux\"; live: soak #57 macOS", shellPOSIX),
+		}
+	case "windows":
+		return hostShells{
+			tool: established("live: soak #57 Windows (Git Bash); docs setup: \"With Git for Windows, Claude Code uses Git Bash for the Bash tool\"", shellPOSIX),
+			hook: established("docs hooks: \"Git Bash on Windows, or PowerShell when Git Bash isn't installed\"; live: soak #57 Windows", shellPOSIX),
+		}
+	}
+	return hostShells{tool: cellUnknown, hook: cellUnknown}
+}
+
 func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("claude")
 	return err == nil
@@ -252,6 +415,24 @@ func (codexTarget) ID() string       { return "codex" }
 func (codexTarget) Label() string    { return "Codex" }
 func (codexTarget) Kind() targetKind { return targetHost }
 
+// Codex runs a command through the user's default shell on macOS and Linux.
+// On Windows its source defaults to PowerShell, but the soak's Codex ran
+// `bash` (the WSL launcher) because our fence said bash, and no live run has
+// shown what it does with a PowerShell-fenced skill: unknown until one does.
+// Codex has no hooks.
+func (codexTarget) Shells(goos string) hostShells {
+	switch goos {
+	case "darwin", "linux":
+		return hostShells{
+			tool: established("source codex-rs shell_detect.rs default_user_shell (user's shell, else zsh/bash); live: soak #57 macOS", shellPOSIX),
+			hook: cellNoChannel,
+		}
+	case "windows":
+		return hostShells{tool: cellUnknown, hook: cellNoChannel}
+	}
+	return hostShells{tool: cellUnknown, hook: cellNoChannel}
+}
+
 func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("codex")
 	return err == nil
@@ -307,6 +488,39 @@ type cursorTarget struct{}
 func (cursorTarget) ID() string       { return "cursor" }
 func (cursorTarget) Label() string    { return "Cursor" }
 func (cursorTarget) Kind() targetKind { return targetHost }
+
+// Cursor's agent runs commands in the user's terminal shell on macOS and
+// Linux, and in PowerShell on Windows (the CLI's ps-script-*.ps1; the
+// editor's agent "defaults to PowerShell no matter what terminal profile you've
+// set"). Its hooks ran on macOS; on Linux nothing names the runner; on Windows
+// no hook was observed live, and the hooks.json string fails to parse as
+// PowerShell and runs under cmd — so the Windows hook cell is ruled rather
+// than observed: a hook command must be proven under cmd and both
+// PowerShell editions.
+func (cursorTarget) Shells(goos string) hostShells {
+	switch goos {
+	case "darwin":
+		return hostShells{
+			tool: established("live: soak #57/#66 macOS (Cursor CLI ran the heredoc search)", shellPOSIX),
+			hook: established("live: soak #61 macOS (sessionStart and afterAgentThought fired a command beginning with a quoted path)", shellPOSIX),
+		}
+	case "linux":
+		return hostShells{
+			tool: established("docs agent/terminal (commands run in your terminal; ~/.zshrc and ~/.bashrc guidance for Cursor sessions)", shellPOSIX),
+			hook: cellUnknown,
+		}
+	case "windows":
+		return hostShells{
+			tool: established("live: soak #67 Windows (Cursor CLI, ps-script-*.ps1); forum.cursor.com/t/154914 staff: agent shell \"defaults to PowerShell\"", shellPowerShell),
+			hook: shellCell{
+				evidence: evidenceRuled,
+				shells:   []shellKind{shellCmd, shellPowerShell},
+				source:   "no hook observed live (#69); the hooks.json string fails as PowerShell and runs under cmd (Windows team, sitting 2); ruled: proven under cmd, PowerShell 5.1 and pwsh",
+			},
+		}
+	}
+	return hostShells{tool: cellUnknown, hook: cellUnknown}
+}
 
 func (cursorTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("cursor")
@@ -369,6 +583,26 @@ func (opencodeTarget) ID() string       { return "opencode" }
 func (opencodeTarget) Label() string    { return "opencode" }
 func (opencodeTarget) Kind() targetKind { return targetHost }
 
+// opencode runs its bash tool in $SHELL on macOS and Linux (falling back to
+// zsh on macOS, bash, then sh), and on Windows in the first of pwsh,
+// powershell, Git Bash and cmd it finds. Its lineage plugin runs in-process:
+// there is no hook command.
+func (opencodeTarget) Shells(goos string) hostShells {
+	switch goos {
+	case "darwin", "linux":
+		return hostShells{
+			tool: established("source packages/core/src/shell.ts select($SHELL), fallback /bin/zsh (darwin), bash, /bin/sh", shellPOSIX),
+			hook: cellNoChannel,
+		}
+	case "windows":
+		return hostShells{
+			tool: established("live: soak #67/#68 Windows (PowerShell); source shell.ts win(): pwsh, powershell, Git Bash, cmd", shellPowerShell),
+			hook: cellNoChannel,
+		}
+	}
+	return hostShells{tool: cellUnknown, hook: cellNoChannel}
+}
+
 func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("opencode")
 	return err == nil
@@ -404,6 +638,24 @@ type piTarget struct{}
 func (piTarget) ID() string       { return "pi" }
 func (piTarget) Label() string    { return "Pi" }
 func (piTarget) Kind() targetKind { return targetHost }
+
+// Pi runs its bash tool in /bin/bash (else bash on PATH, else sh), and on
+// Windows in Git Bash. Its lineage extension runs in-process: no hook command.
+func (piTarget) Shells(goos string) hostShells {
+	switch goos {
+	case "darwin", "linux":
+		return hostShells{
+			tool: established("source packages/coding-agent/src/utils/shell.ts getShellConfig: /bin/bash, bash on PATH, sh", shellPOSIX),
+			hook: cellNoChannel,
+		}
+	case "windows":
+		return hostShells{
+			tool: established("live: soak #57 Windows (Bash); docs coding-agent/docs/windows.md: \"Pi uses Git Bash by default on Windows\"", shellPOSIX),
+			hook: cellNoChannel,
+		}
+	}
+	return hostShells{tool: cellUnknown, hook: cellNoChannel}
+}
 
 func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("pi")
@@ -464,6 +716,26 @@ type hermesTarget struct{}
 func (hermesTarget) ID() string       { return "hermes" }
 func (hermesTarget) Label() string    { return "Hermes" }
 func (hermesTarget) Kind() targetKind { return targetHost }
+
+// Hermes runs its terminal tool in bash, and on Windows in Git Bash. Its
+// hooks are not run by a shell: split_command_line tokenizes the command and
+// it is executed with shell=False, on every OS.
+func (hermesTarget) Shells(goos string) hostShells {
+	hook := established("source agent/shell_hooks.py: split_command_line, subprocess.Popen(argv, shell=False)", shellArgv)
+	switch goos {
+	case "darwin", "linux":
+		return hostShells{
+			tool: established("source tools/environments/local.py _find_bash: bash on PATH, /usr/bin/bash, /bin/bash", shellPOSIX),
+			hook: hook,
+		}
+	case "windows":
+		return hostShells{
+			tool: established("live: soak #57 Windows (Bash); docs windows-native.md: \"Hermes's terminal tool runs commands through Git Bash\"", shellPOSIX),
+			hook: hook,
+		}
+	}
+	return hostShells{tool: cellUnknown, hook: cellUnknown}
+}
 
 func (hermesTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 	_, err := ops.lookPath("hermes")
