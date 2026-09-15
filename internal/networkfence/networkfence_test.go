@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"testing"
 )
 
@@ -60,6 +61,26 @@ func TestExpectDrainsAndRemainingPeeks(t *testing.T) {
 	}
 	if left := Remaining(); len(left) != 0 {
 		t.Fatalf("Remaining() after Expect() = %d entries, want 0", len(left))
+	}
+}
+
+// TestClearProxyEnvUnsetsEveryVariable proves the mechanical half of the
+// fix directly: every variable clearProxyEnv names is gone afterward. It
+// cannot, by itself, prove the ordering guarantee that actually matters —
+// that this runs before Go's own ProxyFromEnvironment caches a value for
+// the rest of the process, which is a once-per-process fact this package's
+// own test binary cannot reset — cmd/dropin-miner's subprocess test proves
+// that half, by re-executing a whole fresh process with the environment
+// already poisoned before its own TestMain ever runs.
+func TestClearProxyEnvUnsetsEveryVariable(t *testing.T) {
+	for _, key := range proxyEnvVars {
+		t.Setenv(key, "http://127.0.0.1:1")
+	}
+	clearProxyEnv()
+	for _, key := range proxyEnvVars {
+		if v, ok := os.LookupEnv(key); ok {
+			t.Errorf("%s is still set to %q after clearProxyEnv", key, v)
+		}
 	}
 }
 

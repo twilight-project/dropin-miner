@@ -15,7 +15,12 @@ package main
 // The same test run also gets a network fence (internal/networkfence): no
 // test in this package may reach a non-loopback host. See that package for
 // the mechanism; client_network_fence_test.go is this package's own set of
-// guard tests proving every client it builds is actually covered.
+// guard tests proving every client it builds is actually covered, and
+// proxy_fence_subprocess_test.go proves the fence still holds when the
+// process inherits an already-poisoned proxy environment — a real process
+// re-exec, the same acceptanceHelper idiom internal/selfupdate's own
+// TestMain uses, because that class of bug can only be reproduced in a
+// fresh process whose own TestMain has not run networkfence.Install yet.
 
 import (
 	"fmt"
@@ -27,6 +32,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == proxyFenceHelperArg {
+		os.Exit(runProxyFenceHelper())
+	}
 	os.Exit(runWithUserDirsUnderTestRoot(m))
 }
 

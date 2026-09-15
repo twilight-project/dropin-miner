@@ -129,38 +129,60 @@ func dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	return d.DialContext(ctx, network, addr)
 }
 
-// Install reassigns netdial.Hook to the fence. Called once, by Guard,
-// before m.Run(). Every Transport this module builds in production code
-// dials via netdial.For(itsOwnDialer), which checks Hook first and its own
-// dialer only when Hook is nil — so this one reassignment reaches every
-// client at once, whatever dialer each would otherwise use, without this
-// package needing to know what any of them are.
+// proxyEnvVars are every environment variable a Transport with
+// Proxy: http.ProxyFromEnvironment might read — the four Clone()-based
+// production transports this module builds (the login probe, the search
+// client, pkg/platform's client, internal/selfupdate's source) all
+// deliberately preserve that Proxy setting, the same as
+// http.DefaultTransport itself, so the participant's own proxy
+// configuration still applies in production. net/http's own
+// ProxyFromEnvironment reads only HTTP_PROXY/HTTPS_PROXY/NO_PROXY (and
+// lowercase); ALL_PROXY is cleared too as a second layer, since it is a
+// convention some other HTTP tooling honors even though this module's own
+// clients do not read it.
+var proxyEnvVars = []string{
+	"HTTP_PROXY", "http_proxy",
+	"HTTPS_PROXY", "https_proxy",
+	"ALL_PROXY", "all_proxy",
+}
+
+// clearProxyEnv unsets every variable in proxyEnvVars.
 //
-// It does NOT also point HTTP_PROXY/HTTPS_PROXY at a closed port, which an
-// earlier revision of this fence (cmd/dropin-miner's own, before this
-// shared seam existed) did as a second, independent layer. That layer is
-// not just redundant now, it is actively wrong: several production
-// transports deliberately preserve Proxy: http.ProxyFromEnvironment (the
-// login probe, the search client, pkg/platform's client,
-// internal/selfupdate's source — see each one's own comment), because that
-// is what http.DefaultTransport already did for them and this seam's whole
-// promise is not changing that. With HTTP_PROXY pointed at a closed
-// LOOPBACK port, those transports would resolve a proxy address that
-// DialContext allows through (it is loopback), and DialContext would never
-// see the real destination at all — a live guard test would then get a
-// plain "connection refused" from the fake proxy instead of this package's
-// typed refusal naming the host actually being reached, exactly the
-// masking bug D1b found and fixed for the http.DefaultTransport swap this
-// seam replaces. Now that boundary_test.go (cmd/dropin-miner's
-// TestEveryHTTPTransportDialsThroughTheSharedSeam) structurally guarantees
-// every Transport this module builds names netdial.For explicitly, there
-// is no remaining category of client this second layer would have caught
-// that Hook does not already cover on its own — and this module's one
-// third-party HTTP-capable dependency, golang.org/x/oauth2, is handed
-// pkg/auth's own already-seamed client via the oauth2.HTTPClient context
-// value (oauthclient.go) rather than building one of its own, so there is
-// nothing left outside this module's control to defend against either.
+// This is not optional, and the order Install calls it in is not
+// incidental: a developer's own machine routinely already has one of these
+// set — a corporate proxy agent, a VPN client, a local debugging proxy —
+// entirely independently of anything this fence does, and Go's own
+// http.ProxyFromEnvironment reads the environment exactly ONCE per process
+// and caches the result forever after (a sync.Once inside net/http itself,
+// triggered by the first Transport that actually tries to route a
+// request). Clearing these variables after that first read has already
+// happened does nothing at all — the cached decision stands for the rest
+// of the process. That is exactly the gap a review of this package found:
+// with HTTPS_PROXY already pointed at a loopback listener when a test
+// began, a Clone()-based client's CONNECT went to that listener — which a
+// real corporate proxy or VPN client would then have forwarded to the real
+// production host — while netdial's DialContext saw only the (loopback,
+// so allowed) proxy address and never learned what the real target even
+// was. Clearing the environment is therefore the very first thing Install
+// does, before netdial.Hook is touched or anything else runs, and Guard
+// calls Install before m.Run() so this happens before any test — and
+// before any package-level Transport var's first real dial — gets the
+// chance to cache a poisoned value.
+func clearProxyEnv() {
+	for _, key := range proxyEnvVars {
+		_ = os.Unsetenv(key)
+	}
+}
+
+// Install clears the proxy environment (clearProxyEnv, first) and
+// reassigns netdial.Hook to the fence. Called once, by Guard, before
+// m.Run(). Every Transport this module builds in production code dials via
+// netdial.For(itsOwnDialer), which checks Hook first and its own dialer
+// only when Hook is nil — so this one reassignment reaches every client at
+// once, whatever dialer each would otherwise use, without this package
+// needing to know what any of them are.
 func Install() error {
+	clearProxyEnv()
 	netdial.Hook = dialContext
 	return nil
 }
