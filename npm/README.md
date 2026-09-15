@@ -257,7 +257,13 @@ never registers, rebuilds or replaces — a new identity is never decided in
 the background.
 
 `dropin-miner help` describes each. Every command takes `-config <file>`,
-falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`.
+falling back to `TOKENDROP_CONFIG`, then `./tokendrop.toml`, then the
+installation's own config (`$TOKENDROP_HOME/tokendrop.toml`, else
+`~/.tokendrop/tokendrop.toml`, when that file exists) — and only then
+built-in defaults. `status` and `doctor` name the file they resolved, or say
+plainly that none was found; `connect` refuses outright when resolution
+finds no config file at all, rather than register against built-in-default
+state, and says to run `dropin-miner setup`.
 
 `login` reads your sr- key from stdin (never an argument), verifies it with a
 zero-spend probe against the router, and writes `~/.tokendrop/credentials.json`

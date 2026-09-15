@@ -411,8 +411,8 @@ func statusMain(args []string, stdout, stderr io.Writer, getenv func(string) str
 
 	local, ok := gatherAgentIdentity(args, getenv)
 	if !ok {
-		local = agentIdentityFacts{Mining: cfg.Mining, StoreMissing: true,
-			Decision: auth.MiningDecision{State: auth.MiningUndecided}}
+		local = agentIdentityFacts{Mining: cfg.Mining, ConfigSource: src, StateDir: cfg.Mining.StateDir,
+			StoreMissing: true, Decision: auth.MiningDecision{State: auth.MiningUndecided}}
 	}
 
 	// WP2-adversarial-review finding 16: an unclaimed or search-only
@@ -548,6 +548,13 @@ func printAgentIdentityStatus(args []string, stdout, stderr io.Writer, getenv fu
 type agentIdentityFacts struct {
 	Mining config.Mining
 
+	// ConfigSource is the file describeConfigSource resolved (ruling
+	// D-R1), empty when resolution found none and built-in defaults are in
+	// use — the two are told apart explicitly rather than by an empty
+	// string reading as "no config", since printing it is the whole point.
+	ConfigSource string
+	StateDir     string
+
 	// StoreMissing is the ordinary "nothing has decided anything here"
 	// state; StoreErr is a state directory that exists and cannot be read.
 	StoreMissing bool
@@ -579,11 +586,11 @@ func gatherAgentIdentity(args []string, getenv func(string) string) (agentIdenti
 	if err := flags.Parse(args); err != nil {
 		return agentIdentityFacts{}, false
 	}
-	cfg, _, err := loadConfig(*cfgPath, getenv)
+	cfg, src, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
 		return agentIdentityFacts{}, false
 	}
-	f := agentIdentityFacts{Mining: cfg.Mining}
+	f := agentIdentityFacts{Mining: cfg.Mining, ConfigSource: src, StateDir: cfg.Mining.StateDir}
 	store, err := auth.OpenStoreExisting(cfg.Mining.StateDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -633,6 +640,7 @@ func (f agentIdentityFacts) needsMining() bool {
 }
 
 func renderAgentIdentity(f agentIdentityFacts, stdout, stderr io.Writer) bool {
+	printConfigSource(stdout, f.ConfigSource, f.StateDir)
 	if f.StoreMissing {
 		fmt.Fprintln(stdout, "mining: NOT DECIDED")
 		printMiningASConfiguration(stdout, f.Mining)

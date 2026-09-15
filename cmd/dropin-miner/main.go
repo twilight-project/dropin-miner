@@ -177,7 +177,12 @@ wallet (a reward address this installation controls):
   wallet send      move funds to another twilight address: -to and -amount
 
 Every command takes -config <file>, falling back to TOKENDROP_CONFIG, then
-./tokendrop.toml. The [mining] block names the AS, chain and slot; the
+./tokendrop.toml, then the installation's own config ($TOKENDROP_HOME/
+tokendrop.toml, else ~/.tokendrop/tokendrop.toml, when that file exists).
+status and doctor name the file they resolved, or say plainly that none was
+found and built-in defaults are in use; connect refuses outright when
+resolution finds no config file at all, and says to run dropin-miner setup.
+The [mining] block names the AS, chain and slot; the
 [miner] block says router intake is configured (whether mining is ON is the
 persisted decision, not a config key); [platform] names two hosts — base_url,
 the portal a printed claim URL is checked against and nothing dials

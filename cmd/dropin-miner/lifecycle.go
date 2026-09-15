@@ -34,8 +34,9 @@ package main
 //
 // Who is keyed where. connect and flush key the gate on the directory of the
 // config file they are about to load — chosen exactly as loadConfig chooses
-// it (-config, then TOKENDROP_CONFIG, then ./tokendrop.toml) — and they know
-// that path before loading anything. setup keys it on the installation
+// it (-config, then TOKENDROP_CONFIG, then ./tokendrop.toml, then the
+// installation's own config when that file exists) — and they know that
+// path before loading anything. setup keys it on the installation
 // directory it writes, whose config is H/tokendrop.toml; on the installer
 // layout the two keys are the same path. Every path that names a gate goes
 // through lifecycleIdentity, one lexical canonicalization, so two spellings
@@ -108,10 +109,12 @@ func lifecycleGatePath(dir string) string {
 }
 
 // configGatePath is the gate for an ordinary operation that will load the
-// config loadConfig would choose for cfgFlag. With no config file at all, it
-// is the default installation's gate: nothing such an operation touches is
-// under any installation a destructive command can target, and one fixed
-// choice keeps two such runs coordinated with each other.
+// config loadConfig would choose for cfgFlag (describeConfigSource, ruling
+// D-R1). With no config file at all — resolution exhausted, including the
+// installation's own — it is the default installation's gate: nothing such
+// an operation touches is under any installation a destructive command can
+// target, and one fixed choice keeps two such runs coordinated with each
+// other.
 func configGatePath(cfgFlag string, getenv func(string) string) (string, error) {
 	if src := describeConfigSource(cfgFlag, getenv); src != "" {
 		abs, err := lifecycleIdentity(src)
@@ -120,13 +123,9 @@ func configGatePath(cfgFlag string, getenv func(string) string) (string, error) 
 		}
 		return lifecycleGatePath(filepath.Dir(abs)), nil
 	}
-	home := getenv("TOKENDROP_HOME")
+	home := defaultTokendropHome(getenv)
 	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil || userHome == "" {
-			return "", nil
-		}
-		home = filepath.Join(userHome, ".tokendrop")
+		return "", nil
 	}
 	abs, err := lifecycleIdentity(home)
 	if err != nil {
