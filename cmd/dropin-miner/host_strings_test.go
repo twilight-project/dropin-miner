@@ -41,13 +41,23 @@ func hostStringsEntry(goos string) binEntry {
 	return binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/home/u/.tokendrop/tokendrop.toml"}
 }
 
-// renderedSkillFor is the SKILL.md the host's own install writes.
-func renderedSkillFor(id string, entry binEntry) string {
+// renderedSkillFor is the SKILL.md the host's own install writes on goos:
+// its declared tool shells decide every command in it.
+func renderedSkillFor(id string, entry binEntry, goos string) string {
 	note := ""
 	if id == "hermes" {
 		note = hermesApprovalNote
 	}
-	return string(renderSkill(entry, preferOn, note))
+	tg, ok := targetByID(installTargets, id)
+	if !ok {
+		panic("no target " + id)
+	}
+	shells, _ := toolShellsForSkill(tg, goos)
+	skill, err := renderSkill(entry, preferOn, note, shells)
+	if err != nil {
+		panic(err)
+	}
+	return string(skill)
 }
 
 // skillBlock is one fenced block of a rendered skill: its fence language and
@@ -85,6 +95,14 @@ func skillCommandBlocks(skill string) []skillBlock {
 	return out
 }
 
+// fenceFor is the fence language a shell's block carries.
+func fenceFor(sh shellKind) string {
+	if sh == shellPowerShell {
+		return "powershell"
+	}
+	return "bash"
+}
+
 // skillSearchBlock is the skill's search: the first command block.
 func skillSearchBlock(t *testing.T, skill string) skillBlock {
 	t.Helper()
@@ -95,14 +113,34 @@ func skillSearchBlock(t *testing.T, skill string) skillBlock {
 	return blocks[0]
 }
 
-// skillPreferBlock is the skill's preference command block.
-func skillPreferBlock(t *testing.T, skill string) skillBlock {
+// skillBlockFor is the block a host's skill renders for one shell: a host
+// that runs more than one shell teaches one form per shell, and only the one
+// written for a shell can be judged by running it there.
+func skillBlockFor(t *testing.T, skill string, sh shellKind, kind string) skillBlock {
 	t.Helper()
-	blocks := skillCommandBlocks(skill)
-	if len(blocks) < 2 {
-		t.Fatalf("the rendered skill has %d command blocks:\n%s", len(blocks), skill)
+	for _, blk := range skillCommandBlocks(skill) {
+		if blk.lang != fenceFor(sh) {
+			continue
+		}
+		isSearch := strings.Contains(blk.body, "--stdin")
+		isPrefer := strings.Contains(blk.body, "agents prefer")
+		switch kind {
+		case "search":
+			if isSearch {
+				return blk
+			}
+		case "prefer":
+			if isPrefer {
+				return blk
+			}
+		case "human":
+			if !isSearch && !isPrefer {
+				return blk
+			}
+		}
 	}
-	return blocks[1]
+	t.Fatalf("the skill renders no %s block for %s:\n%s", kind, sh, skill)
+	return skillBlock{}
 }
 
 // skillProseCommandLines are the lines outside any fence that name the
@@ -279,20 +317,26 @@ func bridgedCommand(t *testing.T, host, command string) string {
 	return ""
 }
 
-// recognizerVerdict is what Cursor's command recognizer makes of s on goos,
-// grammar only: the argv it parses, or its refusal. The identity check needs
-// a real file and is exercised against the built binary in the execution
-// tests.
-func recognizerVerdict(s, goos string) string {
-	argv, ok := simpleCommandArgsForPlatform(s, goos == "windows")
-	if !ok {
-		return "refused"
+// recognizerVerdict is what Cursor's recognizer makes of a command on goos,
+// grammar only: which rendered form it is, or its refusal. The identity
+// check needs a real file and is exercised against the built binary in the
+// execution tests.
+func recognizerVerdict(command string, entry binEntry, goos string) string {
+	cursor, _ := targetByID(installTargets, "cursor")
+	shells, _ := toolShellsForSkill(cursor, goos)
+	for _, sh := range shells {
+		for _, form := range renderedCursorCommands(entry.cfg, sh) {
+			got, ok := matchRendered(strings.TrimSuffix(command, "\n"), form)
+			if !ok || got.bin != entry.command {
+				continue
+			}
+			if form.wantsBody && !isOneVersionOneRequest(got.body) {
+				return "refused: the body is not one version 1 request"
+			}
+			return "matches the rendered `" + strings.Join(form.path, " ") + "` for " + string(sh)
+		}
 	}
-	quoted := make([]string, len(argv))
-	for i, a := range argv {
-		quoted[i] = fmt.Sprintf("%q", a)
-	}
-	return "argv [" + strings.Join(quoted, " ") + "]"
+	return "refused"
 }
 
 // renderedHostStrings is the golden document for goos.
@@ -305,7 +349,8 @@ func renderedHostStrings(t *testing.T, goos string) string {
 	value := func(label, v string) { w("-- %s\n%s\n", label, v) }
 
 	w("# Every string each host is handed on %s, as this binary renders it.\n", goos)
-	w("# Characterization (H1): v0.2.9's renderings; H2 and H3 change them as reviewed diffs.\n")
+	w("# The skill's commands follow each host's declared tool shells (H2); hook\n")
+	w("# commands and bridge prefixes are still v0.2.9's, and H3 changes those.\n")
 	w("binary: %s\nconfig: %s\n", entry.command, entry.cfg)
 
 	section("declaration")
@@ -332,12 +377,12 @@ func renderedHostStrings(t *testing.T, goos string) string {
 	section("any host without a skill (opencode's AGENTS.md note, the rules line for any other agent)")
 	value("rulesSnippet", rulesSnippet(entry))
 
-	skill := renderedSkillFor("claude", entry)
+	skill := renderedSkillFor("claude", entry, goos)
 	stdinSearch := skillSearchBlock(t, skill)
 	for _, id := range goldenHostIDs {
 		switch id {
 		case "claude", "codex", "cursor", "pi", "hermes":
-			skill := renderedSkillFor(id, entry)
+			skill := renderedSkillFor(id, entry, goos)
 			section(id + ": skill command blocks")
 			for _, blk := range skillCommandBlocks(skill) {
 				value("fence "+blk.lang, blk.body)
@@ -369,10 +414,16 @@ func renderedHostStrings(t *testing.T, goos string) string {
 				value(h.event, h.command+"\n"+string(literal))
 			}
 			section("cursor: beforeShellExecution recognizer grammar on " + goos)
-			value("skill search block", recognizerVerdict(stdinSearch.body, goos))
-			value("stdin command alone", recognizerVerdict(entry.stdinCommand(), goos))
-			value("preference command", recognizerVerdict(entry.preferCommand()+" status", goos))
-			value("human form", recognizerVerdict(entry.searchCommand()+` "exact query text"`, goos))
+			cursorSkill := renderedSkillFor("cursor", entry, goos)
+			for _, blk := range skillCommandBlocks(cursorSkill) {
+				label := "skill block (" + blk.lang + ")"
+				command := strings.Replace(blk.body, "<argument>", "status", 1)
+				command = strings.Replace(command, "<query>", "exact query text", 1)
+				value(label, recognizerVerdict(command, entry, goos))
+			}
+			value("stdin command alone", recognizerVerdict(entry.stdinCommand(), entry, goos))
+			value("the rendered search plus a second statement",
+				recognizerVerdict(strings.Replace(stdinSearch.body, "\nJSON", "\nJSON; echo x", 1), entry, goos))
 		case "hermes":
 			section("hermes: config.yaml hook command")
 			cmd, ok := hermesHookCommand(entry, goos == "windows")

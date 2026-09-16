@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -72,9 +73,21 @@ type preferenceTarget interface {
 // The fence language our own skill writes is not evidence for either: a
 // host that ran `bash` because our skill said `bash` has shown only that it
 // follows fences. A cell is established by the host's documentation or
-// source, or by a live run of the host; a cell nobody has established is
-// unknown, and a renderer asked for it refuses (undeclaredShellError) rather
-// than falling back to a guess.
+// source, or by a live run of the host.
+//
+// A cell names a SET of shells, not one (H-R5). Claude Code on Windows runs
+// its Bash tool through Git Bash and its PowerShell tool through PowerShell,
+// and which one a call uses is the model's choice: the skill teaches a
+// runnable form for each. What a set means differs by channel — a tool cell
+// lists every shell a call may arrive in, so the skill renders one form per
+// shell; a hook cell lists every shell the one rendered command must be
+// valid in, because the host picks and we never learn which.
+//
+// An unknown cell answers an *undeclaredShellError. What a caller does with
+// it also differs by channel: a skill keeps v0.2.9's POSIX form and the
+// install plan says the shell is not established (toolShellsForSkill),
+// because refusing would take away a host that works today. A hook command
+// has no such fallback; H3 owns that.
 
 // shellKind is one grammar a rendered string may have to be valid in.
 type shellKind string
@@ -351,7 +364,13 @@ func (claudeTarget) Shells(goos string) hostShells {
 		}
 	case "windows":
 		return hostShells{
-			tool: established("live: soak #57 Windows (Git Bash); docs setup: \"With Git for Windows, Claude Code uses Git Bash for the Bash tool\"", shellPOSIX),
+			// Two tools, two shells, and the model chooses per call (#77,
+			// H-R5): the Bash tool runs through Git Bash, and the PowerShell
+			// tool — on by default for claude.ai and Console accounts, and the
+			// only one where Git for Windows is absent — runs through
+			// PowerShell. A skill that taught only the heredoc would be wrong
+			// for every call the model made with the second.
+			tool: established("live: soak #57 Windows (Git Bash); docs setup: \"With Git for Windows, Claude Code uses Git Bash for the Bash tool\"; docs tools-reference: the PowerShell tool is \"on by default for claude.ai and Console accounts\" and \"Claude treats PowerShell as the primary shell\" when enabled", shellPOSIX, shellPowerShell),
 			hook: established("docs hooks: \"Git Bash on Windows, or PowerShell when Git Bash isn't installed\"; live: soak #57 Windows", shellPOSIX),
 		}
 	}
@@ -365,7 +384,7 @@ func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 
 func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planWrite(ops, t.Label(), paths.claudeSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	changed := planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
 	if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, claudeHooks(entry)) {
 		changed = true
 	}
@@ -404,7 +423,7 @@ func (t claudeTarget) PlanPreference(ops agentOps, paths agentPaths, entry binEn
 	if !pathExists(ops, paths.claudeSkill) {
 		return
 	}
-	planWrite(ops, t.Label(), paths.claudeSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
 }
 
 // ── Codex ─────────────────────────────────────────────────────────────────
@@ -440,7 +459,7 @@ func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) boo
 
 func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	if !planWrite(ops, t.Label(), paths.codexSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p) {
+	if !planSkill(ops, t, paths.codexSkill, entry, prefer, "", p) {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	if roots := codexSandboxRoots(entry, getenv); len(roots) > 0 {
@@ -478,7 +497,7 @@ func (t codexTarget) PlanPreference(ops agentOps, paths agentPaths, entry binEnt
 	if !pathExists(ops, paths.codexSkill) {
 		return
 	}
-	planWrite(ops, t.Label(), paths.codexSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	planSkill(ops, t, paths.codexSkill, entry, prefer, "", p)
 }
 
 // ── Cursor ────────────────────────────────────────────────────────────────
@@ -529,7 +548,7 @@ func (cursorTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 
 func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planWrite(ops, t.Label(), paths.cursorSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	changed := planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
 	if planHooksMerge(ops, t.Label(), paths.cursorHooks, p, entry, cursorHooks(entry)) {
 		changed = true
 	}
@@ -568,7 +587,7 @@ func (t cursorTarget) PlanPreference(ops agentOps, paths agentPaths, entry binEn
 	if !pathExists(ops, paths.cursorSkill) {
 		return
 	}
-	planWrite(ops, t.Label(), paths.cursorSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
 }
 
 // ── opencode ──────────────────────────────────────────────────────────────
@@ -613,7 +632,11 @@ func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEnt
 	if !planWrite(ops, t.Label(), paths.opencodePlugin, []byte(js), 0o600, "lineage plugin", p) {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
-	p.notes = append(p.notes, t.Label()+": has no skill directory — add to AGENTS.md:\n"+rulesSnippet(entry))
+	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
+	if shellNote != "" {
+		p.notes = append(p.notes, shellNote)
+	}
+	p.notes = append(p.notes, t.Label()+": has no skill directory — add to AGENTS.md:\n"+rulesSnippetFor(entry, shells))
 }
 
 func (t opencodeTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
@@ -664,7 +687,7 @@ func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 
 func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planWrite(ops, t.Label(), paths.piSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	changed := planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
 	if planWrite(ops, t.Label(), paths.piExtension, []byte(renderAgentScript(piExtensionTS)), 0o600, "lineage extension", p) {
 		changed = true
 	}
@@ -706,7 +729,7 @@ func (t piTarget) PlanPreference(ops agentOps, paths agentPaths, entry binEntry,
 	if !pathExists(ops, paths.piSkill) {
 		return
 	}
-	planWrite(ops, t.Label(), paths.piSkill, renderSkill(entry, prefer, ""), 0o600, "skill", p)
+	planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
 }
 
 // ── Hermes ────────────────────────────────────────────────────────────────
@@ -744,7 +767,7 @@ func (hermesTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 
 func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planWrite(ops, t.Label(), paths.hermesSkill, renderSkill(entry, prefer, hermesApprovalNote), 0o600, "skill", p)
+	changed := planSkill(ops, t, paths.hermesSkill, entry, prefer, hermesApprovalNote, p)
 	if planHermesHook(ops, t.Label(), paths.hermesConfig, entry, p) {
 		changed = true
 	}
@@ -789,5 +812,5 @@ func (t hermesTarget) PlanPreference(ops agentOps, paths agentPaths, entry binEn
 	if !pathExists(ops, paths.hermesSkill) {
 		return
 	}
-	planWrite(ops, t.Label(), paths.hermesSkill, renderSkill(entry, prefer, hermesApprovalNote), 0o600, "skill", p)
+	planSkill(ops, t, paths.hermesSkill, entry, prefer, hermesApprovalNote, p)
 }

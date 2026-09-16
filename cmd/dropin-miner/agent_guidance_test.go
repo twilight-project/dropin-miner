@@ -10,6 +10,7 @@ package main
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,11 +25,7 @@ func instructionTextFor(t *testing.T, surfaceID string, entry binEntry) string {
 	if surfaceID == "opencode" {
 		return rulesSnippet(entry)
 	}
-	note := ""
-	if surfaceID == "hermes" {
-		note = hermesApprovalNote
-	}
-	return string(renderSkill(entry, preferOn, note))
+	return renderedSkillFor(surfaceID, entry, runtime.GOOS)
 }
 
 func guidanceEntry() binEntry {

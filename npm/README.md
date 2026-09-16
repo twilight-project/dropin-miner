@@ -140,15 +140,25 @@ transmission. Mining/AS receives metadata observations only.
 
 ## Per host
 
-| host | tool | lineage | files written by `agents install` |
-|---|---|---|---|
-| Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and two `permissions.allow` rules — the quoted and the bare spelling of the same search command — in `~/.claude/settings.json` |
-| Cursor | skill | full: lineage file from sessionStart, shell, thought, response, compaction and stop hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
-| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory. A command inside the sandbox can read `credentials.json` (a search needs the key) and the state directory (a flush needs it); on Windows it cannot read the wallet, whose directory keeps its own owner-only access |
-| opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
-| Pi | skill | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
-| Hermes | skill | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
-| anything else | rules line | per-shell | printed for you to paste |
+Every command a skill teaches is rendered for the shell that host actually
+runs, per operating system — a quoted heredoc where that is Bash, and a
+single-quoted here-string piped into the call where it is PowerShell, with
+the encoding line that makes a query with an apostrophe, a quotation mark or
+any non-ASCII character arrive exactly as written on Windows PowerShell 5.1.
+Claude Code on Windows is taught both, because which of its two shell tools a
+call uses is the model's choice. Where nobody has established what a host
+runs — Codex on Windows today — the skill keeps the Bash form and `agents
+install` says so in its plan rather than removing a host that works.
+
+| host | tool | shell it is taught for | lineage | files written by `agents install` |
+|---|---|---|---|---|
+| Claude Code | skill | Bash on macOS and Linux; on Windows both Git Bash and PowerShell | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and three `permissions.allow` rules — the single-quoted spelling the skill renders, plus the quoted and bare ones an agent may repeat from an older skill — in `~/.claude/settings.json` |
+| Cursor | skill | Bash on macOS and Linux; PowerShell on Windows | full: lineage file from sessionStart, shell, thought, response, compaction and stop hooks; the shell hook auto-allows exactly the search the skill renders, and nothing looser | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
+| Codex | skill | Bash on macOS and Linux; **not established on Windows** (keeps the Bash form) | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory. A command inside the sandbox can read `credentials.json` (a search needs the key) and the state directory (a flush needs it); on Windows it cannot read the wallet, whose directory keeps its own owner-only access |
+| opencode | AGENTS.md line | Bash on macOS and Linux; PowerShell on Windows | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
+| Pi | skill | Bash everywhere (Git Bash on Windows) | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
+| Hermes | skill | Bash everywhere (Git Bash on Windows) | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
+| anything else | rules line | Bash | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only hook entries that name this binary.
 

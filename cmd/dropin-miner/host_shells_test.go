@@ -33,7 +33,7 @@ type declaredRow struct {
 var declaredShellTable = []declaredRow{
 	{"claude", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
 	{"claude", "linux", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"claude", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
+	{"claude", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX, shellPowerShell}, []shellKind{shellPOSIX}},
 	{"codex", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
 	{"codex", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
 	{"codex", "windows", evidenceUnknown, evidenceNone, nil, nil},
@@ -144,7 +144,7 @@ func TestDeclaredShellsRefusesWhatIsNotEstablished(t *testing.T) {
 		}
 	})
 	t.Run("established and ruled cells answer their shells", func(t *testing.T) {
-		if shells, err := declaredShells(claude, "windows", channelTool); err != nil || !slices.Equal(shells, []shellKind{shellPOSIX}) {
+		if shells, err := declaredShells(claude, "windows", channelTool); err != nil || !slices.Equal(shells, []shellKind{shellPOSIX, shellPowerShell}) {
 			t.Fatalf("claude windows tool: %v, %v", shells, err)
 		}
 		if shells, err := declaredShells(cursor, "windows", channelHook); err != nil || !slices.Equal(shells, []shellKind{shellCmd, shellPowerShell}) {

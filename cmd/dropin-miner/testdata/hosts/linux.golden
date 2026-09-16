@@ -1,5 +1,6 @@
 # Every string each host is handed on linux, as this binary renders it.
-# Characterization (H1): v0.2.9's renderings; H2 and H3 change them as reviewed diffs.
+# The skill's commands follow each host's declared tool shells (H2); hook
+# commands and bridge prefixes are still v0.2.9's, and H3 changes those.
 binary: /home/u/.tokendrop/bin/dropin-miner
 config: /home/u/.tokendrop/tokendrop.toml
 
@@ -24,7 +25,7 @@ hermes    hook established argv
 == any host without a skill (opencode's AGENTS.md note, the rules line for any other agent)
 -- rulesSnippet
   For public-web search, send one JSON request on stdin:
-    "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin
+    '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin
     {"version":1,"query":"<exact query text>"}
   The query goes in the JSON, never in the command line. One JSON object comes
   back: decide what to do next from ok, retryable and action, never from the
@@ -36,13 +37,13 @@ hermes    hook established argv
 
 == claude: skill command blocks
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" agents prefer -config "/home/u/.tokendrop/tokendrop.toml" <argument>
--- prose
-`"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" -format model "<query>"` still works and prints readable text instead of JSON. It
+'/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
+-- fence bash
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == claude: settings.json hook commands, as read back from the file
 -- PreToolUse
@@ -63,6 +64,9 @@ JSON
 
 == claude: settings.json permissions.allow rules
 -- rule
+Bash('/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml':*)
+"Bash('/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml':*)"
+-- rule
 Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml":*)
 "Bash(\"/home/u/.tokendrop/bin/dropin-miner\" search -config \"/home/u/.tokendrop/tokendrop.toml\":*)"
 -- rule
@@ -71,7 +75,7 @@ Bash(/home/u/.tokendrop/bin/dropin-miner search -config "/home/u/.tokendrop/toke
 
 == claude: bridge prefix its lineage adapter writes
 -- skill search block
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- stdin command
@@ -79,23 +83,23 @@ TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -co
 
 == codex: skill command blocks
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" agents prefer -config "/home/u/.tokendrop/tokendrop.toml" <argument>
--- prose
-`"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" -format model "<query>"` still works and prints readable text instead of JSON. It
+'/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
+-- fence bash
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == cursor: skill command blocks
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" agents prefer -config "/home/u/.tokendrop/tokendrop.toml" <argument>
--- prose
-`"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" -format model "<query>"` still works and prints readable text instead of JSON. It
+'/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
+-- fence bash
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == cursor: hooks.json commands, as read back from the file
 -- sessionStart
@@ -118,18 +122,20 @@ JSON
 "\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor stop"
 
 == cursor: beforeShellExecution recognizer grammar on linux
--- skill search block
+-- skill block (bash)
+matches the rendered `search` for posix
+-- skill block (bash)
+matches the rendered `agents prefer` for posix
+-- skill block (bash)
 refused
 -- stdin command alone
-argv ["/home/u/.tokendrop/bin/dropin-miner" "search" "-config" "/home/u/.tokendrop/tokendrop.toml" "--stdin"]
--- preference command
-argv ["/home/u/.tokendrop/bin/dropin-miner" "agents" "prefer" "-config" "/home/u/.tokendrop/tokendrop.toml" "status"]
--- human form
-argv ["/home/u/.tokendrop/bin/dropin-miner" "search" "-config" "/home/u/.tokendrop/tokendrop.toml" "-format" "model" "exact query text"]
+refused
+-- the rendered search plus a second statement
+refused
 
 == opencode: bridge prefix its lineage adapter writes
 -- skill search block
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- stdin command
@@ -137,17 +143,17 @@ TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -co
 
 == pi: skill command blocks
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" agents prefer -config "/home/u/.tokendrop/tokendrop.toml" <argument>
--- prose
-`"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" -format model "<query>"` still works and prints readable text instead of JSON. It
+'/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
+-- fence bash
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == pi: bridge prefix its lineage adapter writes
 -- skill search block
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- stdin command
@@ -155,13 +161,13 @@ TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -co
 
 == hermes: skill command blocks
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- fence bash
-"/home/u/.tokendrop/bin/dropin-miner" agents prefer -config "/home/u/.tokendrop/tokendrop.toml" <argument>
--- prose
-`"/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" -format model "<query>"` still works and prints readable text instead of JSON. It
+'/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
+-- fence bash
+'/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == hermes: config.yaml hook command
 -- command
@@ -171,7 +177,7 @@ JSON
 
 == hermes: bridge prefix its lineage adapter writes
 -- skill search block
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin <<'JSON'
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
 -- stdin command

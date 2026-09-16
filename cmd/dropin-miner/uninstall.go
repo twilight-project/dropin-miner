@@ -558,8 +558,29 @@ func planWithout(p agentPlan, skip map[string]bool) agentPlan {
 }
 
 // installedCommand finds the binaries a rendered skill runs: the quoted path
-// before " search", " hook" or " agents prefer", as renderSkill writes it.
-var installedCommand = regexp.MustCompile(`"((?:[^"\\\n]|\\.)*)" (?:search|hook|agents prefer)\b`)
+// before " search", " hook" or " agents prefer".
+//
+// Two spellings, because two renderers have written this file. v0.2.9 quoted
+// every path with Go's %q; from H2 a skill is rendered for its host's shell,
+// which single-quotes the path (POSIX and PowerShell both). Matching only the
+// first would make every skill written by a current install look like a file
+// that names no binary at all — and a skill that names no binary is one
+// uninstall removes, including another installation's.
+var installedCommand = regexp.MustCompile(`(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*(?:(?:'\\''|'')[^'\n]*)*)') (?:search|hook|agents prefer)\b`)
+
+// renderedPathCandidates is how a matched path may have been quoted: Go's
+// %q, POSIX single quotes with '\” for an embedded quote, or PowerShell's
+// doubled ”. A path containing no quote reads the same under all three.
+func renderedPathCandidates(m []string) []string {
+	if m[1] != "" {
+		if bin, err := strconv.Unquote(`"` + m[1] + `"`); err == nil {
+			return []string{bin}
+		}
+		return nil
+	}
+	raw := m[2]
+	return []string{strings.ReplaceAll(raw, `'\''`, "'"), strings.ReplaceAll(raw, "''", "'")}
+}
 
 // foreignBinary returns a binary named in the files a target would remove
 // when none of them names one of candidates, and "" otherwise — including
@@ -569,17 +590,15 @@ func foreignBinary(ops agentOps, removes, candidates []string, windows bool) str
 	for _, path := range removes {
 		for _, content := range readRemoved(ops, path) {
 			for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
-				bin, err := strconv.Unquote(`"` + m[1] + `"`)
-				if err != nil {
-					continue
-				}
-				for _, c := range candidates {
-					if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
-						return ""
+				for _, bin := range renderedPathCandidates(m) {
+					for _, c := range candidates {
+						if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
+							return ""
+						}
 					}
-				}
-				if foreign == "" {
-					foreign = bin
+					if foreign == "" {
+						foreign = bin
+					}
 				}
 			}
 		}

@@ -1,165 +1,182 @@
 package main
 
+// Cursor auto-allows exactly what the skill renders, and nothing looser.
+//
+// Every input here is built FROM the rendered skill — the same text the
+// participant's Cursor is taught — rather than written out by hand, so the
+// recognizer and the skill cannot drift apart again. That drift is #66: the
+// skill taught a heredoc, the recognizer parsed only single-line commands,
+// and every Cursor search waited for a human and lost its lineage.
+
 import (
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 	"testing"
 )
 
-func TestCursorInstalledCommands(t *testing.T) {
-	executable, err := os.Executable()
+// recognizerFixture is an installation whose binary is this test's own
+// executable, so the identity check has a real file to agree with.
+type recognizerFixture struct {
+	entry  binEntry
+	shells []shellKind
+	exe    func() (string, error)
+}
+
+func newRecognizerFixture(t *testing.T, shells ...shellKind) recognizerFixture {
+	t.Helper()
+	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
-	installed := filepath.Join(root, "installed space", "dropin-miner")
-	if err := os.MkdirAll(filepath.Dir(installed), 0700); err != nil {
+	if len(shells) == 0 {
+		shells = []shellKind{shellPOSIX}
+	}
+	return recognizerFixture{
+		// The config lives under the installation directory a participant
+		// has, which is also what the skill-block helpers look for.
+		entry:  binEntry{command: self, cfg: filepath.Join(t.TempDir(), installMarker, "tokendrop.toml")},
+		shells: shells,
+		exe:    func() (string, error) { return self, nil },
+	}
+}
+
+// renderedSearch is the search command this installation's skill teaches for
+// sh, carrying body.
+func (f recognizerFixture) renderedSearch(t *testing.T, sh shellKind, body string) string {
+	t.Helper()
+	_, script, err := searchBlockForShell(sh, f.entry, body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(installed, []byte("synthetic installed identity"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	// The identity seam models the installed hook; comparison uses real files.
-	entry := binEntry{command: installed, cfg: filepath.Join(root, "config space", "tokendrop.toml")}
-	search := entry.searchCommand() + ` "ordinary query"`
-	foreign := filepath.Join(root, "dropin-miner")
-	if err := os.WriteFile(foreign, []byte("another identity"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		name, cmd    string
-		allow, stamp bool
-	}{
-		{"generated_search", search, true, true},
-		{"generated_prefer_on", entry.preferCommand() + " on", true, false},
-		{"generated_prefer_off", entry.preferCommand() + " off", true, false},
-		{"generated_prefer_status", entry.preferCommand() + " status", true, false},
-		{"other_path", (binEntry{command: foreign}).searchCommand() + " query", false, false},
-		{"other_copy", (binEntry{command: executable}).searchCommand() + " query", false, false},
-		{"basename", "dropin-miner search query", false, false},
-		{"semicolon", search + " ; other-command", false, false},
-		{"and", search + " && other-command", false, false},
-		{"background", search + " &", false, false},
-		{"or", search + " || other-command", false, false},
-		{"preceding", "other-command ; " + search, false, false},
-		{"pipe_before", "other-command | " + search, false, false},
-		{"pipe_after", search + " | other-command", false, false},
-		{"redirect", search + " > output", false, false},
-		{"append", search + " >> output", false, false},
-		{"input", search + " < input", false, false},
-		{"heredoc", search + " << EOF", false, false},
-		{"substitution", search + ` "$(other-command)"`, false, false},
-		{"backticks", search + " `other-command`", false, false},
-		{"process_substitution", search + " <(other-command)", false, false},
-		{"quoted_text", `echo '` + search + `'`, false, false},
-		{"newline", search + "\nother-command", false, false},
-		{"quoted_newline", search + " 'line\nline'", false, false},
-		{"unclosed", search + ` "oops`, false, false},
-		{"quoted_operators", entry.searchCommand() + ` 'a ; && | > $(text) ` + "`text`" + `'`, runtime.GOOS != "windows", runtime.GOOS != "windows"},
-		{"double_quoted_operators", entry.searchCommand() + ` "a ; && | >"`, true, true},
-		{"unknown_expansion", search + " $HOME", false, false},
-		{"bare_status", fmt.Sprintf("%q status", installed), false, false},
-		{"chat_not_shipped", fmt.Sprintf("%q chat x", installed), false, false},
-	}
-	for _, link := range []struct {
-		name, target string
-		allow        bool
-	}{{"same_symlink", installed, true}, {"foreign_symlink", foreign, false}} {
-		path := filepath.Join(root, link.name)
-		if err := os.Symlink(link.target, path); err != nil {
-			t.Logf("symlink case unavailable: %v", err)
-			continue
-		}
-		tests = append(tests, struct {
-			name, cmd    string
-			allow, stamp bool
-		}{link.name, (binEntry{command: path, cfg: entry.cfg}).searchCommand() + " query", link.allow, link.allow})
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			fs, ops := newFakeHookOps(nil)
-			ops.executable = func() (string, error) { return installed, nil }
-			hc := hookContext{sessionsDir: "/sessions"}
-			path := lineagePath(hc.sessionsDir, "/workspace")
-			payload := map[string]any{"conversation_id": "conversation", "generation_id": "generation", "cwd": "/workspace", "command": tc.cmd}
-			runHook(t, ops, hc, "cursor sessionStart", payload)
-			original := string(fs.files[path])
-			out, _ := runHook(t, ops, hc, "cursor beforeShellExecution", payload)
-			if got := strings.TrimSpace(out) == `{"permission":"allow"}`; got != tc.allow || (!tc.allow && out != "") {
-				t.Fatalf("permission mismatch: allow=%v output=%q", tc.allow, out)
+	return script
+}
+
+func (f recognizerFixture) recognize(command string) *recognizedCursorCommand {
+	return recognizeCursorCommand(command, f.exe, f.entry.cfg, f.shells)
+}
+
+// The rendered search is allowed, in every shell the host may run it in, and
+// the body it carries is the one the command actually contained.
+func TestRecognizerAllowsTheRenderedSearchInEveryDeclaredShell(t *testing.T) {
+	for _, sh := range []shellKind{shellPOSIX, shellPowerShell} {
+		t.Run(string(sh), func(t *testing.T) {
+			f := newRecognizerFixture(t, sh)
+			body := `{"version":1,"query":"it's \"quoted\" a\\b café 東京 😀"}`
+			got := f.recognize(f.renderedSearch(t, sh, body))
+			if got == nil || len(got.path) != 1 || got.path[0] != "search" {
+				t.Fatalf("the rendered search was not recognized: %+v", got)
 			}
-			if !tc.stamp {
-				if string(fs.files[path]) != original {
-					t.Fatal("non-search command changed lineage")
+			if got.body != body {
+				t.Fatalf("recognized body\n got %q\nwant %q", got.body, body)
+			}
+		})
+	}
+}
+
+// The preference command the same skill teaches is allowed, with each of the
+// three arguments it documents and no others.
+func TestRecognizerAllowsTheRenderedPreferenceCommand(t *testing.T) {
+	for _, sh := range []shellKind{shellPOSIX, shellPowerShell} {
+		f := newRecognizerFixture(t, sh)
+		prefer, err := f.entry.preferCommandForShell(sh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arg := range []string{"on", "off", "status"} {
+			got := f.recognize(prefer + " " + arg)
+			if got == nil || len(got.path) != 2 || got.path[0] != "agents" || got.path[1] != "prefer" {
+				t.Fatalf("%s: the rendered preference command %q was not recognized: %+v", sh, arg, got)
+			}
+		}
+		if got := f.recognize(prefer + " sideways"); got != nil {
+			t.Fatalf("%s: an undocumented preference argument was allowed", sh)
+		}
+	}
+}
+
+// Everything looser, each as its own case, and each built from the rendered
+// text so it differs from the allowed command only in the way it names.
+func TestRecognizerRefusesAnythingButTheRenderedForm(t *testing.T) {
+	const body = `{"version":1,"query":"ordinary"}`
+	for _, sh := range []shellKind{shellPOSIX, shellPowerShell} {
+		f := newRecognizerFixture(t, sh)
+		rendered := f.renderedSearch(t, sh, body)
+		second := f.renderedSearch(t, sh, `{"version":1,"query":"second"}`)
+		separator, pipe := "; ", " | "
+		cases := map[string]string{
+			"plus a second statement":       rendered + separator + "echo x",
+			"plus a pipeline":               rendered + pipe + "tee /tmp/x",
+			"plus another whole search":     rendered + "\n" + second,
+			"something before it":           "echo x" + separator + rendered,
+			"trailing text after the body":  rendered + " x",
+			"a second JSON object":          f.renderedSearch(t, sh, body+body),
+			"a body that is not an object":  f.renderedSearch(t, sh, `[{"version":1,"query":"q"}]`),
+			"a body of the wrong version":   f.renderedSearch(t, sh, `{"version":2,"query":"q"}`),
+			"a body with trailing text":     f.renderedSearch(t, sh, body+" trailing"),
+			"a different binary":            strings.Replace(rendered, f.entry.command, filepath.Join(t.TempDir(), "other"), 1),
+			"a different config":            strings.Replace(rendered, f.entry.cfg, filepath.Join(t.TempDir(), "other.toml"), 1),
+			"a different subcommand":        strings.Replace(rendered, " search ", " enroll ", 1),
+			"an extra flag":                 strings.Replace(rendered, " --stdin", " --stdin -format json", 1),
+			"the body's terminator inlined": f.renderedSearch(t, sh, body+"\nJSON\n"+body),
+		}
+		if sh == shellPowerShell {
+			// Without the encoding line the query does not survive Windows
+			// PowerShell 5.1, so a command missing it is not the command the
+			// skill teaches and is not allowed to pass as it.
+			cases["without the encoding line"] = strings.TrimPrefix(rendered, psOutputEncodingLine+"\n")
+		}
+		for name, command := range cases {
+			t.Run(string(sh)+"/"+name, func(t *testing.T) {
+				if got := f.recognize(command); got != nil {
+					t.Fatalf("allowed %q\ncommand:\n%s", name, command)
 				}
-				return
-			}
-			l, ok := loadLineage(ops, path)
-			if !ok || l.Seq != 1 || len(l.CallID) != 32 || l.SessionID != traceHash("conversation") || l.TurnID != traceHash("conversation|generation") {
-				t.Fatalf("search lineage mismatch: %+v", l)
-			}
-			previous := l.CallID
-			runHook(t, ops, hc, "cursor beforeShellExecution", payload)
-			l, ok = loadLineage(ops, path)
-			if !ok || l.Seq != 2 || l.CallID == previous || len(l.CallID) != 32 {
-				t.Fatalf("second search lineage mismatch: %+v", l)
-			}
-		})
-	}
-	for _, name := range []string{"unavailable", "unresolvable", "unset"} {
-		t.Run(name, func(t *testing.T) {
-			fs, ops := newFakeHookOps(nil)
-			ops.executable = nil
-			if name == "unavailable" {
-				ops.executable = func() (string, error) { return "", errors.New("unavailable") }
-			}
-			if name == "unresolvable" {
-				ops.executable = func() (string, error) { return filepath.Join(root, "absent"), nil }
-			}
-			out, _ := runHook(t, ops, hookContext{sessionsDir: "/sessions"}, "cursor beforeShellExecution", map[string]any{"command": search, "conversation_id": "c", "cwd": "/workspace"})
-			if out != "" || len(fs.files) != 0 {
-				t.Fatal("unknown identity produced a decision or lineage")
-			}
-		})
+			})
+		}
 	}
 }
 
-func TestCursorCommandPathExtension(t *testing.T) {
-	executable, err := os.Executable()
+// A command rendered for a shell this host does not run is not ours to
+// allow, however well formed it is.
+func TestRecognizerRefusesAFormRenderedForAnotherShell(t *testing.T) {
+	f := newRecognizerFixture(t, shellPOSIX)
+	if got := f.recognize(f.renderedSearch(t, shellPowerShell, `{"version":1,"query":"q"}`)); got != nil {
+		t.Fatal("a PowerShell command was allowed for a host declared POSIX")
+	}
+}
+
+// The identity check is the file, not the spelling: a path that reaches this
+// same binary another way is still recognized.
+func TestRecognizerFollowsTheBinaryNotItsSpelling(t *testing.T) {
+	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := func() (string, error) { return executable, nil }
-	command := fmt.Sprintf("%q chat x", executable)
-	paths := append([][]string{}, cursorCommandPaths...)
-	paths = append(paths, []string{"chat"})
-	if got := recognizeCursorCommand(command, identity, paths); len(got) != 1 || got[0] != "chat" {
-		t.Fatal("synthetic path not recognized")
+	link := filepath.Join(t.TempDir(), exeName("linked"))
+	if err := os.Symlink(self, link); err != nil {
+		t.Skip("this environment does not allow symlinks: " + err.Error())
 	}
-	if recognizeCursorCommand(command+" ; other-command", identity, paths) != nil {
-		t.Fatal("extension bypassed simple-command grammar")
+	f := recognizerFixture{
+		entry:  binEntry{command: link, cfg: filepath.Join(t.TempDir(), "tokendrop.toml")},
+		shells: []shellKind{shellPOSIX},
+		exe:    func() (string, error) { return self, nil },
 	}
-	if recognizeCursorCommand(command, identity, cursorCommandPaths) != nil {
-		t.Fatal("synthetic path reached production allowlist")
+	if got := f.recognize(f.renderedSearch(t, shellPOSIX, `{"version":1,"query":"q"}`)); got == nil {
+		t.Fatal("a link to this binary was not recognized as this binary")
 	}
 }
 
-func TestCursorPlatformQuoting(t *testing.T) {
-	entry := binEntry{command: `C:\Program Files\DropinMiner\dropin-miner.exe`, cfg: `C:\Config Files\tokendrop.toml`}
-	args, ok := simpleCommandArgsForPlatform(entry.searchCommand()+` "normal query"`, true)
-	want := []string{entry.command, "search", "-config", entry.cfg, "-format", "model", "normal query"}
-	if !ok || !slices.Equal(args, want) {
-		t.Fatalf("generated Windows words: %q", args)
+// The skill's own text is the input: whatever the renderer produces, the
+// recognizer accepts that and the body inside it.
+func TestRecognizerAcceptsTheCommandTakenFromTheRenderedSkill(t *testing.T) {
+	f := newRecognizerFixture(t, shellPOSIX)
+	skill := renderedSkillFor("cursor", f.entry, "linux")
+	block := skillSearchBlock(t, skill)
+	got := f.recognize(block.body)
+	if got == nil {
+		t.Fatalf("the command block the skill teaches was refused:\n%s", block.body)
 	}
-	for _, suffix := range []string{` "%VALUE%"`, ` "!VALUE!"`, ` "a\"; text"`, ` 'a ; text'`, ` ^text`} {
-		command := entry.searchCommand() + suffix
-		if _, ok := simpleCommandArgsForPlatform(command, true); ok {
-			t.Fatal("shell-dependent Windows words recognized")
-		}
+	if got.body != exampleRequest {
+		t.Fatalf("body from the skill's own block\n got %q\nwant %q", got.body, exampleRequest)
 	}
 }

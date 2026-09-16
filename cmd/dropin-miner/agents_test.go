@@ -152,7 +152,9 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}
 	skill := string(m.files["/home/u/.claude/skills/dropin-miner/SKILL.md"])
-	if !strings.Contains(skill, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) || !strings.Contains(skill, `tokendrop.toml" -format model`) || !strings.Contains(skill, "name: dropin-miner") {
+	// The paths are single-quoted from H2 on: that is POSIX quoting, where
+	// nothing expands, rather than Go's %q, where $ and ` still do.
+	if !strings.Contains(skill, `'/home/u/.tokendrop/bin/dropin-miner' search -config '`) || !strings.Contains(skill, `tokendrop.toml' -format model`) || !strings.Contains(skill, "name: dropin-miner") {
 		t.Errorf("skill:\n%s", skill)
 	}
 	var doc map[string]any
@@ -178,14 +180,18 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Error("a key reached settings.json")
 	}
 	allow := allowOf(t, m, settings)
-	if len(allow) != 3 || allow[0] != "Bash(git status:*)" {
-		t.Fatalf("the user's own allow rule must come first, then ours: %v", allow)
+	if len(allow) != 4 || allow[0] != "Bash(git status:*)" {
+		t.Fatalf("the user's own allow rule must come first, then our three spellings: %v", allow)
 	}
 	// The config path is absolutized by the host (a drive letter on Windows),
 	// so match around it rather than on it.
-	for i, prefix := range []string{`Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`, `Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`} {
+	for i, want := range []struct{ prefix, suffix string }{
+		{`Bash('/home/u/.tokendrop/bin/dropin-miner' search -config '`, `tokendrop.toml':*)`},
+		{`Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`, `tokendrop.toml":*)`},
+		{`Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`, `tokendrop.toml":*)`},
+	} {
 		r := allow[i+1]
-		if !strings.HasPrefix(r, prefix) || !strings.HasSuffix(r, `tokendrop.toml":*)`) {
+		if !strings.HasPrefix(r, want.prefix) || !strings.HasSuffix(r, want.suffix) {
 			t.Errorf("allow rule %d: %s", i+1, r)
 		}
 	}
@@ -309,7 +315,7 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 	on := string(m.files[claudeSkill])
 	// The config path is host-absolutized (a drive letter on Windows), so
 	// match around it.
-	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `" agents prefer -config "`) || !strings.Contains(on, `tokendrop.toml" <argument>`) {
+	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `' agents prefer -config '`) || !strings.Contains(on, `tokendrop.toml' <argument>`) {
 		t.Fatalf("shipped skill should prefer the router and name the prefer command:\n%s", on)
 	}
 	if code, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); code != exitOK || !strings.Contains(out, "search default: on") {
@@ -337,7 +343,7 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 		if strings.Contains(off, "Prefer it over a built-in web search") || !strings.Contains(off, "turned OFF as the default") || !strings.Contains(off, "Use the agent's built-in web") {
 			t.Errorf("%s not rewritten for off:\n%s", p, off)
 		}
-		if !strings.Contains(off, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) {
+		if !strings.Contains(off, `'/home/u/.tokendrop/bin/dropin-miner' search -config '`) {
 			t.Errorf("%s lost the search command", p)
 		}
 	}
@@ -496,8 +502,12 @@ func TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath(t *testin
 			t.Errorf("Claude %s after two installs: want 1 entry, got %d: %v", ev, len(list), list)
 		}
 	}
-	if allow := allowOf(t, m, settings); len(allow) != 2 {
-		t.Fatalf("Claude allow rules after two installs: want 2, got %d: %v", len(allow), allow)
+	// Three spellings of the same prefix rule, and still three after a
+	// second install: the single-quoted path the skill now renders, and
+	// v0.2.9's %q-quoted and bare ones, which an agent may still be
+	// repeating from a skill it read before the upgrade.
+	if allow := allowOf(t, m, settings); len(allow) != 3 {
+		t.Fatalf("Claude allow rules after two installs: want 3, got %d: %v", len(allow), allow)
 	}
 
 	cursorPath := "/home/u/.cursor/hooks.json"

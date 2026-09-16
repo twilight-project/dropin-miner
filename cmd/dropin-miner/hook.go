@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -142,7 +143,12 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 	if cfg, _, err := loadConfig(cfgPath, ops.getenv); err == nil {
 		hc.sessionsDir = cfg.Miner.SessionsDir
 	}
+	// One leading byte-order mark is tolerated here for the same reason as on
+	// `search --stdin`: the shell in front of a hook is the host's choice,
+	// and a mark it adds would otherwise cost the whole payload — a hook that
+	// parses nothing emits nothing, and the search loses its lineage.
 	payload, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
+	payload = trimUTF8BOM(payload)
 	switch args[0] {
 	case "lineage":
 		hookLineage(ops, hc, payload, stdout)
@@ -588,11 +594,18 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		out, _ := json.Marshal(map[string]any{"env": env})
 		fmt.Fprintln(stdout, string(out))
 	case "beforeShellExecution":
-		commandPath := recognizeCursorCommand(p.Command, ops.executable, cursorCommandPaths)
-		if commandPath == nil {
+		// The shells Cursor runs on this OS, from the declaration: the command
+		// this hook is asked about was rendered for one of them, and a form
+		// rendered for a shell Cursor does not use is not ours to allow.
+		shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+		if err != nil {
+			return // nothing established: allow nothing, stamp nothing
+		}
+		recognized := recognizeCursorCommand(p.Command, ops.executable, hc.cfgPath, shells)
+		if recognized == nil {
 			return
 		}
-		if len(commandPath) == 1 && commandPath[0] == "search" {
+		if len(recognized.path) == 1 && recognized.path[0] == "search" {
 			update(func(l *lineageFile) {
 				if p.GenerationID != "" {
 					l.TurnID = traceHash(p.ConversationID + "|" + p.GenerationID)

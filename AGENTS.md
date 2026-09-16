@@ -248,7 +248,18 @@ each line names the file that owns the rule and the test that proves it.
   of NO.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
-  silently, and the structural test proves the public ID set.
+  silently, and the structural test proves the public ID set. `targets.go` also owns **the
+  shell declaration**: per host and per OS, the set of shells that run its tool calls and what
+  runs its hook commands, each cell established by documentation, source or a live run —
+  `host_shells_test.go` holds the declaration to a written-out table so no cell moves without a
+  reviewed diff. `shell_commands.go` renders every command for a declared shell and owns the
+  quoting of the paths in it (never Go's `%q`, which is neither shell's); `skill_render.go`
+  renders one form per shell a host runs, and keeps v0.2.9's Bash form, with a line in the
+  install plan, for a cell nobody has established. `host_exec_test.go` is what makes any of it
+  true: it runs the rendered strings through real shells — bash, sh, Git Bash, both PowerShell
+  editions through `-EncodedCommand`, `cmd`, and Hermes' own splitter — against a test build
+  with loopback-only stubs, and compares the query the router received with the one that was
+  sent.
 - **Lifecycle coordination** — `cmd/dropin-miner/lifecycle.go` owns the gate `H.lifecycle.lock`
   (a sibling of the installation, never inside it and never deleted), the one lock order
   (gate → `setup.lock` → `connect.lock` → `flush.lock`; for `uninstall -binary` the same sequence

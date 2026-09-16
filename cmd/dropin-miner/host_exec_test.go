@@ -285,6 +285,14 @@ func (r *execRouter) received() []execRouterRequest {
 
 func newExecInstallation(t *testing.T) *execInstallation {
 	t.Helper()
+	return newExecInstallationIn(t, "")
+}
+
+// newExecInstallationIn puts the installation under a directory of the given
+// name, so a rendered command can be run against a path a participant might
+// actually have rather than only against a tame one.
+func newExecInstallationIn(t *testing.T, dirName string) *execInstallation {
+	t.Helper()
 	execBinary.once.Do(func() {
 		dir, err := os.MkdirTemp("", "dropin-miner-exec-bin")
 		if err != nil {
@@ -301,6 +309,12 @@ func newExecInstallation(t *testing.T) *execInstallation {
 	}
 
 	root := t.TempDir()
+	if dirName != "" {
+		root = filepath.Join(root, dirName)
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Skipf("this filesystem will not hold a directory named %q: %v", dirName, err)
+		}
+	}
 	home := filepath.Join(root, installMarker)
 	in := &execInstallation{
 		root:     root,
@@ -395,7 +409,7 @@ func execEnv() []string {
 
 // renderedSkill is the SKILL.md host's install writes for this installation.
 func (in *execInstallation) renderedSkill(host string) string {
-	return renderedSkillFor(host, in.entry)
+	return renderedSkillFor(host, in.entry, runtime.GOOS)
 }
 
 // ── the harness, controlled ──────────────────────────────────────────────
@@ -427,15 +441,11 @@ func knownGoodSearch(sh execShell, in *execInstallation) (script string, stdin [
 // produce. So every real shell this runner offers must first carry a search
 // written by hand in its own grammar to the binary.
 //
-// Windows PowerShell 5.1 is the one shell where the control stops short of
-// the router, and deliberately: a request piped from a literal inside the
-// script arrives there with a byte-order mark in front of it, which
-// `search --stdin` refuses (TestV029PowerShellLiteralRequestIsRefused
-// records that, and TestV029StdinBytesEachShellDelivers the bytes). What
-// this control proves for 5.1 is everything up to that: the shell parsed the
-// string, started the binary, and the binary read its stdin and answered.
-// Its own standard input, inherited from the host, does arrive exact — so
-// the shortfall is 5.1's literal pipe, not the runner.
+// Windows PowerShell 5.1 was the one shell where this control had to stop
+// short of the router: a request piped from a literal inside the script
+// arrives there behind a byte-order mark, which `search --stdin` refused.
+// The binary now tolerates one leading mark, so every shell here carries a
+// search the whole way again.
 func TestExecHarnessRunsAKnownGoodSearchInEveryShell(t *testing.T) {
 	shells := []execShell{shellBash, shellSh, shellHermesArgv}
 	if runtime.GOOS == "windows" {
@@ -446,30 +456,8 @@ func TestExecHarnessRunsAKnownGoodSearchInEveryShell(t *testing.T) {
 			in := newExecInstallation(t)
 			script, stdin := knownGoodSearch(sh, in)
 			out := runInShell(t, sh, script, stdin, in.env)
-			if sh == shellWinPS {
-				requireBinaryAnswered(t, in, out)
-				return
-			}
 			requireOneRequest(t, in, out, "exact query text")
 		})
-	}
-}
-
-// requireBinaryAnswered is the weaker control: the shell ran the binary and
-// the binary read stdin and printed its machine envelope, whatever it made
-// of the request.
-func requireBinaryAnswered(t *testing.T, in *execInstallation, out execOutcome) {
-	t.Helper()
-	var env struct {
-		Version int    `json:"version"`
-		Command string `json:"command"`
-		Code    string `json:"code"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out.stdout)), &env); err != nil || env.Version != machineVersion || env.Command != "search" {
-		t.Fatalf("the binary did not answer with a search envelope (%v)\n%s", err, out)
-	}
-	if len(in.router.received()) == 0 && env.Code == "ok" {
-		t.Fatalf("an ok envelope with nothing at the router\n%s", out)
 	}
 }
 
@@ -581,51 +569,63 @@ func v029RunsIn(sh execShell, cmdAccepts bool) bool {
 	return false
 }
 
-// v029DeliveredBytes is what each shell delivered to a native program's
-// stdin when this was characterized, as hex-dumped on the CI runners.
+// deliveredBytes is what each shell delivers to a native program's stdin,
+// hex-dumped on the CI runners.
 //
-// Everything delivers the request byte for byte, whatever the payload,
-// except one case: Windows PowerShell 5.1 piping a literal written inside
-// the script. There the bytes arrive with a UTF-8 byte-order mark in front,
-// CRLF behind, and every UTF-16 unit outside ASCII replaced by "?" — an
-// astral character, being two units, arrives as two. (5.1 reports
-// $OutputEncoding us-ascii with an empty preamble, so the mark is recorded
-// as observed, not explained.) pwsh delivers the request exactly, with CRLF
-// behind it.
+// Everything delivers the request byte for byte except one case: Windows
+// PowerShell 5.1 piping a literal written inside the script. There the bytes
+// arrive behind a UTF-8 byte-order mark, with CRLF after them. The mark is
+// the reason the binary tolerates one (trimUTF8BOM), and it is recorded as
+// observed rather than explained: 5.1 reports $OutputEncoding us-ascii with
+// an EMPTY preamble, and the mark survives setting $OutputEncoding and
+// [Console]::OutputEncoding both, so it is not that preamble.
 //
-// This matters because a PowerShell host has no heredoc: a literal piped
-// inside the one command string is how a request body reaches the binary
-// there. H2 owns the fix — a form that carries arbitrary query text byte
-// for byte — and flips these rows.
-func v029DeliveredBytes(sh execShell, delivery stdinDelivery, request string) []byte {
+// What the rendered form does fix is the content. Without its first line,
+// 5.1 replaces every UTF-16 unit outside ASCII with "?" — café arrives as
+// caf?, an emoji as two question marks — and no tolerance in the binary can
+// recover a query the shell already changed.
+func deliveredBytes(sh execShell, delivery stdinDelivery, request string) []byte {
 	if delivery == deliveryInherited {
 		return []byte(request)
 	}
 	if sh == shellWinPS {
-		out := []byte{0xef, 0xbb, 0xbf}
-		for _, unit := range utf16.Encode([]rune(request)) {
-			if unit > 0x7f {
-				out = append(out, '?')
-				continue
-			}
-			out = append(out, byte(unit))
-		}
-		return append(out, '\r', '\n')
+		return append(append([]byte{0xef, 0xbb, 0xbf}, request...), '\r', '\n')
 	}
 	return append([]byte(request), '\r', '\n')
 }
 
-// TestV029StdinBytesEachShellDelivers dumps, for four payload kinds, the
-// exact bytes each real shell hands a native program's standard input.
-// H2 chooses the PowerShell form from this evidence and flips the rows it
-// changes.
-func TestV029StdinBytesEachShellDelivers(t *testing.T) {
-	payloads := map[string]string{
-		"ascii":  "exact query text",
-		"latin1": "café naïve Ärger",
-		"cjk":    "東京の天気",
-		"emoji":  "weather 😀 today",
+// mangledByASCIIEncoding is what 5.1 delivers for a literal pipe WITHOUT the
+// encoding line the rendered form carries: one "?" per UTF-16 unit outside
+// ASCII, so an astral character becomes two.
+func mangledByASCIIEncoding(request string) []byte {
+	out := []byte{0xef, 0xbb, 0xbf}
+	for _, unit := range utf16.Encode([]rune(request)) {
+		if unit > 0x7f {
+			out = append(out, '?')
+			continue
+		}
+		out = append(out, byte(unit))
 	}
+	return append(out, '\r', '\n')
+}
+
+// stdinPayloads are the payload kinds the rendered forms must carry.
+func stdinPayloads() map[string]string {
+	return map[string]string{
+		"ascii":       "exact query text",
+		"latin1":      "café naïve Ärger",
+		"cjk":         "東京の天気",
+		"emoji":       "weather 😀 today",
+		"adversarial": `it's \"quoted\" a\\b '@ inline café 東京 😀`,
+	}
+}
+
+// TestStdinBytesEachShellDelivers dumps the exact bytes each real shell
+// hands a native program's standard input, for every payload kind. The
+// PowerShell literal rows are the ones H2 changed: with the encoding line
+// the rendered form carries, the request arrives intact on both editions
+// (behind 5.1's mark), where before every non-ASCII character was lost.
+func TestStdinBytesEachShellDelivers(t *testing.T) {
 	type run struct {
 		sh       execShell
 		delivery stdinDelivery
@@ -638,12 +638,12 @@ func TestV029StdinBytesEachShellDelivers(t *testing.T) {
 			{shellCmdExe, deliveryInherited}, {shellGitBash, deliveryInherited}, {shellHermesArgv, deliveryInherited},
 		}
 	}
-	for name, query := range payloads {
+	for name, query := range stdinPayloads() {
 		request := `{"version":1,"query":"` + query + `"}`
 		for _, r := range runs {
 			t.Run(name+"/"+r.sh.name+"/"+string(r.delivery), func(t *testing.T) {
 				got := stdinBytesDelivered(t, r.sh, r.delivery, request)
-				if want := v029DeliveredBytes(r.sh, r.delivery, request); !bytes.Equal(got, want) {
+				if want := deliveredBytes(r.sh, r.delivery, request); !bytes.Equal(got, want) {
 					t.Fatalf("%s delivered\n got %x\nwant %x", r.sh.name, got, want)
 				}
 			})
@@ -651,43 +651,98 @@ func TestV029StdinBytesEachShellDelivers(t *testing.T) {
 	}
 }
 
-// TestV029PowerShellLiteralRequestIsRefused is the search that follows from
-// those bytes: on Windows PowerShell 5.1 a request piped from a literal —
-// the only way a PowerShell command carries a body — reaches the binary and
-// is refused, because of the byte-order mark in front of it. pwsh, whose
-// pipe delivers the request exactly, is served.
-//
-// v0.2.9 has no PowerShell form of its own; this is the form the soak team
-// proved reaches the binary (#67), failing for a second reason. H2 renders a
-// PowerShell search that carries arbitrary query text and flips this.
-func TestV029PowerShellLiteralRequestIsRefused(t *testing.T) {
+// TestWithoutTheEncodingLineWindowsPowerShellMangsTheQuery is why the first
+// line of the rendered PowerShell form is not optional: take it away and
+// every non-ASCII character in the query is replaced by a question mark
+// before the binary ever sees it — a search that runs, reports success, and
+// answers a different question.
+func TestWithoutTheEncodingLineWindowsPowerShellMangsTheQuery(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell 5.1 runs on the Windows runners")
+	}
+	request := `{"version":1,"query":"café 東京 😀"}`
+	got := stdinBytesDelivered(t, shellWinPS, deliveryLiteral, request)
+	if want := mangledByASCIIEncoding(request); !bytes.Equal(got, want) {
+		t.Fatalf("a literal pipe without the encoding line delivered\n got %x\nwant %x", got, want)
+	}
+}
+
+// TestPowerShellRenderedSearchIsServed is the search that follows from those
+// bytes: the form the skill renders reaches the binary and is served on both
+// PowerShell editions. On 5.1 that needs both halves of the fix — the
+// encoding line for the content, the binary's tolerance for the mark.
+func TestPowerShellRenderedSearchIsServed(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PowerShell is the Windows runner's shell")
 	}
 	for _, sh := range []execShell{shellWinPS, shellPwsh} {
 		t.Run(sh.name, func(t *testing.T) {
 			in := newExecInstallation(t)
-			script, _ := knownGoodSearch(sh, in)
+			_, script, err := searchBlockForShell(shellPowerShell, in.entry, `{"version":1,"query":"exact query text"}`)
+			if err != nil {
+				t.Fatal(err)
+			}
 			out := runInShell(t, sh, script, nil, in.env)
-			var env struct {
-				OK   bool   `json:"ok"`
-				Code string `json:"code"`
-			}
-			if err := json.Unmarshal([]byte(strings.TrimSpace(out.stdout)), &env); err != nil {
-				t.Fatalf("no machine envelope from the binary (%v)\n%s", err, out)
-			}
-			if sh == shellPwsh {
-				if !env.OK {
-					t.Fatalf("pwsh's pipe was refused: %s\n%s", env.Code, out)
-				}
-				requireOneRequest(t, in, out, "exact query text")
-				return
-			}
-			if env.OK || env.Code != "invalid_json" {
-				t.Fatalf("Windows PowerShell 5.1: ok=%v code=%q, want a refusal with invalid_json\n%s", env.OK, env.Code, out)
-			}
-			requireNoRequest(t, in, out)
+			requireOneRequest(t, in, out, "exact query text")
 		})
+	}
+}
+
+// TestTheQueryArrivesExactlyInEveryShell is the end-to-end proof: for every
+// payload kind, the rendered search for each shell this runner offers, run
+// in that shell, and the query the router receives compared with the one the
+// request carried. This is what "the query is not in argv and not changed by
+// the shell" means in practice.
+func TestTheQueryArrivesExactlyInEveryShell(t *testing.T) {
+	shells := []execShell{shellBash, shellSh}
+	if runtime.GOOS == "windows" {
+		shells = []execShell{shellGitBash, shellWinPS, shellPwsh}
+	}
+	for name, query := range stdinPayloads() {
+		for _, sh := range shells {
+			t.Run(name+"/"+sh.name, func(t *testing.T) {
+				in := newExecInstallation(t)
+				request, err := json.Marshal(map[string]any{"version": 1, "query": query})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, script, err := searchBlockForShell(sh.kind, in.entry, string(request))
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := runInShell(t, sh, script, nil, in.env)
+				requireOneRequest(t, in, out, query)
+			})
+		}
+	}
+}
+
+// TestAdversarialPathsRunInEveryShell renders the search with an executable
+// and a config whose directories carry everything a participant's home might
+// — a space, an apostrophe, &, $, parentheses, and on Windows %, ^ and ! —
+// and runs it. v0.2.9 quoted every path with Go's %q, which leaves $ and `
+// live inside the double quotes it writes.
+func TestAdversarialPathsRunInEveryShell(t *testing.T) {
+	names := []string{"we ird & $tuff (x)'q"}
+	if runtime.GOOS == "windows" {
+		names = append(names, "pct % caret ^ bang !")
+	}
+	shells := []execShell{shellBash, shellSh}
+	if runtime.GOOS == "windows" {
+		shells = []execShell{shellGitBash, shellWinPS, shellPwsh}
+	}
+	for _, name := range names {
+		for _, sh := range shells {
+			t.Run(name+"/"+sh.name, func(t *testing.T) {
+				in := newExecInstallationIn(t, name)
+				_, script, err := searchBlockForShell(sh.kind, in.entry, `{"version":1,"query":"exact query text"}`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := runInShell(t, sh, script, nil, in.env)
+				requireOneRequest(t, in, out, "exact query text")
+			})
+		}
 	}
 }
 
@@ -743,74 +798,103 @@ func requireNoRequest(t *testing.T, in *execInstallation, out execOutcome) {
 	}
 }
 
-// TestV029SkillCommandsInEachHostsShell runs the three commands every
-// host's skill renders — the heredoc search, the preference command and the
-// human form — in the shell that host runs tool calls in on this OS.
+// TestSkillCommandsRunInTheShellTheyAreRenderedFor runs the three commands
+// every host's skill renders — the search, the preference command and the
+// human form — in the shell each was rendered for, on this runner.
 //
-// v0.2.9: every one is a POSIX string, so each runs under a POSIX shell and
-// none parses in PowerShell (#67). H2 renders each host's commands for its
-// own shell and flips the PowerShell rows.
-func TestV029SkillCommandsInEachHostsShell(t *testing.T) {
+// This is #67's guard. v0.2.9 rendered one Bash form for every host and OS,
+// so on Windows two of the three main hosts could not search at all; each of
+// these rows was a failure then and runs now. A host whose shell is not
+// established keeps the Bash form, and its row is
+// TestUnknownToolCellKeepsTheBashForm below rather than this one.
+func TestSkillCommandsRunInTheShellTheyAreRenderedFor(t *testing.T) {
 	for _, host := range []string{"claude", "codex", "cursor", "pi", "hermes"} {
-		for _, sh := range hostShellsOnThisOS(t, host, channelTool) {
+		for _, sh := range renderedShellsOnThisOS(t, host) {
 			t.Run(host+"/"+sh.name, func(t *testing.T) {
 				t.Run("search", func(t *testing.T) {
 					in := newExecInstallation(t)
-					block := skillSearchBlock(t, in.renderedSkill(host))
+					block := skillBlockFor(t, in.renderedSkill(host), sh.kind, "search")
 					out := runInShell(t, sh, block.body, nil, in.env)
-					if v029RunsIn(sh, false) {
-						requireOneRequest(t, in, out, "exact query text")
-					} else {
-						requireNoRequest(t, in, out)
-					}
+					requireOneRequest(t, in, out, "exact query text")
 				})
 				t.Run("preference", func(t *testing.T) {
 					in := newExecInstallation(t)
-					block := skillPreferBlock(t, in.renderedSkill(host))
+					block := skillBlockFor(t, in.renderedSkill(host), sh.kind, "prefer")
 					script := strings.Replace(block.body, "<argument>", "status", 1)
 					out := runInShell(t, sh, script, nil, in.env)
-					ran := out.exit == 0 && strings.Contains(out.stdout, "search default:")
-					if ran != v029RunsIn(sh, true) {
-						t.Fatalf("preference command ran=%v, v0.2.9 on %s: %v\n%s", ran, sh.name, v029RunsIn(sh, true), out)
+					if out.exit != 0 || !strings.Contains(out.stdout, "search default:") {
+						t.Fatalf("the preference command did not run under %s\n%s", sh.name, out)
 					}
 				})
 				t.Run("human form", func(t *testing.T) {
 					in := newExecInstallation(t)
-					lines := skillProseCommandLines(in.renderedSkill(host))
-					if len(lines) != 1 {
-						t.Fatalf("want one prose command line, got %q", lines)
-					}
-					_, rest, _ := strings.Cut(lines[0], "`")
-					command, _, _ := strings.Cut(rest, "`")
-					script := strings.Replace(command, "<query>", "exact query text", 1)
+					block := skillBlockFor(t, in.renderedSkill(host), sh.kind, "human")
+					script := strings.Replace(block.body, "<query>", "exact query text", 1)
 					out := runInShell(t, sh, script, nil, in.env)
-					if v029RunsIn(sh, true) {
-						requireOneRequest(t, in, out, "exact query text")
-					} else {
-						requireNoRequest(t, in, out)
-					}
+					requireOneRequest(t, in, out, "exact query text")
 				})
 			})
 		}
 	}
 }
 
-// TestV029RulesLineCommandInOpencodesShell runs the command opencode's
+// renderedShellsOnThisOS are the shells a host's skill is rendered for on
+// this runner: its declaration, or the POSIX fallback when nothing
+// established it.
+func renderedShellsOnThisOS(t *testing.T, host string) []execShell {
+	t.Helper()
+	tg, ok := targetByID(installTargets, host)
+	if !ok {
+		t.Fatalf("no target %q", host)
+	}
+	kinds, _ := toolShellsForSkill(tg, runtime.GOOS)
+	var out []execShell
+	for _, k := range kinds {
+		out = append(out, execShellsFor(k, false)...)
+	}
+	return out
+}
+
+// TestUnknownToolCellKeepsTheBashForm is H-R5's fallback, and the state it
+// leaves behind. Codex on Windows is the one unknown tool cell: nobody has
+// run it with a PowerShell-fenced skill, so the skill keeps v0.2.9's Bash
+// form, the install plan says the shell is not established, and a search in
+// the shell Codex's source names still does not run. Refusing to render
+// would have taken the host away entirely, which is the regression H-R5
+// forbids; this records what the participant actually has until a live run
+// establishes the cell.
+func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
+	codex, _ := targetByID(installTargets, "codex")
+	kinds, note := toolShellsForSkill(codex, "windows")
+	if len(kinds) != 1 || kinds[0] != shellPOSIX {
+		t.Fatalf("Codex on Windows renders for %v, want the POSIX fallback", kinds)
+	}
+	if !strings.Contains(note, "not established") || !strings.Contains(note, "Codex") {
+		t.Fatalf("the install plan says %q, which does not name the host and the reason", note)
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	in := newExecInstallation(t)
+	block := skillBlockFor(t, in.renderedSkill("codex"), shellPOSIX, "search")
+	out := runInShell(t, shellWinPS, block.body, nil, in.env)
+	requireNoRequest(t, in, out)
+}
+
+// TestRulesLineCommandRunsInOpencodesShell runs the command opencode's
 // AGENTS.md line renders, with the JSON request on stdin, in the shell
-// opencode runs its bash tool in on this OS.
-//
-// v0.2.9: a POSIX string; it runs under POSIX and does not parse in either
-// PowerShell edition. H2 renders it for opencode's shell.
-func TestV029RulesLineCommandInOpencodesShell(t *testing.T) {
-	for _, sh := range hostShellsOnThisOS(t, "opencode", channelTool) {
+// opencode runs its bash tool in on this OS. v0.2.9 rendered a POSIX string
+// for every OS, which PowerShell could not parse (#67).
+func TestRulesLineCommandRunsInOpencodesShell(t *testing.T) {
+	for _, sh := range renderedShellsOnThisOS(t, "opencode") {
 		t.Run(sh.name, func(t *testing.T) {
 			in := newExecInstallation(t)
-			out := runInShell(t, sh, in.entry.stdinCommand(), []byte(`{"version":1,"query":"exact query text"}`), in.env)
-			if v029RunsIn(sh, true) {
-				requireOneRequest(t, in, out, "exact query text")
-			} else {
-				requireNoRequest(t, in, out)
+			command, err := in.entry.stdinCommandForShell(sh.kind)
+			if err != nil {
+				t.Fatal(err)
 			}
+			out := runInShell(t, sh, command, []byte(`{"version":1,"query":"exact query text"}`), in.env)
+			requireOneRequest(t, in, out, "exact query text")
 		})
 	}
 }
@@ -867,8 +951,18 @@ var v029HookCases = map[string][]hookCase{
 		{
 			event: "beforeShellExecution",
 			payload: func(in *execInstallation) any {
+				// What Cursor is about to run is what its own skill renders,
+				// which from H2 is the only command this hook allows.
+				shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+				if err != nil {
+					shells = []shellKind{shellPOSIX}
+				}
+				_, search, err := searchBlockForShell(shells[0], in.entry, `{"version":1,"query":"exact query text"}`)
+				if err != nil {
+					search = in.entry.stdinCommand()
+				}
 				return map[string]any{"conversation_id": "exec-conversation", "generation_id": "exec-generation",
-					"workspace_roots": []string{in.root}, "command": in.entry.stdinCommand()}
+					"workspace_roots": []string{in.root}, "command": search}
 			},
 			proof: func(t *testing.T, in *execInstallation, out execOutcome) bool {
 				return out.exit == 0 && strings.TrimSpace(out.stdout) == `{"permission":"allow"}` && lineageFileExists(in)
@@ -943,17 +1037,18 @@ func TestV029InstalledHookCommandsInEachHookRunner(t *testing.T) {
 	}
 }
 
-// TestV029CursorShellHookDoesNotRecognizeTheSkillsSearch feeds Cursor's
-// installed beforeShellExecution hook the search command its own skill
-// renders, through Cursor's hook runner on this OS.
+// TestCursorShellHookRecognizesTheSkillsOwnSearch feeds Cursor's installed
+// beforeShellExecution hook the search command its own skill renders,
+// through Cursor's hook runner on this OS, and requires the answer Cursor
+// waits for: allow, with the turn and call stamped into the lineage file.
 //
-// v0.2.9: the recognizer refuses the heredoc — no allow, no turn or call
-// stamped into the lineage file (#66). H2 makes it recognize exactly the
-// rendered form.
-func TestV029CursorShellHookDoesNotRecognizeTheSkillsSearch(t *testing.T) {
+// This is #66's guard, end to end through the real binary: v0.2.9 answered
+// nothing here, so every Cursor search waited for a human and none carried
+// per-call lineage.
+func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 	for _, sh := range hostShellsOnThisOS(t, "cursor", channelHook) {
 		if !v029RunsIn(sh, true) {
-			continue // the hook command itself does not run here; #69, not #66
+			continue // the hook command itself does not run here; #69, H3's row
 		}
 		t.Run(sh.name, func(t *testing.T) {
 			in := newExecInstallation(t)
@@ -964,15 +1059,19 @@ func TestV029CursorShellHookDoesNotRecognizeTheSkillsSearch(t *testing.T) {
 					command = h.command
 				}
 			}
-			search := skillSearchBlock(t, in.renderedSkill("cursor")).body
+			shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+			if err != nil {
+				t.Skipf("Cursor declares no tool shell on %s", runtime.GOOS)
+			}
+			search := skillBlockFor(t, in.renderedSkill("cursor"), shells[0], "search").body
 			payload, _ := json.Marshal(map[string]any{"conversation_id": "exec-conversation", "generation_id": "exec-generation",
 				"workspace_roots": []string{in.root}, "command": search})
 			out := runInShell(t, sh, command, payload, in.env)
-			if out.exit != 0 || strings.TrimSpace(out.stdout) != "" {
-				t.Fatalf("v0.2.9's recognizer answered for the skill's own search:\n%s", out)
+			if out.exit != 0 || strings.TrimSpace(out.stdout) != `{"permission":"allow"}` {
+				t.Fatalf("the skill's own search was not auto-allowed:\n%s", out)
 			}
-			if lineageFileExists(in) {
-				t.Fatal("v0.2.9 stamped lineage for a command it did not recognize")
+			if !lineageFileExists(in) {
+				t.Fatal("no lineage was stamped for the search Cursor was about to run")
 			}
 		})
 	}
