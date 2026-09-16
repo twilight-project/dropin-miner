@@ -226,11 +226,21 @@ func installedHookCommands(t *testing.T, file string, spec hooksSpec) []struct{ 
 	return out
 }
 
-var bridgeValueRe = regexp.MustCompile(bridgeEnv + `=[A-Za-z0-9_-]+`)
+// A generated bridge value in either syntax the adapters write: POSIX's
+// leading NAME=value word, and PowerShell's quoted $env: assignment. Both
+// carry a call id that changes every run, so both have to reach the
+// placeholder — until H3 only the POSIX one did, and every PowerShell row in
+// these goldens carried a literal envelope that said nothing and could not
+// be read.
+var (
+	bridgeValueRe   = regexp.MustCompile(bridgeEnv + `=[A-Za-z0-9_-]+`)
+	psBridgeValueRe = regexp.MustCompile(`\$env:` + bridgeEnv + ` = '[A-Za-z0-9_-]+'`)
+)
 
-// withBridgePlaceholder replaces a generated bridge value, which carries a
-// random call id, with a stable placeholder.
+// withBridgePlaceholder replaces a generated bridge value with a stable
+// placeholder, in whichever syntax the adapter wrote it.
 func withBridgePlaceholder(cmd string) string {
+	cmd = psBridgeValueRe.ReplaceAllString(cmd, `$$env:`+bridgeEnv+` = '<BRIDGE>'`)
 	return bridgeValueRe.ReplaceAllString(cmd, bridgeEnv+"=<BRIDGE>")
 }
 
@@ -377,8 +387,9 @@ func renderedHostStrings(t *testing.T, goos string) string {
 	value := func(label, v string) { w("-- %s\n%s\n", label, v) }
 
 	w("# Every string each host is handed on %s, as this binary renders it.\n", goos)
-	w("# The skill's commands follow each host's declared tool shells (H2); hook\n")
-	w("# commands and bridge prefixes are still v0.2.9's, and H3 changes those.\n")
+	w("# Every one of them is rendered for a declared shell: the skill's commands\n")
+	w("# for the host's tool shells (H2), and hook commands and bridge prefixes\n")
+	w("# for the runner its cell names (H3). Nothing here is written with %%q.\n")
 	w("binary: %s\nconfig: %s\n", entry.command, entry.cfg)
 
 	section("declaration")

@@ -855,14 +855,18 @@ func cursorHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, st
 
 // entryIsOurs: does this hook entry (a Claude group or a Cursor entry)
 // run this binary? Matching on the binary path is what makes uninstall
-// exact and idempotent install cheap. Every command binEntry writes begins
-// with %q of the binary path followed by a space (searchCommand,
-// stdinCommand, preferCommand, hookCommand all share that shape), so the
-// match is that exact prefix — strconv.Quote(bin)+" " — rather than a raw
-// substring test. A substring test breaks on Windows: strconv.Quote
-// doubles every backslash, so bin's own single-backslash path never
-// appears as a contiguous run inside the quoted command text, and a
-// second install or an uninstall never recognizes its own entry.
+// exact and install idempotent. The match is against a set of exact
+// PREFIXES — hookCommandIsOurs — never a raw substring test. A substring
+// test breaks on Windows: a command quoted with %q doubles every
+// backslash, so bin's own single-backslash path never appears as a
+// contiguous run inside the quoted text, and a second install or an
+// uninstall never recognizes its own entry.
+//
+// The prefix set is plural because the spelling changed: v0.2.9 wrote %q
+// for every host and OS, and from H3 a hook command is quoted for the
+// runner its host declares. Both have to be recognized — the old one so an
+// upgraded installation's entries can be replaced and removed, the new one
+// so this installation's can.
 func entryIsOurs(e any, bin string) bool {
 	m, ok := e.(map[string]any)
 	if !ok {
@@ -904,6 +908,21 @@ func hookCommandIsOurs(command, bin string) bool {
 	return false
 }
 
+// sameJSONValue compares two decoded JSON values by their canonical
+// encoding: a hook entry read back from a file and one this client just
+// built are the same map written twice, and map order is not stable.
+func sameJSONValue(a, b any) bool {
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
+}
+
 // planHooksMerge adds our entries to a host's hook file, event by event,
 // leaving everything else byte-for-byte as it was in the decoded object.
 func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEntry, spec hooksSpec) bool {
@@ -926,17 +945,33 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 	changed := false
 	for _, ev := range spec.order {
 		list, _ := hooks[ev].([]any)
-		present := false
+		// An entry of ours that is not what we would write now is REPLACED,
+		// not left alone. Until H3 this loop only asked whether one was
+		// present, so an installation upgraded from v0.2.9 kept its %q
+		// entries for good: `agents install` saw its own binary, decided
+		// there was nothing to do, and the hook that never parsed in
+		// PowerShell (#69) stayed exactly as it was. Recognizing the old
+		// spelling (hookCommandIsOurs) is what makes the replacement
+		// possible; skipping on it is what made the fix unreachable.
+		kept := make([]any, 0, len(list))
+		ours, current := 0, false
 		for _, e := range list {
 			if entryIsOurs(e, entry.command) {
-				present = true
-				break
+				ours++
+				if sameJSONValue(e, spec.entries[ev]) {
+					current = true
+				}
+				continue
 			}
+			kept = append(kept, e)
 		}
-		if present {
+		if ours == 1 && current {
+			// Exactly our entry, exactly once, already saying what we would
+			// say. Left in place rather than moved to the end, so a second
+			// install is a no-op byte for byte.
 			continue
 		}
-		hooks[ev] = append(list, spec.entries[ev])
+		hooks[ev] = append(kept, spec.entries[ev])
 		changed = true
 	}
 	if len(spec.allow) > 0 {

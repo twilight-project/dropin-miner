@@ -1,6 +1,7 @@
 # Every string each host is handed on linux, as this binary renders it.
-# The skill's commands follow each host's declared tool shells (H2); hook
-# commands and bridge prefixes are still v0.2.9's, and H3 changes those.
+# Every one of them is rendered for a declared shell: the skill's commands
+# for the host's tool shells (H2), and hook commands and bridge prefixes
+# for the runner its cell names (H3). Nothing here is written with %q.
 binary: /home/u/.tokendrop/bin/dropin-miner
 config: /home/u/.tokendrop/tokendrop.toml
 

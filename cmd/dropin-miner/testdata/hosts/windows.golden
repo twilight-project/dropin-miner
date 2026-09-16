@@ -1,6 +1,7 @@
 # Every string each host is handed on windows, as this binary renders it.
-# The skill's commands follow each host's declared tool shells (H2); hook
-# commands and bridge prefixes are still v0.2.9's, and H3 changes those.
+# Every one of them is rendered for a declared shell: the skill's commands
+# for the host's tool shells (H2), and hook commands and bridge prefixes
+# for the runner its cell names (H3). Nothing here is written with %q.
 binary: C:\Users\u\.tokendrop\bin\dropin-miner.exe
 config: C:\Users\u\.tokendrop\tokendrop.toml
 
@@ -90,13 +91,13 @@ JSON
 -- stdin command (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 -- skill search block (powershell)
-$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoiY2xhdWRlLWNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ0dXJuX2lkIjoiMGQxMmQ3ZGFjNWYzMjA1OTNjYmU5MTQ4YzY5ZjkyNDciLCJjYWxsX2lkIjoiOTc3OWE2MjgyMTI4OTVjNzYzY2UyYzgyYWI3M2NjMTAiLCJ3aW5kb3ciOiJub25lIn0'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$env:TOKENDROP_TRACE_BRIDGE = '<BRIDGE>'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 @'
 {"version":1,"query":"exact query text"}
 '@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 } finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 -- stdin command (powershell)
-$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoiY2xhdWRlLWNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ0dXJuX2lkIjoiMGQxMmQ3ZGFjNWYzMjA1OTNjYmU5MTQ4YzY5ZjkyNDciLCJjYWxsX2lkIjoiOTc3OWE2MjgyMTI4OTVjNzYzY2UyYzgyYWI3M2NjMTAiLCJ3aW5kb3ciOiJub25lIn0'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+$env:TOKENDROP_TRACE_BRIDGE = '<BRIDGE>'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 } finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 
 == codex: skill command blocks
@@ -158,13 +159,13 @@ const HOST_SHELL = "powershell"
 
 == opencode: bridge prefix its lineage adapter writes
 -- skill search block (powershell)
-$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoib3BlbmNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ3aW5kb3ciOiJub25lIiwiY2FsbF9pZCI6Ijk3NzlhNjI4MjEyODk1Yzc2M2NlMmM4MmFiNzNjYzEwIn0'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$env:TOKENDROP_TRACE_BRIDGE = '<BRIDGE>'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 @'
 {"version":1,"query":"exact query text"}
 '@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 } finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 -- stdin command (powershell)
-$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoib3BlbmNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ3aW5kb3ciOiJub25lIiwiY2FsbF9pZCI6Ijk3NzlhNjI4MjEyODk1Yzc2M2NlMmM4MmFiNzNjYzEwIn0'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+$env:TOKENDROP_TRACE_BRIDGE = '<BRIDGE>'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 } finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 
 == pi: skill command blocks

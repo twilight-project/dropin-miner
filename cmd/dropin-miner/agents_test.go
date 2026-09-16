@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -549,4 +551,144 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// wantHookCommand is what this client would write for tg's hook event on
+// this OS, through the same renderer the installer uses.
+func wantHookCommand(t *testing.T, tg installTarget, e binEntry, sub ...string) string {
+	t.Helper()
+	shells, err := declaredShells(tg, runtime.GOOS, channelHook)
+	if err != nil {
+		t.Fatalf("%s hook shells on %s: %v", tg.ID(), runtime.GOOS, err)
+	}
+	cmd, _, err := e.hookCommandForRunners(shells, sub...)
+	if err != nil {
+		t.Fatalf("%s hook command for %v: %v", tg.ID(), shells, err)
+	}
+	return cmd
+}
+
+// TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall seeds both
+// hook files with an entry in every spelling this client has ever written a
+// hook command in, then requires install to leave exactly one — the current
+// rendering — and uninstall to leave none.
+//
+// No other test covered this. Every other one installs into a file this
+// client wrote itself, so the recognizer was only ever fed the spelling of
+// the version under test. The spelling that matters is the one already on
+// disk: an installation upgraded from v0.2.9 carries %q entries, and those
+// are exactly the ones that do not parse in PowerShell (#69). Until this
+// commit install saw its own binary in them, decided there was nothing to
+// do, and the fix never reached an upgraded machine.
+//
+// The Windows-style path is deliberate: with a POSIX path, %q and the cmd
+// double-quoted form are the same string and would not be two spellings.
+// Nothing here executes the path; it is a string inside JSON on every OS.
+func TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall(t *testing.T) {
+	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	entry := binEntry{command: bin, cfg: testCfg}
+	spellings := func(sub string) []string {
+		return []string{
+			strconv.Quote(bin) + " hook -config " + strconv.Quote(testCfg) + " " + sub,
+			bin + " hook -config " + testCfg + " " + sub,
+			posixQuoteArg(bin) + " hook -config " + posixQuoteArg(testCfg) + " " + sub,
+			"& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(testCfg) + " " + sub,
+			`"` + bin + `" hook -config "` + testCfg + `" ` + sub,
+		}
+	}
+	// Five spellings must be five distinct strings, or this test is weaker
+	// than it reads.
+	seen := map[string]bool{}
+	for _, s := range spellings("flush") {
+		if seen[s] {
+			t.Fatalf("two spellings are the same string: %q", s)
+		}
+		seen[s] = true
+	}
+
+	m, ops := newFakeMachine("claude", "cursor")
+	ops.executable = func() (string, error) { return bin, nil }
+
+	claudeStop := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "say done"}}}}
+	for _, c := range spellings("flush") {
+		claudeStop = append(claudeStop, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}})
+	}
+	cursorStop := []any{map[string]any{"command": "./hooks/mine.sh"}}
+	for _, c := range spellings("cursor stop") {
+		cursorStop = append(cursorStop, map[string]any{"command": c})
+	}
+	seed := func(path string, doc map[string]any) {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.files[path] = b
+	}
+	const settings, cursorPath = "/home/u/.claude/settings.json", "/home/u/.cursor/hooks.json"
+	seed(settings, map[string]any{"hooks": map[string]any{"Stop": claudeStop}})
+	seed(cursorPath, map[string]any{"version": 1, "hooks": map[string]any{"stop": cursorStop}})
+
+	claude, _ := targetByID(installTargets, "claude")
+	cursor, _ := targetByID(installTargets, "cursor")
+
+	// Twice: the first install replaces five stale entries with one, the
+	// second must find nothing left to do.
+	for i := 1; i <= 2; i++ {
+		if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install #%d: exit %d\n%s%s", i, code, out, errOut)
+		}
+		for _, c := range []struct {
+			what, path, event string
+			want, user        string
+			command           func(any) string
+		}{
+			{"Claude", settings, "Stop", wantHookCommand(t, claude, entry, "flush"), "say done", claudeGroupCommand},
+			{"Cursor", cursorPath, "stop", wantHookCommand(t, cursor, entry, "cursor", "stop"), "./hooks/mine.sh", cursorEntryCommand},
+		} {
+			list, _ := hooksOf(t, m, c.path)[c.event].([]any)
+			if len(list) != 2 {
+				t.Fatalf("%s %s after install #%d: want the user's entry and exactly one of ours, got %d: %v",
+					c.what, c.event, i, len(list), list)
+			}
+			if got := c.command(list[0]); got != c.user {
+				t.Errorf("%s %s: the user's own entry was disturbed: %q", c.what, c.event, got)
+			}
+			if got := c.command(list[1]); got != c.want {
+				t.Errorf("%s %s after install #%d:\n got %q\nwant %q", c.what, c.event, i, got, c.want)
+			}
+		}
+	}
+
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
+	}
+	for _, c := range []struct {
+		what, path, event, user string
+		command                 func(any) string
+	}{
+		{"Claude", settings, "Stop", "say done", claudeGroupCommand},
+		{"Cursor", cursorPath, "stop", "./hooks/mine.sh", cursorEntryCommand},
+	} {
+		list, _ := hooksOf(t, m, c.path)[c.event].([]any)
+		if len(list) != 1 || c.command(list[0]) != c.user {
+			t.Errorf("%s %s after uninstall: want only the user's %q, got %v", c.what, c.event, c.user, list)
+		}
+	}
+}
+
+func claudeGroupCommand(e any) string {
+	g, _ := e.(map[string]any)
+	hs, _ := g["hooks"].([]any)
+	if len(hs) == 0 {
+		return ""
+	}
+	h, _ := hs[0].(map[string]any)
+	s, _ := h["command"].(string)
+	return s
+}
+
+func cursorEntryCommand(e any) string {
+	h, _ := e.(map[string]any)
+	s, _ := h["command"].(string)
+	return s
 }
