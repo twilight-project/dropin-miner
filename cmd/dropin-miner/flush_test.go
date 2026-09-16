@@ -370,6 +370,48 @@ func TestSuccessfulJoinDoesNotClearAnUnrelatedSubmissionFailure(t *testing.T) {
 	}
 }
 
+// TestAFailedCapabilityExchangeDoesNotClearAStaleAuthUnavailableHealthRecord
+// is D4b: clearAuthUnavailableHealth is gated on holder.Snapshot() != nil —
+// this run actually obtained a live capability — and not merely on having
+// reached the line after driver.ensure. The join here succeeds (joinable,
+// no joinRefusalCode), but the capability exchange itself is refused with
+// PROXY_BINDING_MISMATCH: this installation's join looked like it worked,
+// but the AS binds the epoch to a different installation of the same
+// participant. ensure()'s handling of that (SaveEpochConflict, a Debug/Warn
+// log) never touches HealthFlush, and nothing later in the same flush does
+// either — promoteIntake/the collector see an empty intake and
+// updateFlushDeliveryHealth's fallthrough for an all-zero pass writes
+// nothing. So a stale auth_state_unavailable record from an earlier run
+// would survive with the guard, and be wiped — permanently, since nothing
+// re-marks it — without it. That is the guard's whole job: without it, a
+// participant whose binding is actually still broken would be told the
+// opposite.
+func TestAFailedCapabilityExchangeDoesNotClearAStaleAuthUnavailableHealthRecord(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) {
+		s.epoch, s.joinable, s.capabilityTwilightError = 1042, true, "PROXY_BINDING_MISMATCH"
+	})
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, "no refresh authorization is available"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok || record.Reason != auth.HealthAuthUnavailable {
+		t.Fatalf("stale auth_state_unavailable health did not survive a failed capability exchange: record=%+v ok=%v err=%v", record, ok, err)
+	}
+}
+
 func TestSuccessfulCurrentTargetDoesNotClearUnrelatedSubmissionFailure(t *testing.T) {
 	as := newFakeAS(t)
 	as.set(func(s *asState) { s.epoch, s.joinable = 1042, false })
