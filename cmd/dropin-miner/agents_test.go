@@ -586,14 +586,25 @@ func wantHookCommand(t *testing.T, tg installTarget, e binEntry, sub ...string) 
 // Nothing here executes the path; it is a string inside JSON on every OS.
 func TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall(t *testing.T) {
 	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
-	entry := binEntry{command: bin, cfg: testCfg}
+	// The installer resolves -config with filepath.Abs before it renders
+	// anything, so on Windows the path it writes is rooted on the runner's
+	// current drive (D:\home\u\... on the CI image) and is spelled with
+	// backslashes. The expectation has to come from the same resolution
+	// rather than from the literal flag value: building it from the literal
+	// is how the first version of this test failed on both Windows runners
+	// while the part it exists to check — the quoting — was already right.
+	cfg, err := filepath.Abs(testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := binEntry{command: bin, cfg: cfg}
 	spellings := func(sub string) []string {
 		return []string{
-			strconv.Quote(bin) + " hook -config " + strconv.Quote(testCfg) + " " + sub,
-			bin + " hook -config " + testCfg + " " + sub,
-			posixQuoteArg(bin) + " hook -config " + posixQuoteArg(testCfg) + " " + sub,
-			"& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(testCfg) + " " + sub,
-			`"` + bin + `" hook -config "` + testCfg + `" ` + sub,
+			strconv.Quote(bin) + " hook -config " + strconv.Quote(cfg) + " " + sub,
+			bin + " hook -config " + cfg + " " + sub,
+			posixQuoteArg(bin) + " hook -config " + posixQuoteArg(cfg) + " " + sub,
+			"& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(cfg) + " " + sub,
+			`"` + bin + `" hook -config "` + cfg + `" ` + sub,
 		}
 	}
 	// Five spellings must be five distinct strings, or this test is weaker
