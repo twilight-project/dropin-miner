@@ -16,10 +16,10 @@ package main
 // the platform are loopback stubs, a closed loopback proxy catches anything
 // that would dial out, and the platform stub fails the test if it is called.
 //
-// H1 is characterization. The tests named TestV029… record v0.2.9's results
-// exactly as they are, the failures included, and each names the commit that
-// changes it: H2 for the skill's commands and Cursor's recognizer, H3 for
-// hook commands and bridge prefixes.
+// H1 recorded v0.2.9's results here, failures included, under names that said
+// so. H2 and H3 flipped those rows as they fixed them, and renamed them: a
+// test that asserts the fix is not characterization any more. What is still
+// named for a defect names the issue it guards (#66, #67, #68, #69).
 
 import (
 	"bytes"
@@ -563,20 +563,6 @@ func stdinBytesDelivered(t *testing.T, sh execShell, delivery stdinDelivery, req
 
 // ── v0.2.9, characterized ────────────────────────────────────────────────
 
-// v029RunsIn is v0.2.9's one rendering, a POSIX string with %q-quoted paths,
-// meeting each real shell. It runs where the shell is a POSIX shell, and in
-// cmd for the commands whose only POSIX-specific part is the double-quoted
-// path; it does not parse in either PowerShell edition.
-func v029RunsIn(sh execShell, cmdAccepts bool) bool {
-	switch sh.kind {
-	case shellPOSIX, shellArgv:
-		return true
-	case shellCmd:
-		return cmdAccepts
-	}
-	return false
-}
-
 // deliveredBytes is what each shell delivers to a native program's stdin,
 // hex-dumped on the CI runners.
 //
@@ -907,6 +893,12 @@ func TestRulesLineCommandRunsInOpencodesShell(t *testing.T) {
 	}
 }
 
+// hookSpecFor is the hook entries this host's install writes on this runner.
+func hookSpecFor(t *testing.T, host string, entry binEntry) hooksSpec {
+	t.Helper()
+	return goldenHookSpec(t, host, entry, runtime.GOOS)
+}
+
 // hookCase is one installed hook command, run with a real payload, and the
 // observable that proves the binary ran it.
 type hookCase struct {
@@ -1006,25 +998,21 @@ var v029HookCases = map[string][]hookCase{
 	},
 }
 
-// TestV029InstalledHookCommandsInEachHookRunner reads each hook command back
-// from the file the install writes and runs it, with a real payload, through
-// the runner that host's hook cell names on this OS (all three for Cursor on
-// Windows).
+// TestInstalledHookCommandsRunInTheirRunner reads each hook command back from
+// the file the install writes and runs it, with a real payload, through the
+// runner that host's hook cell names on this OS.
 //
-// v0.2.9: every command begins with a %q-quoted path. It runs under POSIX sh,
-// Git Bash and cmd; in PowerShell a command that starts with a quoted string
-// is an expression, and the next word is a parse error (#69). H3 renders hook
-// commands for their runner and flips the PowerShell rows.
-func TestV029InstalledHookCommandsInEachHookRunner(t *testing.T) {
+// This is #69's guard. v0.2.9 wrote every hook command with a %q-quoted path,
+// which cmd and a POSIX shell accept and PowerShell reads as an expression
+// whose next word is a parse error — so on Windows no Cursor hook ever ran,
+// nothing recorded the failure, and the binary never started.
+func TestInstalledHookCommandsRunInTheirRunner(t *testing.T) {
 	for _, host := range []string{"claude", "cursor"} {
 		for _, sh := range hostShellsOnThisOS(t, host, channelHook) {
 			for _, hc := range v029HookCases[host] {
 				t.Run(host+"/"+sh.name+"/"+hc.event, func(t *testing.T) {
 					in := newExecInstallation(t)
-					spec := claudeHooks(in.entry)
-					if host == "cursor" {
-						spec = cursorHooks(in.entry)
-					}
+					spec := hookSpecFor(t, host, in.entry)
 					command := ""
 					for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
 						if h.event == hc.event {
@@ -1036,8 +1024,8 @@ func TestV029InstalledHookCommandsInEachHookRunner(t *testing.T) {
 					}
 					payload, _ := json.Marshal(hc.payload(in))
 					out := runInShell(t, sh, command, payload, in.env)
-					if ran := hc.proof(t, in, out); ran != v029RunsIn(sh, true) {
-						t.Fatalf("%s ran=%v under %s; v0.2.9: %v\ncommand: %s\n%s", hc.event, ran, sh.name, v029RunsIn(sh, true), command, out)
+					if !hc.proof(t, in, out) {
+						t.Fatalf("the installed %s hook did not run under %s\ncommand: %s\n%s", hc.event, sh.name, command, out)
 					}
 				})
 			}
@@ -1055,12 +1043,9 @@ func TestV029InstalledHookCommandsInEachHookRunner(t *testing.T) {
 // per-call lineage.
 func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 	for _, sh := range hostShellsOnThisOS(t, "cursor", channelHook) {
-		if !v029RunsIn(sh, true) {
-			continue // the hook command itself does not run here; #69, H3's row
-		}
 		t.Run(sh.name, func(t *testing.T) {
 			in := newExecInstallation(t)
-			spec := cursorHooks(in.entry)
+			spec := hookSpecFor(t, "cursor", in.entry)
 			command := ""
 			for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
 				if h.event == "beforeShellExecution" {
@@ -1085,12 +1070,10 @@ func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 	}
 }
 
-// TestV029HermesHookCommandThroughItsSplitter runs the hook command the
-// Hermes install writes through Hermes' own splitter and spawn.
-//
-// v0.2.9: it runs on every OS and answers a modify directive with the bridge.
-// H3 keeps it unless the evidence table says otherwise.
-func TestV029HermesHookCommandThroughItsSplitter(t *testing.T) {
+// TestHermesHookCommandRunsThroughItsSplitter runs the hook command the
+// Hermes install writes through Hermes' own splitter and spawn — the runner
+// its cell names, which is no shell at all.
+func TestHermesHookCommandRunsThroughItsSplitter(t *testing.T) {
 	in := newExecInstallation(t)
 	command, ok := hermesHookCommand(in.entry, runtime.GOOS == "windows")
 	if !ok {
@@ -1114,37 +1097,40 @@ func TestV029HermesHookCommandThroughItsSplitter(t *testing.T) {
 // harnessFor is the harness value each adapter writes into its bridge.
 var harnessFor = map[string]string{"claude": "claude-code", "hermes": "hermes", "opencode": "opencode", "pi": "pi"}
 
-// TestV029BridgedSearchInEachHostsShell takes the command each lineage
+// TestBridgedSearchCarriesItsHostsHarness takes the command each lineage
 // adapter hands its host — the adapter itself, run in process or in Node —
-// and runs it in that host's tool shell on this OS, then reads the trace the
+// runs it in the shell that host runs tool calls in, and reads the trace the
 // router received.
 //
-// v0.2.9: every adapter prefixes the POSIX assignment TOKENDROP_TRACE_BRIDGE=…
-// It carries the host's harness under a POSIX shell; in PowerShell the prefix
-// is looked up as a command and the search never runs (#68). H3 writes each
-// prefix in its host's shell and flips the PowerShell rows.
-func TestV029BridgedSearchInEachHostsShell(t *testing.T) {
+// This is #68's guard. v0.2.9 wrote one POSIX assignment for every host, so
+// on Windows opencode's prefix was looked up as a program name: the first
+// searches failed outright, and the one that ran reached the router with the
+// binary's own `cli` fallback harness — a search with no lineage at all. The
+// harness assertion is what makes that impossible now.
+func TestBridgedSearchCarriesItsHostsHarness(t *testing.T) {
 	for _, host := range []string{"claude", "hermes", "opencode", "pi"} {
-		for _, sh := range hostShellsOnThisOS(t, host, channelTool) {
+		for _, sh := range renderedShellsOnThisOS(t, host) {
 			t.Run(host+"/"+sh.name, func(t *testing.T) {
 				in := newExecInstallation(t)
-				command := skillSearchBlock(t, in.renderedSkill("claude")).body
 				var stdin []byte
+				command := ""
 				if host == "opencode" {
 					// opencode has no skill: its command is the rules line's,
 					// with the request on stdin.
-					command = in.entry.stdinCommand()
+					rendered, err := in.entry.stdinCommandForShell(sh.kind)
+					if err != nil {
+						t.Fatal(err)
+					}
+					command = rendered
 					stdin = []byte(`{"version":1,"query":"exact query text"}`)
+				} else {
+					command = skillBlockFor(t, in.renderedSkill(host), sh.kind, "search").body
 				}
-				bridged := bridgedCommand(t, host, command)
-				if !strings.HasPrefix(bridged, bridgeEnv+"=") {
-					t.Fatalf("the %s adapter wrote no bridge: %q", host, bridged)
+				bridged := bridgedCommand(t, host, command, sh.kind)
+				if bridged == command || !strings.Contains(bridged, bridgeEnv) {
+					t.Fatalf("the %s adapter wrote no bridge for %s: %q", host, sh.kind, bridged)
 				}
 				out := runInShell(t, sh, bridged, stdin, in.env)
-				if !v029RunsIn(sh, false) {
-					requireNoRequest(t, in, out)
-					return
-				}
 				req := requireOneRequest(t, in, out, "exact query text")
 				if req.Trace == nil || req.Trace.Harness != harnessFor[host] {
 					t.Fatalf("the router received trace %+v, want harness %q\n%s", req.Trace, harnessFor[host], req.Raw)

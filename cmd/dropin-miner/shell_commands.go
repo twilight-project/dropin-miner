@@ -86,11 +86,14 @@ func renderShellCommand(sh shellKind, tokens []cmdToken) (string, error) {
 			}
 			out = append(out, quoted)
 		case shellArgv:
-			quoted, ok := hermesQuoteArg(tok.text, false)
-			if !ok {
-				return "", fmt.Errorf("this path cannot be represented for an argument splitter: %q", tok.text)
-			}
-			out = append(out, quoted)
+			// Hermes' splitter is the one runner whose quoting depends on the
+			// OS it runs on (shlex on POSIX, shlex(posix=False) on Windows),
+			// and hermesHookCommand already takes that as a parameter. Deciding
+			// it here would mean reading runtime.GOOS in a renderer that is
+			// also asked to render for other operating systems — which is how
+			// a form rendered for macOS came out with backslashes on a Windows
+			// runner. It stays where the caller knows the answer.
+			return "", fmt.Errorf("an argument splitter's quoting is hermesHookCommand's, not this renderer's")
 		default:
 			return "", fmt.Errorf("no command form for the %q shell", sh)
 		}
@@ -166,6 +169,60 @@ func searchBlockForShell(sh shellKind, e binEntry, body string) (lang, script st
 	default:
 		return "", "", fmt.Errorf("no search block form for the %q shell", sh)
 	}
+}
+
+// hookCommandForShell is the command a host writes into its own config and
+// runs around a search. It is rendered for the host's declared hook RUNNER,
+// which is not always a shell: Hermes splits the string itself and execs it,
+// so its command is quoted for that splitter rather than for any grammar.
+//
+// This is what retires %q from the hook files. A hook command built with Go's
+// quoting arrives with doubled backslashes on Windows, which is the fifth
+// symptom in #67's family, and made the config path the hook process received
+// differ from the one the skill rendered.
+func (e binEntry) hookCommandForShell(sh shellKind, sub ...string) (string, error) {
+	tokens := append([]cmdToken{pathToken(e.command), literalToken("hook")}, e.configTokens()...)
+	for _, s := range sub {
+		tokens = append(tokens, literalToken(s))
+	}
+	return renderShellCommand(sh, tokens)
+}
+
+// hookCommandForRunners renders one hook command that every runner in shells
+// must be able to execute, and says so when that is impossible.
+//
+// A hook cell may name more than one runner — Cursor on Windows is ruled
+// {cmd, powershell}, because no hook has been observed there and the
+// hooks.json string fails to parse as PowerShell while running unchanged
+// under cmd. One string has to satisfy all of them, and the measurement (see
+// the commit that added this) says none does across the paths a participant
+// may have: a quoted first token is an expression in PowerShell, a leading &
+// is a syntax error in cmd, `cmd /c call "…"` covers both until the path
+// contains a $ (PowerShell expands it inside the double quotes) or a %, and
+// a bare path breaks on a space.
+//
+// So a multi-runner cell keeps the form that the one observed runner accepts
+// — v0.2.9's — and answers a reason the install plan prints. Rendering a
+// form proven nowhere would be worse than the status quo; removing the hooks
+// would take away the lineage Cursor does have on that OS.
+func (e binEntry) hookCommandForRunners(shells []shellKind, sub ...string) (cmd, note string, err error) {
+	switch len(shells) {
+	case 0:
+		return "", "", fmt.Errorf("no hook runner is declared")
+	case 1:
+		cmd, err = e.hookCommandForShell(shells[0], sub...)
+		return cmd, "", err
+	}
+	cmd, err = e.hookCommandForShell(shellCmd, sub...)
+	if err != nil {
+		return "", "", err
+	}
+	kinds := make([]string, len(shells))
+	for i, sh := range shells {
+		kinds[i] = string(sh)
+	}
+	return cmd, "its hook runner is not established (" + strings.Join(kinds, " or ") +
+		"); the command is the one proven under cmd, and no single form runs under all of them", nil
 }
 
 // preferCommandForShell is what the skill runs for /dropin-miner on|off|status.

@@ -125,7 +125,7 @@ func TestOpencodeRedactionBoundaries(t *testing.T) {
 	// what this acceptance test executes. Every assertion below is unchanged
 	// from before the shared source existed: the migration is mechanical or
 	// this test says otherwise.
-	input, _ := json.Marshal(map[string]any{"plugin": renderAgentScript(opencodePluginJS), "cases": cases})
+	input, _ := json.Marshal(map[string]any{"plugin": renderAgentScript(opencodePluginJS, shellPOSIX), "cases": cases})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script) // #nosec G204 -- fixed test script and local Node runtime; synthetic input on stdin
@@ -167,7 +167,7 @@ func TestEveryJSHostRendersTheSharedTraceSource(t *testing.T) {
 			if n := strings.Count(template, traceCommonMarker); n != 1 {
 				t.Fatalf("template carries the trace-common marker %d times, want exactly 1", n)
 			}
-			rendered := renderAgentScript(template)
+			rendered := renderAgentScript(template, shellPOSIX)
 			if !strings.Contains(rendered, shared) {
 				t.Fatal("the rendered artifact does not contain the shared source verbatim")
 			}

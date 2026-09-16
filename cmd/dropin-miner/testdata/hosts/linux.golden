@@ -10,7 +10,7 @@ claude    hook established posix
 codex     tool established posix
 codex     hook none
 cursor    tool established posix
-cursor    hook unknown
+cursor    hook ruled       posix
 opencode  tool established posix
 opencode  hook none
 pi        tool established posix
@@ -47,20 +47,20 @@ JSON
 
 == claude: settings.json hook commands, as read back from the file
 -- PreToolUse
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" lineage
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" lineage"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' lineage
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' lineage"
 -- SessionStart
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" window session-start
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" window session-start"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window session-start
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window session-start"
 -- PreCompact
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" window pre-compact
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" window pre-compact"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window pre-compact
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window pre-compact"
 -- PostCompact
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" window post-compact
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" window post-compact"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window post-compact
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' window post-compact"
 -- Stop
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" flush
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" flush"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' flush
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' flush"
 
 == claude: settings.json permissions.allow rules
 -- rule
@@ -74,12 +74,12 @@ Bash(/home/u/.tokendrop/bin/dropin-miner search -config "/home/u/.tokendrop/toke
 "Bash(/home/u/.tokendrop/bin/dropin-miner search -config \"/home/u/.tokendrop/tokendrop.toml\":*)"
 
 == claude: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin
 
 == codex: skill command blocks
 -- fence bash
@@ -103,23 +103,23 @@ JSON
 
 == cursor: hooks.json commands, as read back from the file
 -- sessionStart
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor sessionStart
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor sessionStart"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor sessionStart
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor sessionStart"
 -- beforeShellExecution
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor beforeShellExecution
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor beforeShellExecution"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor beforeShellExecution
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor beforeShellExecution"
 -- afterAgentThought
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor afterAgentThought
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor afterAgentThought"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor afterAgentThought
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor afterAgentThought"
 -- afterAgentResponse
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor afterAgentResponse
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor afterAgentResponse"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor afterAgentResponse
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor afterAgentResponse"
 -- preCompact
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor preCompact
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor preCompact"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor preCompact
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor preCompact"
 -- stop
-"/home/u/.tokendrop/bin/dropin-miner" hook -config "/home/u/.tokendrop/tokendrop.toml" cursor stop
-"\"/home/u/.tokendrop/bin/dropin-miner\" hook -config \"/home/u/.tokendrop/tokendrop.toml\" cursor stop"
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor stop
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor stop"
 
 == cursor: beforeShellExecution recognizer grammar on linux
 -- skill block (bash)
@@ -134,12 +134,12 @@ refused
 refused
 
 == opencode: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin
 
 == pi: skill command blocks
 -- fence bash
@@ -152,12 +152,12 @@ JSON
 '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
 
 == pi: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin
 
 == hermes: skill command blocks
 -- fence bash
@@ -176,9 +176,9 @@ JSON
     - command: '/home/u/.tokendrop/bin/dropin-miner hook -config /home/u/.tokendrop/tokendrop.toml hermes pre_tool_call'
 
 == hermes: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "/home/u/.tokendrop/bin/dropin-miner" search -config "/home/u/.tokendrop/tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin

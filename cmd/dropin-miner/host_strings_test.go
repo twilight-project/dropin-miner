@@ -160,6 +160,28 @@ func skillProseCommandLines(skill string) []string {
 	return out
 }
 
+// goldenHookSpec is the hook entries a host's install writes on goos: the
+// commands follow its declared hook runner, like everything else.
+func goldenHookSpec(t *testing.T, id string, entry binEntry, goos string) hooksSpec {
+	t.Helper()
+	tg, ok := targetByID(installTargets, id)
+	if !ok {
+		t.Fatalf("no target %q", id)
+	}
+	if id == "cursor" {
+		spec, _, err := cursorHooksFor(tg, entry, goos)
+		if err != nil {
+			t.Fatalf("cursor hooks on %s: %v", goos, err)
+		}
+		return spec
+	}
+	spec, err := claudeHooksFor(tg, entry, goos)
+	if err != nil {
+		t.Fatalf("%s hooks on %s: %v", id, goos, err)
+	}
+	return spec
+}
+
 // installedHookFile is the hook file an install writes on an empty machine,
 // as bytes.
 func installedHookFile(t *testing.T, spec hooksSpec, entry binEntry) string {
@@ -214,12 +236,18 @@ func withBridgePlaceholder(cmd string) string {
 
 // claudeBridgedCommand is the command Claude Code's PreToolUse hook hands
 // back for a Bash call running command — hookLineage itself, in process.
-func claudeBridgedCommand(t *testing.T, command string) string {
+func claudeBridgedCommand(t *testing.T, command string, sh shellKind) string {
 	t.Helper()
 	_, ops := newFakeHookOps(nil)
+	// Claude Code's payload names the tool, and the tool decides the syntax:
+	// its Bash tool runs Git Bash, its PowerShell tool runs PowerShell.
+	tool := "Bash"
+	if sh == shellPowerShell {
+		tool = "PowerShell"
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"session_id": "synthetic-session", "prompt_id": "synthetic-prompt", "tool_use_id": "synthetic-call",
-		"tool_name": "Bash", "tool_input": map[string]any{"command": command},
+		"tool_name": tool, "tool_input": map[string]any{"command": command},
 	})
 	var out bytes.Buffer
 	hookLineage(ops, hookContext{}, payload, &out)
@@ -255,15 +283,15 @@ func hermesBridgedCommand(t *testing.T, command string) string {
 // jsBridgedCommand runs the rendered opencode plugin or Pi extension — the
 // artifact the install writes — in Node against one synthetic bash call and
 // returns the command it hands the host.
-func jsBridgedCommand(t *testing.T, host, command string) string {
+func jsBridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal("node is required to run the rendered opencode plugin and Pi extension")
 	}
-	source := renderAgentScript(opencodePluginJS)
+	source := renderAgentScript(opencodePluginJS, sh)
 	if host == "pi" {
-		source = renderAgentScript(piExtensionTS)
+		source = renderAgentScript(piExtensionTS, sh)
 	}
 	script := `
  const fs = await import('node:fs');
@@ -304,15 +332,15 @@ func jsBridgedCommand(t *testing.T, host, command string) string {
 // bridgedCommand is the command host's lineage adapter hands the host for
 // command, or "" for a host with no bridge (Codex; Cursor, whose lineage is
 // a file its hooks write).
-func bridgedCommand(t *testing.T, host, command string) string {
+func bridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 	t.Helper()
 	switch host {
 	case "claude":
-		return claudeBridgedCommand(t, command)
+		return claudeBridgedCommand(t, command, sh)
 	case "hermes":
 		return hermesBridgedCommand(t, command)
 	case "opencode", "pi":
-		return jsBridgedCommand(t, host, command)
+		return jsBridgedCommand(t, host, command, sh)
 	}
 	return ""
 }
@@ -393,7 +421,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 		}
 		switch id {
 		case "claude":
-			spec := claudeHooks(entry)
+			spec := goldenHookSpec(t, "claude", entry, goos)
 			file := installedHookFile(t, spec, entry)
 			section("claude: settings.json hook commands, as read back from the file")
 			for _, h := range installedHookCommands(t, file, spec) {
@@ -406,7 +434,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 				value("rule", r+"\n"+string(literal))
 			}
 		case "cursor":
-			spec := cursorHooks(entry)
+			spec := goldenHookSpec(t, "cursor", entry, goos)
 			file := installedHookFile(t, spec, entry)
 			section("cursor: hooks.json commands, as read back from the file")
 			for _, h := range installedHookCommands(t, file, spec) {
@@ -436,8 +464,17 @@ func renderedHostStrings(t *testing.T, goos string) string {
 		switch id {
 		case "claude", "hermes", "opencode", "pi":
 			section(id + ": bridge prefix its lineage adapter writes")
-			value("skill search block", withBridgePlaceholder(bridgedCommand(t, id, stdinSearch.body)))
-			value("stdin command", withBridgePlaceholder(bridgedCommand(t, id, entry.stdinCommand())))
+			tg, _ := targetByID(installTargets, id)
+			shells, _ := toolShellsForSkill(tg, goos)
+			for _, sh := range shells {
+				search := skillBlockFor(t, renderedSkillFor(id, entry, goos), sh, "search").body
+				stdin, err := entry.stdinCommandForShell(sh)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value("skill search block ("+string(sh)+")", withBridgePlaceholder(bridgedCommand(t, id, search, sh)))
+				value("stdin command ("+string(sh)+")", withBridgePlaceholder(bridgedCommand(t, id, stdin, sh)))
+			}
 		}
 	}
 	return b.String()

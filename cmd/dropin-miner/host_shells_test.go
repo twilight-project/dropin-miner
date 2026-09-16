@@ -38,7 +38,7 @@ var declaredShellTable = []declaredRow{
 	{"codex", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
 	{"codex", "windows", evidenceUnknown, evidenceNone, nil, nil},
 	{"cursor", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"cursor", "linux", evidenceEstablished, evidenceUnknown, []shellKind{shellPOSIX}, nil},
+	{"cursor", "linux", evidenceEstablished, evidenceRuled, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
 	{"cursor", "windows", evidenceEstablished, evidenceRuled, []shellKind{shellPowerShell}, []shellKind{shellCmd, shellPowerShell}},
 	{"opencode", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
 	{"opencode", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
@@ -132,7 +132,7 @@ func TestDeclaredShellsRefusesWhatIsNotEstablished(t *testing.T) {
 	claude, _ := targetByID(installTargets, "claude")
 
 	t.Run("unknown tool cell", func(t *testing.T) { refused(t, codex, "windows", channelTool) })
-	t.Run("unknown hook cell", func(t *testing.T) { refused(t, cursor, "linux", channelHook) })
+	t.Run("unknown hook cell", func(t *testing.T) { refused(t, claude, "freebsd", channelHook) })
 	t.Run("an OS no host declares", func(t *testing.T) { refused(t, claude, "freebsd", channelTool) })
 	t.Run("a target that declares nothing", func(t *testing.T) {
 		refused(t, fakeIntegrationTarget{}, "linux", channelTool)

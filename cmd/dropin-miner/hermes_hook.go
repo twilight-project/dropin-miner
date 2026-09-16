@@ -31,7 +31,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 )
 
 // hermesHookPayload is the pre_tool_call wire Hermes sends a shell hook.
@@ -100,7 +99,7 @@ func hookHermes(event string, payload []byte, stdout io.Writer) {
 		return
 	}
 	cmd, _ := input["command"].(string)
-	if !isSearchCommand(cmd) || strings.Contains(cmd, bridgeEnv+"=") {
+	if !isSearchCommand(cmd) {
 		return
 	}
 
@@ -141,7 +140,15 @@ func hookHermes(event string, payload []byte, stdout io.Writer) {
 	for k, v := range input {
 		updated[k] = v
 	}
-	updated["command"] = bridgeEnv + "=" + bridge + " " + cmd
+	// Hermes runs its terminal tool in bash on every OS it supports (Git Bash
+	// on Windows), so the bridge is the POSIX assignment. H-R4: a bridge
+	// already on the command is removed where that can be proven, and a
+	// command carrying one that cannot be is left exactly as it was.
+	rewritten, ok := withTraceBridge(shellPOSIX, bridge, cmd)
+	if !ok {
+		return
+	}
+	updated["command"] = rewritten
 	out, err := json.Marshal(hermesModifyDirective{Decision: "modify", ToolInput: updated})
 	if err != nil {
 		return

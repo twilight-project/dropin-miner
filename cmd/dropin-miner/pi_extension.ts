@@ -34,6 +34,11 @@
 
 // {{TRACE_COMMON}}
 
+// The shell Pi runs its bash tool in on THIS machine, written in by the
+// installer from the host's declaration rather than guessed from the
+// command text (H-R1).
+const HOST_SHELL = "{{HOST_SHELL}}"
+
 // The text parts of one Pi session entry, in the shape the shared
 // preparation takes. An assistant message's content is always an array of
 // parts (packages/ai/src/types.ts: AssistantMessage.content is
@@ -152,7 +157,11 @@ export default function (pi) {
 
       const bridge = traceBridge(env)
       if (bridge === null) return // oversized even without history: no bridge
-      event.input.command = TRACE_BRIDGE_ENV + "=" + bridge + " " + cmd
+      // H-R4: remove every bridge assignment we recognize, prepend our own,
+      // and leave a command carrying one we cannot remove untouched.
+      const rewritten = withTraceBridge(cmd, bridge, HOST_SHELL)
+      if (rewritten === null) return
+      event.input.command = rewritten
     } catch {
       // fail-open: the search runs untraced rather than not at all. Nothing
       // is returned on any path — a truthy return is how a Pi extension

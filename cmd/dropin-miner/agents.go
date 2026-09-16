@@ -96,8 +96,31 @@ const traceCommonMarker = "// {{TRACE_COMMON}}"
 // put raw assistant text into a process argument before the binary ever
 // saw it. TestEveryJSHostRendersTheSharedTraceSource keeps the marker
 // honest in both templates.
-func renderAgentScript(template string) string {
-	return strings.Replace(template, traceCommonMarker, strings.TrimRight(agentTraceCommonJS, "\n"), 1)
+// The shell an in-process adapter writes its bridge for is spliced in at
+// install time, from the host's declaration for this OS. A plugin running
+// inside opencode cannot ask the declaration — it is a JavaScript file, not
+// this binary — and guessing from the command text is what H-R1 forbids. So
+// the installer, which knows both the host and the OS, writes the answer in.
+const traceShellMarker = "{{HOST_SHELL}}"
+
+func renderAgentScript(template string, sh shellKind) string {
+	out := strings.Replace(template, traceCommonMarker, strings.TrimRight(agentTraceCommonJS, "\n"), 1)
+	return strings.Replace(out, traceShellMarker, string(sh), 1)
+}
+
+// planAgentScript renders a JavaScript host's artifact for the shell that
+// host runs tool calls in on this OS, or refuses in the plan rather than
+// installing an adapter that writes the wrong syntax.
+func planAgentScript(ops agentOps, t installTarget, path, template, why string, p *agentPlan) bool {
+	shells, err := declaredShells(t, runtime.GOOS, channelTool)
+	if err != nil || len(shells) != 1 {
+		if err == nil {
+			err = fmt.Errorf("its lineage adapter writes one bridge syntax, and %d tool shells are declared", len(shells))
+		}
+		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+		return false
+	}
+	return planWrite(ops, t.Label(), path, []byte(renderAgentScript(template, shells[0])), 0o600, why, p)
 }
 
 const (
@@ -268,14 +291,12 @@ const (
 - When it is used: one focused query per call.`
 )
 
-// hookCommand is what a host runs for one hook event.
-func (e binEntry) hookCommand(sub ...string) string {
-	cmd := fmt.Sprintf("%q hook", e.command)
-	if e.cfg != "" {
-		cmd += fmt.Sprintf(" -config %q", e.cfg)
-	}
-	return cmd + " " + strings.Join(sub, " ")
-}
+// The %q-quoted hook command is gone: a hook command comes from
+// hookCommandForShell, rendered for the runner the host's declaration names.
+// %q is Go's quoting, and every #69 symptom had it in common — doubled
+// backslashes on Windows, a quoted first token PowerShell reads as an
+// expression, and a config path the hook process received in bytes the skill
+// never wrote.
 
 type agentWrite struct {
 	surface  string
@@ -699,9 +720,26 @@ type hooksSpec struct {
 	allow []string
 }
 
-func claudeHooks(entry binEntry) hooksSpec {
+// claudeToolMatcher is the PreToolUse matcher: both shell tools, not one.
+//
+// Claude Code runs shell commands through the Bash tool and, on Windows,
+// through the PowerShell tool as well — on by default for claude.ai and
+// Console accounts, and the only one where Git for Windows is absent. The
+// matcher is a regular expression over the tool name, and ours named `Bash`
+// alone, so a search the model sent through the PowerShell tool was never
+// offered to this hook and carried no lineage at all (#77). Claude Code's own
+// documentation says to "Match `Bash|PowerShell` in hooks that inspect shell
+// commands"; this is that.
+const claudeToolMatcher = "Bash|PowerShell"
+
+func claudeHooks(entry binEntry, sh shellKind) (hooksSpec, error) {
+	var err error
 	cmd := func(sub ...string) map[string]any {
-		return map[string]any{"type": "command", "command": entry.hookCommand(sub...)}
+		rendered, cmdErr := entry.hookCommandForShell(sh, sub...)
+		if cmdErr != nil && err == nil {
+			err = cmdErr
+		}
+		return map[string]any{"type": "command", "command": rendered}
 	}
 	group := func(matcher string, h map[string]any) map[string]any {
 		g := map[string]any{"hooks": []any{h}}
@@ -710,10 +748,10 @@ func claudeHooks(entry binEntry) hooksSpec {
 		}
 		return g
 	}
-	return hooksSpec{
+	spec := hooksSpec{
 		root: "hooks",
 		entries: map[string]map[string]any{
-			"PreToolUse":   group("Bash", cmd("lineage")),
+			"PreToolUse":   group(claudeToolMatcher, cmd("lineage")),
 			"SessionStart": group("", cmd("window", "session-start")),
 			"PreCompact":   group("", cmd("window", "pre-compact")),
 			"PostCompact":  group("", cmd("window", "post-compact")),
@@ -722,6 +760,7 @@ func claudeHooks(entry binEntry) hooksSpec {
 		order: []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"},
 		allow: claudeAllowRules(entry),
 	}
+	return spec, err
 }
 
 // claudeAllowRules are the permission rules that let Claude Code run the
@@ -776,13 +815,42 @@ func ruleIsOurs(e any, bin string) bool {
 	return false
 }
 
-func cursorHooks(entry binEntry) hooksSpec {
+func cursorHooks(entry binEntry, shells []shellKind) (hooksSpec, string, error) {
 	events := []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
 	entries := map[string]map[string]any{}
+	note := ""
 	for _, ev := range events {
-		entries[ev] = map[string]any{"command": entry.hookCommand("cursor", ev)}
+		cmd, runnerNote, err := entry.hookCommandForRunners(shells, "cursor", ev)
+		if err != nil {
+			return hooksSpec{}, "", err
+		}
+		note = runnerNote
+		entries[ev] = map[string]any{"command": cmd}
 	}
-	return hooksSpec{root: "hooks", version: 1, entries: entries, order: events}
+	return hooksSpec{root: "hooks", version: 1, entries: entries, order: events}, note, nil
+}
+
+// claudeHooksFor and cursorHooksFor render a host's hook entries for the
+// runner its declaration names on this OS. An unknown cell has no fallback
+// here: a hook command is not a skill, and one written for a shell nobody
+// has shown runs it installs a hook that fails silently — which is #69.
+func claudeHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, error) {
+	shells, err := declaredShells(t, goos, channelHook)
+	if err != nil {
+		return hooksSpec{}, err
+	}
+	if len(shells) != 1 {
+		return hooksSpec{}, fmt.Errorf("its hook runner is declared as %d shells; Claude Code's is one", len(shells))
+	}
+	return claudeHooks(entry, shells[0])
+}
+
+func cursorHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, string, error) {
+	shells, err := declaredShells(t, goos, channelHook)
+	if err != nil {
+		return hooksSpec{}, "", err
+	}
+	return cursorHooks(entry, shells)
 }
 
 // entryIsOurs: does this hook entry (a Claude group or a Cursor entry)
@@ -800,17 +868,37 @@ func entryIsOurs(e any, bin string) bool {
 	if !ok {
 		return false
 	}
-	prefix := strconv.Quote(bin) + " "
-	if c, ok := m["command"].(string); ok && strings.HasPrefix(c, prefix) {
+	if c, ok := m["command"].(string); ok && hookCommandIsOurs(c, bin) {
 		return true
 	}
 	if hs, ok := m["hooks"].([]any); ok {
 		for _, h := range hs {
 			if hm, ok := h.(map[string]any); ok {
-				if c, ok := hm["command"].(string); ok && strings.HasPrefix(c, prefix) {
+				if c, ok := hm["command"].(string); ok && hookCommandIsOurs(c, bin) {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// hookCommandIsOurs recognizes every spelling this client has written a hook
+// command in: the shell quoting it renders from H3 (single quotes for POSIX,
+// with the call operator for PowerShell, double quotes for cmd) and v0.2.9's
+// %q. An installation upgraded from v0.2.9 still has the old entries in its
+// host's config until the next `agents install`, and an uninstall that did
+// not recognize them would leave a hook running a binary that is gone.
+func hookCommandIsOurs(command, bin string) bool {
+	for _, prefix := range []string{
+		posixQuoteArg(bin) + " ",
+		"& " + powerShellQuoteArg(bin) + " ",
+		`"` + bin + `" `,
+		strconv.Quote(bin) + " ",
+		bin + " ",
+	} {
+		if strings.HasPrefix(command, prefix) {
+			return true
 		}
 	}
 	return false

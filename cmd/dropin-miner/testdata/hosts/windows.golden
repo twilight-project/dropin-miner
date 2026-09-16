@@ -56,20 +56,20 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 == claude: settings.json hook commands, as read back from the file
 -- PreToolUse
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" lineage
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" lineage"
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' hook -config 'C:\Users\u\.tokendrop\tokendrop.toml' lineage
+"'C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe' hook -config 'C:\\Users\\u\\.tokendrop\\tokendrop.toml' lineage"
 -- SessionStart
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" window session-start
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" window session-start"
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' hook -config 'C:\Users\u\.tokendrop\tokendrop.toml' window session-start
+"'C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe' hook -config 'C:\\Users\\u\\.tokendrop\\tokendrop.toml' window session-start"
 -- PreCompact
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" window pre-compact
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" window pre-compact"
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' hook -config 'C:\Users\u\.tokendrop\tokendrop.toml' window pre-compact
+"'C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe' hook -config 'C:\\Users\\u\\.tokendrop\\tokendrop.toml' window pre-compact"
 -- PostCompact
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" window post-compact
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" window post-compact"
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' hook -config 'C:\Users\u\.tokendrop\tokendrop.toml' window post-compact
+"'C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe' hook -config 'C:\\Users\\u\\.tokendrop\\tokendrop.toml' window post-compact"
 -- Stop
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" flush
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" flush"
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' hook -config 'C:\Users\u\.tokendrop\tokendrop.toml' flush
+"'C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe' hook -config 'C:\\Users\\u\\.tokendrop\\tokendrop.toml' flush"
 
 == claude: settings.json permissions.allow rules
 -- rule
@@ -83,12 +83,21 @@ Bash(C:\Users\u\.tokendrop\bin\dropin-miner.exe search -config "C:\\Users\\u\\.t
 "Bash(C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe search -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\":*)"
 
 == claude: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" search -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+-- skill search block (powershell)
+$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoiY2xhdWRlLWNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ0dXJuX2lkIjoiMGQxMmQ3ZGFjNWYzMjA1OTNjYmU5MTQ4YzY5ZjkyNDciLCJjYWxsX2lkIjoiOTc3OWE2MjgyMTI4OTVjNzYzY2UyYzgyYWI3M2NjMTAiLCJ3aW5kb3ciOiJub25lIn0'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
+{"version":1,"query":"exact query text"}
+'@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+} finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
+-- stdin command (powershell)
+$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoiY2xhdWRlLWNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ0dXJuX2lkIjoiMGQxMmQ3ZGFjNWYzMjA1OTNjYmU5MTQ4YzY5ZjkyNDciLCJjYWxsX2lkIjoiOTc3OWE2MjgyMTI4OTVjNzYzY2UyYzgyYWI3M2NjMTAiLCJ3aW5kb3ciOiJub25lIn0'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+} finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 
 == codex: skill command blocks
 -- fence bash
@@ -113,23 +122,23 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 == cursor: hooks.json commands, as read back from the file
 -- sessionStart
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor sessionStart
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor sessionStart"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor sessionStart
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor sessionStart"
 -- beforeShellExecution
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor beforeShellExecution
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor beforeShellExecution"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor beforeShellExecution
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor beforeShellExecution"
 -- afterAgentThought
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor afterAgentThought
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor afterAgentThought"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor afterAgentThought
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor afterAgentThought"
 -- afterAgentResponse
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor afterAgentResponse
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor afterAgentResponse"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor afterAgentResponse
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor afterAgentResponse"
 -- preCompact
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor preCompact
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor preCompact"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor preCompact
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor preCompact"
 -- stop
-"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" hook -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" cursor stop
-"\"C:\\\\Users\\\\u\\\\.tokendrop\\\\bin\\\\dropin-miner.exe\" hook -config \"C:\\\\Users\\\\u\\\\.tokendrop\\\\tokendrop.toml\" cursor stop"
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor stop
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor stop"
 
 == cursor: beforeShellExecution recognizer grammar on windows
 -- skill block (powershell)
@@ -144,12 +153,15 @@ refused
 refused
 
 == opencode: bridge prefix its lineage adapter writes
--- skill search block
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
+-- skill search block (powershell)
+$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoib3BlbmNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ3aW5kb3ciOiJub25lIiwiY2FsbF9pZCI6Ijk3NzlhNjI4MjEyODk1Yzc2M2NlMmM4MmFiNzNjYzEwIn0'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
 {"version":1,"query":"exact query text"}
-JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" search -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" --stdin
+'@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+} finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
+-- stdin command (powershell)
+$env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoib3BlbmNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ3aW5kb3ciOiJub25lIiwiY2FsbF9pZCI6Ijk3NzlhNjI4MjEyODk1Yzc2M2NlMmM4MmFiNzNjYzEwIn0'; try { & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+} finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 
 == pi: skill command blocks
 -- fence bash
@@ -162,12 +174,12 @@ JSON
 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
 
 == pi: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" search -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
 
 == hermes: skill command blocks
 -- fence bash
@@ -186,9 +198,9 @@ JSON
     - command: '"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" hermes pre_tool_call'
 
 == hermes: bridge prefix its lineage adapter writes
--- skill search block
+-- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
 {"version":1,"query":"exact query text"}
 JSON
--- stdin command
-TOKENDROP_TRACE_BRIDGE=<BRIDGE> "C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe" search -config "C:\\Users\\u\\.tokendrop\\tokendrop.toml" --stdin
+-- stdin command (posix)
+TOKENDROP_TRACE_BRIDGE=<BRIDGE> 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin

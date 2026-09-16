@@ -44,7 +44,6 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -212,10 +211,21 @@ func hookLineage(ops hookOps, hc hookContext, payload []byte, stdout io.Writer) 
 		return
 	}
 	command, isShell := p.ToolInput["command"].(string)
+	// Which shell will run this command is not a property of the host but of
+	// the TOOL: Claude Code runs the Bash tool through Git Bash and the
+	// PowerShell tool through PowerShell, and its payload names which one
+	// (#77, H-R5). A tool this client does not know gets no rewrite — the
+	// syntax of its shell is exactly what is not known.
+	bridgeShell := shellPOSIX
 	if isShell {
-		if !isSearchCommand(command) || strings.Contains(command, bridgeEnv+"=") {
+		if !isSearchCommand(command) {
 			return
 		}
+		sh, known := bridgeShellForTool(p.ToolName)
+		if !known {
+			return
+		}
+		bridgeShell = sh
 	} else if _, exists := p.ToolInput["trace_bridge"]; exists {
 		return // never overwrite a bridge that is somehow already there
 	}
@@ -265,7 +275,14 @@ func hookLineage(ops hookOps, hc hookContext, payload []byte, stdout io.Writer) 
 		updated[k] = v
 	}
 	if isShell {
-		updated["command"] = bridgeEnv + "=" + bridge + " " + command
+		// H-R4: every bridge assignment this can prove standalone is removed
+		// and ours is prepended; a command carrying one it cannot remove is
+		// left alone, and no lineage is claimed for it.
+		rewritten, ok := withTraceBridge(bridgeShell, bridge, command)
+		if !ok {
+			return
+		}
+		updated["command"] = rewritten
 	} else {
 		updated["trace_bridge"] = bridge
 	}

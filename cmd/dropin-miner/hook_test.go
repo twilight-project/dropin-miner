@@ -212,7 +212,11 @@ func TestHookLineageStaysSilentWhenItShould(t *testing.T) {
 		payload any
 	}{
 		{"someone else's command", map[string]any{"session_id": "s", "tool_input": map[string]any{"command": "ls -la"}}},
-		{"already bridged", map[string]any{"session_id": "s", "tool_input": map[string]any{"command": "TOKENDROP_TRACE_BRIDGE=abc dropin-miner search q"}}},
+		// A bridge already on the command is no longer a reason to stand down
+		// (H-R4) — it is removed and replaced. What does keep the hook silent
+		// is a tool whose shell this client does not know, because the syntax
+		// of the prefix is exactly what it cannot guess.
+		{"a tool this client does not know", map[string]any{"session_id": "s", "tool_name": "SomeOtherShell", "tool_input": map[string]any{"command": "dropin-miner search q"}}},
 		{"no session id", map[string]any{"tool_input": map[string]any{"command": "dropin-miner search q"}}},
 		{"no tool input", map[string]any{"session_id": "s"}},
 		{"not json", "garbage"},

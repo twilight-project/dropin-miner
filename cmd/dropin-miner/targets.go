@@ -385,7 +385,9 @@ func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
-	if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, claudeHooks(entry)) {
+	if spec, err := claudeHooksFor(t, entry, runtime.GOOS); err != nil {
+		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+	} else if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, spec) {
 		changed = true
 	}
 	if !changed {
@@ -526,7 +528,18 @@ func (cursorTarget) Shells(goos string) hostShells {
 	case "linux":
 		return hostShells{
 			tool: established("docs agent/terminal (commands run in your terminal; ~/.zshrc and ~/.bashrc guidance for Cursor sessions)", shellPOSIX),
-			hook: cellUnknown,
+			// Ruled, not observed, on the same grounds H-R5 ruled the tool
+			// cell: no host was run live on Linux, macOS's hook runner was
+			// proven POSIX live, PowerShell is not a Linux default and cmd
+			// does not exist there. Left unknown, a hook command — which has
+			// no v0.2.9 fallback, since one written for the wrong runner
+			// fails silently — would mean Cursor on Linux losing the hooks it
+			// has today, which is the regression H-R5 forbids.
+			hook: shellCell{
+				evidence: evidenceRuled,
+				shells:   []shellKind{shellPOSIX},
+				source:   "no live Linux run; macOS proven live (#61); PowerShell is not a Linux default and cmd does not exist there; ruled by the same argument as H-R5's tool cell",
+			},
 		}
 	case "windows":
 		return hostShells{
@@ -549,8 +562,17 @@ func (cursorTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
-	if planHooksMerge(ops, t.Label(), paths.cursorHooks, p, entry, cursorHooks(entry)) {
-		changed = true
+	spec, note, err := cursorHooksFor(t, entry, runtime.GOOS)
+	switch {
+	case err != nil:
+		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+	default:
+		if note != "" {
+			p.notes = append(p.notes, t.Label()+": "+note)
+		}
+		if planHooksMerge(ops, t.Label(), paths.cursorHooks, p, entry, spec) {
+			changed = true
+		}
 	}
 	if !changed {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
@@ -628,8 +650,7 @@ func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) 
 }
 
 func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
-	js := renderAgentScript(opencodePluginJS)
-	if !planWrite(ops, t.Label(), paths.opencodePlugin, []byte(js), 0o600, "lineage plugin", p) {
+	if !planAgentScript(ops, t, paths.opencodePlugin, opencodePluginJS, "lineage plugin", p) {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
@@ -688,7 +709,7 @@ func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
 func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
-	if planWrite(ops, t.Label(), paths.piExtension, []byte(renderAgentScript(piExtensionTS)), 0o600, "lineage extension", p) {
+	if planAgentScript(ops, t, paths.piExtension, piExtensionTS, "lineage extension", p) {
 		changed = true
 	}
 	if !changed {

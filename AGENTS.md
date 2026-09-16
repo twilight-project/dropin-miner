@@ -132,7 +132,17 @@ govulncheck.
     32 KiB history tail → envelope → 48 KiB envelope check → base64url. A source entry too large
     to scrub whole is omitted whole, never sliced, because a slice can cut a secret in half. Raw
     host history never enters a command line; hosts that expose less (Hermes) send less; the hook
-    fails open and exits 0 on any internal error.
+    fails open and exits 0 on any internal error. **The bridge that carries the envelope is written
+    in the syntax of the shell that will run the command** (`bridge.go`, mirrored in
+    `agent_trace_common.js` and pinned by `TestBridgeGuardsAgree`), taken from the host's
+    declaration — or, for Claude Code, from the tool its payload names, since that host runs two.
+    A POSIX prefix handed to PowerShell is looked up as a program name, which is how every traced
+    opencode search on Windows lost its lineage (#68). **Provenance (H-R4): only a bridge an adapter
+    wrote for this call may carry that adapter's harness** — it removes every assignment it can
+    prove standalone in a declared shell's syntax and writes its own, and leaves a command carrying
+    one it cannot remove exactly as it found it. The trace is unauthenticated metadata either way:
+    the binary cannot prove where an environment variable came from, and nothing treats a harness
+    value as evidence of origin.
 17. **Verified replacement and explicit destruction.** `dropin-miner upgrade` fetches only from the
     compiled-in canonical `twilight-project/dropin-miner` GitHub release origin — the one exception
     to invariant 5 — over HTTPS, with no participant credential, following only its bounded GitHub

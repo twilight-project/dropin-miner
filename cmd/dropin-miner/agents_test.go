@@ -168,7 +168,11 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("existing PreToolUse group not preserved first: %v", pre)
 	}
 	ours := pre[1].(map[string]any)
-	if ours["matcher"] != "Bash" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `tokendrop.toml" lineage`) {
+	// The matcher covers both shell tools from H3 on (#77): a search the model
+	// sends through Claude Code's PowerShell tool reaches this hook too. The
+	// value is written out rather than compared with the constant — a test
+	// that reads the constant agrees with whatever the constant becomes.
+	if ours["matcher"] != "Bash|PowerShell" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `tokendrop.toml' lineage`) {
 		t.Errorf("our PreToolUse group: %v", ours)
 	}
 	for _, ev := range []string{"SessionStart", "PreCompact", "PostCompact", "Stop"} {
