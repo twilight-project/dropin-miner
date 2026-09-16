@@ -60,6 +60,10 @@ type setupSandbox struct {
 	// case can make one of them fail.
 	move     func(from, to string) error
 	restrict func(path string, dir bool) error
+	// agentPlanObserver, when set, is threaded through to setupDeps: a case
+	// wanting the plan agentsStep actually built sets this before calling
+	// run.
+	agentPlanObserver func(agentPlan)
 }
 
 func newSetupSandbox(t *testing.T) *setupSandbox {
@@ -135,10 +139,11 @@ func (s *setupSandbox) deps(stdin io.Reader, stdout, stderr io.Writer, interacti
 			s.connectCalls++
 			return connectAdmitted(args, stdin, stdout, stderr, getenv)
 		},
-		userEnv:  s.userEnv,
-		now:      fixedSetupClock,
-		move:     s.move,
-		restrict: s.restrict,
+		userEnv:           s.userEnv,
+		now:               fixedSetupClock,
+		move:              s.move,
+		restrict:          s.restrict,
+		agentPlanObserver: s.agentPlanObserver,
 	}
 }
 
@@ -1626,56 +1631,9 @@ func TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts(t *testing.T) {
 	}
 }
 
-// contentFixtureValues is one setupValues used throughout the content
-// parity test: a fixed https AS/router/platform so renderFreshConfig and
-// planSetupConfig always produce a config that parses and validates,
-// without needing a real server behind any of the URLs (nothing here
-// dials one — only the URL's scheme and host shape are ever checked).
-func contentFixtureValues(home string) setupValues {
-	return setupValues{
-		home:         home,
-		router:       "https://router.example.invalid",
-		platformURL:  config.DefaultPlatformBaseURL,
-		agentsAPIURL: config.DefaultAgentsAPIURL,
-		asURL:        "https://as.example.invalid",
-		chainID:      "twilight-1",
-		slotID:       7,
-	}
-}
-
-// hostPlans computes buildInstallPlan's writes for id twice, from a single
-// real config file at cfgPath (codexSandboxRoots' own loadConfig always
-// reads the real filesystem, never a fake ops): once as a dry run would —
-// entry.rendered set to renderedDry when non-nil, read from whatever is on
-// cfgPath at that moment otherwise — and once as the real run would, from
-// cfgPath alone, after publish (if given) has replaced its bytes. Calling
-// buildInstallPlan captures each plan's writes immediately, so the two
-// calls seeing cfgPath in different states across the publish step is the
-// point, not a race: it reproduces a dry run reading the file before
-// setup ever writes to it, against the real run reading it after.
-func hostPlans(t *testing.T, id, cfgPath string, renderedDry *config.Config, publish []byte) (dryPlan, realPlan agentPlan) {
-	t.Helper()
-	surface, ok := surfaceByID(id)
-	if !ok {
-		t.Fatalf("no target for %q", id)
-	}
-	_, ops := newFakeMachine()
-	paths := ops.paths(noEnv)
-	entry := binEntry{command: goldenBin, cfg: cfgPath, rendered: renderedDry}
-	dryPlan = buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
-	if publish != nil {
-		if err := os.WriteFile(cfgPath, publish, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	entry.rendered = nil
-	realPlan = buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
-	return dryPlan, realPlan
-}
-
-// assertSameWriteContent is TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes'
-// literal assertion: the set of paths written and the bytes written to
-// each must be identical between the two plans.
+// assertSameWriteContent is the content parity test's literal assertion:
+// the set of paths written and the bytes written to each must be identical
+// between the two plans.
 func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
 	t.Helper()
 	dryContents := map[string][]byte{}
@@ -1703,6 +1661,62 @@ func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
 	}
 }
 
+// normalizeAgentPlanRoots replaces every occurrence of root — a sandbox's
+// own temp-directory root, embedded in every path a plan names and in
+// every rendered command line a skill or a Codex sandbox block carries —
+// with one fixed placeholder. Two plans captured from two different
+// sandboxes never share the same root, so without this every path and
+// every rendered command would differ for a reason that has nothing to do
+// with behavior.
+func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
+	repl := func(s string) string { return strings.ReplaceAll(s, root, "<ROOT>") }
+	replBytes := func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), root, "<ROOT>")) }
+	out := agentPlan{skipped: p.skipped, refused: p.refused}
+	for _, w := range p.writes {
+		out.writes = append(out.writes, agentWrite{
+			surface:  w.surface,
+			path:     repl(w.path),
+			contents: replBytes(w.contents),
+			mode:     w.mode,
+			why:      w.why,
+		})
+	}
+	for _, r := range p.removes {
+		out.removes = append(out.removes, repl(r))
+	}
+	for _, n := range p.notes {
+		out.notes = append(out.notes, repl(n))
+	}
+	return out
+}
+
+// agentObservedPlan drives setup -with id (optionally -dry-run) against a
+// fresh sandbox seeded for outcome, and returns the plan agentsStep itself
+// built — captured through setupDeps' agentPlanObserver seam, not a plan
+// the test computed on its own — along with the sandbox that produced it
+// (its root is what normalizeAgentPlanRoots needs).
+func agentObservedPlan(t *testing.T, id string, dry bool, outcome configFixtureOutcome) (agentPlan, *setupSandbox) {
+	t.Helper()
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	seedConfigFixture(t, s, outcome)
+	var captured agentPlan
+	observed := false
+	s.agentPlanObserver = func(p agentPlan) { captured = p; observed = true }
+	args := []string{"-with", id}
+	if dry {
+		args = append(args, "-dry-run")
+	}
+	code, out, errOut := s.run(nil, false, args...)
+	if code != exitOK {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v): exit %d\n%s%s", id, dry, outcome, code, out, errOut)
+	}
+	if !observed {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) never reached agentsStep's plan", id, dry, outcome)
+	}
+	return captured, s
+}
+
 // TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes is
 // D.2 (#59)'s content half: the path-set test above can agree on WHICH
 // paths a dry run and the real run write while still disagreeing on WHAT
@@ -1710,65 +1724,37 @@ func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
 // wrong number of Codex sandbox roots (Miner.Enabled reads false until
 // [miner] actually lands, even though finishMiner already derives
 // intake_dir/sessions_dir from the state dir before checking it) changes
-// the Codex config.toml content, not its existence. For every host and
-// all three outcomes, the bytes buildInstallPlan plans for each write from
-// a dry run's would-be config equal the bytes it plans from what the real
-// run leaves on disk at that same point.
+// the Codex config.toml content, not its existence. For every host and all
+// three outcomes, this drives the setup CLI itself — once with -dry-run,
+// once without — against two independent sandboxes, capturing each run's
+// actual agentsStep plan through the observer seam (setupDeps.
+// agentPlanObserver), and asserts every planned write's bytes are
+// identical once both sandboxes' own temp-directory roots are normalized
+// to the same placeholder. Driving the CLI, not buildInstallPlan directly,
+// is the point: a version of this test that built its own entry and called
+// buildInstallPlan itself passed even when agentsStep's own wiring of
+// entry.rendered was mutated away, because it never exercised that wiring
+// at all.
 func TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes(t *testing.T) {
 	requireGoldenSequence(t)
+	cases := []struct {
+		name    string
+		outcome configFixtureOutcome
+	}{
+		{"fresh", fixtureConfigFresh},
+		{"existing", fixtureConfigLeft},
+		{"migrated", fixtureConfigMigrated},
+	}
 	for _, id := range goldenHostIDs {
-		t.Run("fresh/"+id, func(t *testing.T) {
-			home := filepath.ToSlash(t.TempDir())
-			cfgPath := home + "/tokendrop.toml"
-			data, err := renderFreshConfig(contentFixtureValues(home))
-			if err != nil {
-				t.Fatal(err)
-			}
-			rendered, err := config.LoadBytes(data, noEnv)
-			if err != nil {
-				t.Fatalf("LoadBytes: %v", err)
-			}
-			dry, real := hostPlans(t, id, cfgPath, rendered, data)
-			assertSameWriteContent(t, id, dry, real)
-		})
-		t.Run("existing/"+id, func(t *testing.T) {
-			home := filepath.ToSlash(t.TempDir())
-			cfgPath := home + "/tokendrop.toml"
-			data, err := renderFreshConfig(contentFixtureValues(home))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			// configLeft never renders anything in memory: both plans read
-			// the same, already-final bytes off disk.
-			dry, real := hostPlans(t, id, cfgPath, nil, nil)
-			assertSameWriteContent(t, id, dry, real)
-		})
-		t.Run("migrated/"+id, func(t *testing.T) {
-			home := filepath.ToSlash(t.TempDir())
-			cfgPath := home + "/tokendrop.toml"
-			v := contentFixtureValues(home)
-			proxy := []byte("[mining]\nas_url = " + mustTOML(t, v.asURL) + "\nchain_id = " + mustTOML(t, v.chainID) +
-				"\nslot_id = 7\nstate_dir = " + mustTOML(t, home+"/state") + "\n")
-			if err := os.WriteFile(cfgPath, proxy, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			plan, err := planSetupConfig(cfgPath, proxy, v, validateConfigSyntax)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plan.outcome != configMigrated {
-				t.Fatalf("fixture outcome = %v, want configMigrated", plan.outcome)
-			}
-			rendered, err := config.LoadBytes(plan.data, noEnv)
-			if err != nil {
-				t.Fatalf("LoadBytes: %v", err)
-			}
-			dry, real := hostPlans(t, id, cfgPath, rendered, plan.data)
-			assertSameWriteContent(t, id, dry, real)
-		})
+		for _, tc := range cases {
+			t.Run(tc.name+"/"+id, func(t *testing.T) {
+				dryPlan, dryS := agentObservedPlan(t, id, true, tc.outcome)
+				realPlan, realS := agentObservedPlan(t, id, false, tc.outcome)
+				assertSameWriteContent(t, id,
+					normalizeAgentPlanRoots(dryPlan, dryS.root),
+					normalizeAgentPlanRoots(realPlan, realS.root))
+			})
+		}
 	}
 }
 

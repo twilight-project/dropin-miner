@@ -81,6 +81,13 @@ type setupDeps struct {
 	// fsx.MoveFileDurable and restrictToOwner. Tests inject failures here.
 	move     func(from, to string) error
 	restrict func(path string, dir bool) error
+	// agentPlanObserver, when non-nil, is called with the plan agentsStep
+	// builds — after buildInstallPlan, before anything is printed or
+	// committed — so a test can inspect exactly what production code
+	// planned, for a dry run and a real run alike, without buildInstallPlan
+	// ever needing to be called a second time by the test itself. nil in
+	// production; production behavior is unchanged either way.
+	agentPlanObserver func(agentPlan)
 }
 
 func (d setupDeps) restrictFn() func(string, bool) error {

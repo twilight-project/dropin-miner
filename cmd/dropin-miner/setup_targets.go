@@ -112,6 +112,9 @@ func (r *setupRun) agentsStep() {
 		}
 	}
 	plan := buildInstallPlan(ops, paths, selected, entry, r.d.getenv)
+	if r.d.agentPlanObserver != nil {
+		r.d.agentPlanObserver(plan)
+	}
 	if r.explicitTargets {
 		r.printf("Setting up (named with -with): %s\n", strings.Join(labels(selected), ", "))
 	} else {
