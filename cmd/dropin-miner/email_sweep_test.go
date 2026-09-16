@@ -12,11 +12,17 @@ package main
 // email-shaped literal whose domain is not one of those RFC 2606 reserves
 // for exactly this purpose.
 //
-// Splitting the address across "+" ("quasarai" + "@" + "protonmail.com")
-// was precisely what let the original literal sit here for weeks without a
-// plain-text scanner catching it — this sweep folds Go constant string
-// concatenation the way the compiler does before it checks anything, so
-// that trick no longer hides a reintroduced address from it either.
+// Splitting the address across "+" was precisely what let the original
+// literal sit here for weeks without a plain-text scanner catching it —
+// this sweep folds Go constant string concatenation the way the compiler
+// does before it checks anything, so that trick no longer hides a
+// reintroduced address from it either. A second, separate check below
+// scans every file's raw bytes for the maintainer's domain and username as
+// plain substrings, catching the one place the literal-folding check
+// cannot reach at all: a comment or doc sentence that just spells the
+// address out in prose, the way an early draft of this very file once did.
+// (Neither the domain nor the username is repeated anywhere in this file,
+// including this comment, for the same reason.)
 
 import (
 	"go/ast"
@@ -26,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,8 +86,8 @@ func findEmailLiterals(text string) []string {
 
 // foldConstString evaluates a Go constant string expression — one literal,
 // or several joined by "+" — the same evaluation the compiler performs, so
-// that "quasarai" + "@" + "protonmail.com" folds to the address it spells
-// before this sweep ever checks it.
+// that an address split across several literals folds to the value it
+// spells before this sweep ever checks it.
 func foldConstString(expr ast.Expr) (string, bool) {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
@@ -120,6 +127,14 @@ func foldConstString(expr ast.Expr) (string, bool) {
 func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
+
+	// selfPath is this very file: the one place the banned-substring check
+	// below must not run, since the denylist necessarily names what it
+	// denies.
+	_, selfPath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller could not resolve this test's own file")
+	}
 
 	report := func(t *testing.T, path, email string) {
 		t.Helper()
@@ -166,6 +181,36 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 		}
 	}
 
+	// bannedSubstrings must never appear anywhere in this scope, in any
+	// context — literal, concatenated, or prose in a comment or doc. This
+	// is a raw byte scan, not an AST walk: it is what actually would have
+	// caught this file's own first draft, which spelled the address out
+	// in an explanatory comment rather than as a test value — the blind
+	// spot the literal-and-comment-folding check above structurally
+	// cannot close on its own, since a comment is prose, not a constant
+	// expression to fold.
+	bannedSubstrings := []string{"protonmail.com", "quasarai"}
+	checkNoBannedSubstring := func(t *testing.T, path string) {
+		t.Helper()
+		if abs, err := filepath.Abs(path); err == nil && abs == selfPath {
+			return
+		}
+		data, err := os.ReadFile(path) // #nosec G304 -- test-owned repo file under moduleRoot
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lower := strings.ToLower(string(data))
+		for _, banned := range bannedSubstrings {
+			if strings.Contains(lower, banned) {
+				rel, rerr := filepath.Rel(root, path)
+				if rerr != nil {
+					rel = path
+				}
+				t.Errorf("%s: contains %q — the maintainer's own address must never appear here, not even in a comment", rel, banned)
+			}
+		}
+	}
+
 	sep := string(filepath.Separator)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -178,6 +223,7 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 			}
 			return nil
 		}
+		checkNoBannedSubstring(t, path)
 		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			return rerr
