@@ -1669,8 +1669,23 @@ func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
 // every rendered command would differ for a reason that has nothing to do
 // with behavior.
 func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
-	repl := func(s string) string { return strings.ReplaceAll(s, root, "<ROOT>") }
-	replBytes := func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), root, "<ROOT>")) }
+	// A path a plan names is the raw root; a path a plan RENDERS — into a
+	// skill's search command, a Codex sandbox's writable_roots, a Cursor
+	// hooks.json command — is TOML-, Go %q- or JSON-escaped, and all three
+	// escape a backslash the same way: doubled. On Windows that means the
+	// raw root's own backslashes never occur as a contiguous run inside
+	// rendered content at all (TestAgentsHookAndAllowRuleMatchingSurvivesA
+	// WindowsStyleBinaryPath is this same defect, guarded elsewhere); the
+	// escaped form must be replaced first, or its already-doubled
+	// backslashes would otherwise partly match the plain root's replacement
+	// and leave the rest behind. A no-op on every other OS, where root has
+	// no backslash to double.
+	escapedRoot := strings.ReplaceAll(root, `\`, `\\`)
+	repl := func(s string) string {
+		s = strings.ReplaceAll(s, escapedRoot, "<ROOT>")
+		return strings.ReplaceAll(s, root, "<ROOT>")
+	}
+	replBytes := func(b []byte) []byte { return []byte(repl(string(b))) }
 	out := agentPlan{skipped: p.skipped, refused: p.refused}
 	for _, w := range p.writes {
 		out.writes = append(out.writes, agentWrite{
@@ -1688,6 +1703,36 @@ func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
 		out.notes = append(out.notes, repl(n))
 	}
 	return out
+}
+
+// TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping guards
+// normalizeAgentPlanRoots against the exact defect
+// TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath guards
+// elsewhere: a root's backslashes never occur as a contiguous run inside
+// content that quoted it (Go %q, TOML, JSON all double a backslash), so a
+// replacement that only tries the raw root leaves rendered content
+// untouched on Windows — a synthetic Windows-style root here, not an
+// actual Windows path, so this runs on every OS the test matrix does.
+func TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping(t *testing.T) {
+	root := `C:\Users\runner\AppData\Local\Temp\TestName123`
+	plan := agentPlan{writes: []agentWrite{{
+		surface: "Codex",
+		path:    root + `\user\.codex\config.toml`,
+		contents: []byte(`writable_roots = ["` + strings.ReplaceAll(root, `\`, `\\`) + `\\user\\.tokendrop\\state"]` + "\n" +
+			`command = "` + strings.ReplaceAll(root, `\`, `\\`) + `\\bin\\dropin-miner"` + "\n"),
+	}}}
+	got := normalizeAgentPlanRoots(plan, root)
+	w := got.writes[0]
+	if strings.Contains(w.path, root) {
+		t.Errorf("path still carries the raw root: %s", w.path)
+	}
+	content := string(w.contents)
+	if strings.Contains(content, root) || strings.Contains(content, strings.ReplaceAll(root, `\`, `\\`)) {
+		t.Errorf("content still carries the root, raw or escaped:\n%s", content)
+	}
+	if !strings.Contains(w.path, "<ROOT>") || strings.Count(content, "<ROOT>") != 2 {
+		t.Errorf("expected one <ROOT> in the path and two in the content:\npath: %s\ncontent: %s", w.path, content)
+	}
 }
 
 // agentObservedPlan drives setup -with id (optionally -dry-run) against a
