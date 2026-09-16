@@ -31,14 +31,16 @@ below still applies first.
 - **Every host is taught the command its own shell can run.** The skill's
   search command is now rendered per host and per OS: a quoted heredoc
   where the host runs Bash (macOS, Linux, Git Bash), and on Windows a
-  single-quoted here-string piped into the call — for Cursor, opencode and
-  Claude Code's PowerShell tool — with the line that keeps a non-ASCII
-  query intact on Windows PowerShell 5.1. Claude Code on Windows is taught
-  both forms, since a model can call either its Bash tool or its
-  PowerShell tool. The binary tolerates one leading byte-order mark on
-  `search --stdin` and on hook input. Codex on Windows keeps the Bash form
-  for now — its own shell there is not yet established, and the install
-  plan says so rather than guessing.
+  single-quoted here-string piped into the call — for Cursor, opencode,
+  Codex and Claude Code's PowerShell tool — with the line that keeps a
+  non-ASCII query intact on Windows PowerShell 5.1. Claude Code on Windows
+  is taught both forms, since a model can call either its Bash tool or its
+  PowerShell tool. Codex on Windows is taught the PowerShell form too: a
+  live run showed it runs PowerShell under a PowerShell-fenced skill and
+  reaches for the WSL bash launcher, which fails, under a Bash-fenced one
+  — the shell every host actually runs is now established, on every OS.
+  The binary tolerates one leading byte-order mark on `search --stdin` and
+  on hook input.
 
 - **Cursor auto-allows exactly the search its skill teaches, and lineage
   follows it.** The shell hook now recognizes exactly the rendered command
