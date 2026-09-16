@@ -144,7 +144,7 @@ transmission. Mining/AS receives metadata observations only.
 |---|---|---|---|
 | Claude Code | skill | full: PreToolUse on Bash rewrites the command; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and two `permissions.allow` rules — the quoted and the bare spelling of the same search command — in `~/.claude/settings.json` |
 | Cursor | skill | full: lineage file from sessionStart, shell, thought, response, compaction and stop hooks | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
-| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory |
+| Codex | skill | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory. A command inside the sandbox can read `credentials.json` (a search needs the key) and the state directory (a flush needs it); on Windows it cannot read the wallet, whose directory keeps its own owner-only access |
 | opencode | AGENTS.md line | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | Pi | skill | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
 | Hermes | skill | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
@@ -277,6 +277,23 @@ as `0600`. A search takes its key from `TOKENDROP_API_KEY` if set, else that
 file (refused if it is a symlink or readable by others). Otherwise, run
 `dropin-miner connect` or `dropin-miner login` to set up a search credential.
 
+The wallet is the one part of an installation that neither a search nor a
+flush reads, so on Windows it is kept owner-only even when another program
+adds inherited access to the installation directory: the wallet directory and
+every file in it carry their own owner-only access list, set when the wallet is
+created and on every write. `setup` repairs a wallet an earlier version made,
+the directory and each file in it, and stops on a wallet object it cannot
+secure (a link or junction inside the directory, say); `doctor` reports anyone
+else who can read it. A coding agent's sandboxed commands can therefore still
+use `credentials.json` and the state directory, which a search and a flush
+need, and not the wallet. On macOS and Linux a sandboxed agent runs as you, and
+file modes cannot tell it apart from you: there the wallet file is readable to
+it, and the key inside stays sealed by its passphrase. That makes the passphrase
+the thing protecting it, so give it one you use nowhere else, and keep the 24
+words off the machine: anyone who can read the file can copy it and try
+passphrases against that copy for as long as they like, on their own hardware,
+with nothing to slow them down and nothing to tell you it is happening.
+
 `wallet send` journals the transaction (`wallet/pending_tx.json`) before it
 broadcasts, so a lost node response is resolvable rather than guessed at: a
 transport failure after broadcast prints **"outcome unknown"** and a
@@ -405,7 +422,10 @@ stopping mining retains earlier capture/flush diagnostics as previous
 unresolved degradation.
 
 `doctor` reports seven checks, in this order: authorization server, enrolled,
-joined this epoch, payout address, earning, intake writable, and recording.
+joined this epoch, payout address, earning, intake writable, and recording. On
+Windows an eighth follows, wallet access: `NO` when anyone other than you can
+read the installation's wallet directory or a file in it, naming who, with
+`dropin-miner setup` as the repair.
 `NO` is a fact and a successful run; `UNKNOWN` is the absence of one. The exit
 status reports whether the diagnosis could be made at all, so it is non-zero
 only when every check came back UNKNOWN.

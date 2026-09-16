@@ -472,6 +472,15 @@ func (a *adoption) custody(t *bundleTxn) error {
 	if err := t.move(src, dst); err != nil {
 		return t.fail("wallet", err)
 	}
+	// A move keeps each object's access list as it was at the source, entries
+	// inherited there included, and restricting the directory does not remove
+	// an entry a file already carries: the whole tree is secured, and a wallet
+	// object that cannot be is a failed wallet stage (wallet_acl.go).
+	if !a.dry {
+		if _, err := secureWalletTree(dst, a.restrict); err != nil {
+			return t.fail("wallet", err)
+		}
+	}
 	a.say("adopted the wallet")
 	return nil
 }

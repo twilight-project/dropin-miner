@@ -111,6 +111,8 @@ func defaultWalletDir() (string, error) {
 
 // openWalletDir creates (0700) and validates the wallet directory with
 // the same posture as the auth store: no symlink, no group/world access.
+// A directory it creates gets its own owner-only access list on Windows
+// (wallet_acl.go); an existing one is setup's to repair.
 func openWalletDir(dir string, getenv func(string) string) (string, error) {
 	if dir == "" {
 		dir = getenv(walletDirEnv)
@@ -121,6 +123,8 @@ func openWalletDir(dir string, getenv func(string) string) (string, error) {
 			return "", err
 		}
 	}
+	_, statErr := os.Lstat(dir)
+	creating := errors.Is(statErr, fs.ErrNotExist)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("wallet: create dir: %w", err)
 	}
@@ -136,6 +140,11 @@ func openWalletDir(dir string, getenv func(string) string) (string, error) {
 	}
 	if posixModes && info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("wallet: dir is group/world-accessible (%04o); refusing", info.Mode().Perm())
+	}
+	if creating {
+		if err := protectWalletDir(dir); err != nil {
+			return "", fmt.Errorf("wallet: restrict the new dir to its owner: %w", err)
+		}
 	}
 	return dir, nil
 }
@@ -154,13 +163,23 @@ var writeWalletAtomic = fsx.WriteFileAtomic
 // platform-aware ErrDirectorySyncUnsupported classification for Windows,
 // where publication is already write-through. What is written, where, and
 // under which mode is unchanged.
+//
+// On Windows the directory's owner-only access list is set before the write,
+// because the temporary file inherits whatever the directory holds at that
+// moment, and the published file then gets its own (wallet_acl.go).
 func writeWalletFile(dir, name string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
+	if err := protectWalletDir(dir); err != nil {
+		return fmt.Errorf("wallet: write %s: restrict the wallet directory to its owner: %w", name, err)
+	}
 	if err := writeWalletAtomic(dir, name, data, 0o600); err != nil {
 		return fmt.Errorf("wallet: write %s: %w", name, err)
+	}
+	if err := protectWalletFile(filepath.Join(dir, name)); err != nil {
+		return fmt.Errorf("wallet: write %s: restrict it to its owner: %w", name, err)
 	}
 	return nil
 }

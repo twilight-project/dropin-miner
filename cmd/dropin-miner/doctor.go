@@ -172,6 +172,11 @@ type doctorFacts struct {
 	QuarantineCount int
 	SpoolErr        error
 
+	// Wallet is who can read the installation's wallet, where the platform
+	// has access lists to ask (wallet_acl.go); elsewhere it is not checked and
+	// there is no wallet access check.
+	Wallet walletAccessFacts
+
 	// Now is sampled once, by the gatherer. Nothing downstream calls
 	// time.Now(), so a judgment over these facts is reproducible.
 	Now time.Time
@@ -182,7 +187,7 @@ type doctorFacts struct {
 // It is pure — including of the clock, which arrives as f.Now — and it is
 // where every wording rule lives.
 func assembleDoctor(f doctorFacts) []doctorCheck {
-	return []doctorCheck{
+	checks := []doctorCheck{
 		doctorASCheck(f),
 		doctorEnrolledCheck(f),
 		doctorJoinedCheck(f),
@@ -191,6 +196,10 @@ func assembleDoctor(f doctorFacts) []doctorCheck {
 		doctorIntakeCheck(f),
 		doctorRecordingCheck(f),
 	}
+	if f.Wallet.Checked {
+		checks = append(checks, doctorWalletCheck(f.Wallet))
+	}
+	return checks
 }
 
 func doctorASCheck(f doctorFacts) doctorCheck {
@@ -461,6 +470,9 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	f.ASConfigKnown = true
 	f.ConfigSource = src
 	f.StateDir = cfg.Mining.StateDir
+	if walletACL.managed {
+		f.Wallet = inspectWalletAccess(doctorWalletDir(src, os.Getenv))
+	}
 	checks := assembleDoctor(f)
 	if *asJSON {
 		code := doctorExit(checks)
@@ -469,6 +481,25 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	printDoctor(stdout, checks, f)
 	return doctorExit(checks)
+}
+
+// doctorWalletDir is the wallet setup looks after, and so the one whose repair
+// is `dropin-miner setup`: the wallet directory of the installation. That is the
+// loaded config's directory when the config is an installation's
+// tokendrop.toml, and otherwise the installation uninstall and upgrade resolve.
+func doctorWalletDir(cfgSource string, getenv func(string) string) string {
+	if cfgSource != "" && filepath.Base(cfgSource) == setupConfigFile {
+		if abs, err := filepath.Abs(cfgSource); err == nil {
+			return filepath.Join(filepath.Dir(abs), "wallet")
+		}
+	}
+	userHome, _ := os.UserHomeDir()
+	exe, _ := os.Executable()
+	home, err := resolveInstallationHome("", getenv, userHome, exe)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "wallet")
 }
 
 // doctorExit decides the process status.
