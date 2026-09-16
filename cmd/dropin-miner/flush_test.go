@@ -280,6 +280,96 @@ func TestSuccessfulCurrentTargetClearsOnlyTargetResolutionHealth(t *testing.T) {
 	}
 }
 
+// TestSuccessfulJoinClearsAStaleAuthUnavailableHealthRecord is #62: a
+// flush run before enrollment finished recorded auth_state_unavailable;
+// a later flush obtains authorization and joins, with nothing queued to
+// deliver, and the stale record must not survive it.
+func TestSuccessfulJoinClearsAStaleAuthUnavailableHealthRecord(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable = 1042, true })
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, "no refresh authorization is available"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	rep, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	if rep.Delivered != 0 {
+		t.Fatalf("fixture delivered %d observation(s), want 0 (nothing queued)", rep.Delivered)
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || ok {
+		t.Fatalf("stale auth_state_unavailable health survived a successful join with nothing to deliver: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestAFlushThatFindsItselfAlreadyJoinedAlsoClearsStaleAuthHealth covers
+// the "or finds itself joined" half of #62: the epoch is already held
+// (join_status ALREADY_ACCEPTED, joinable false), so this flush never
+// calls JoinEpoch, only confirms it and takes a capability.
+func TestAFlushThatFindsItselfAlreadyJoinedAlsoClearsStaleAuthHealth(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable, s.joinStatus = 1042, false, auth.JoinAlreadyAccepted })
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthAuthUnavailable, "no refresh authorization is available"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	if _, ok, err := store.LoadHealth(auth.HealthFlush); err != nil || ok {
+		t.Fatalf("stale auth_state_unavailable health survived a flush that found itself already joined: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestSuccessfulJoinDoesNotClearAnUnrelatedSubmissionFailure is the
+// negative case the mutation table pins: a join succeeding must not
+// launder an unrelated delivery failure, whose own recovery rule
+// (updateFlushDeliveryHealth) requires an actual accepted delivery.
+func TestSuccessfulJoinDoesNotClearAnUnrelatedSubmissionFailure(t *testing.T) {
+	as := newFakeAS(t)
+	as.set(func(s *asState) { s.epoch, s.joinable = 1042, true })
+	f := newFlushFixture(t, as)
+	store, err := auth.OpenStoreExisting(f.cfg.Mining.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const detail = "observation delivery failed: provider rejected the submission"
+	if err := store.MarkHealth(auth.HealthFlush, auth.HealthSubmissionFailed, detail); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	if _, code := runFlush(ctx, f.cfg, f.cfgPath, true, &stdout, &stderr); code != exitOK {
+		t.Fatalf("runFlush exit %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	record, ok, err := store.LoadHealth(auth.HealthFlush)
+	if err != nil || !ok {
+		t.Fatalf("unrelated submission_failed health was cleared by a successful join: ok=%v err=%v", ok, err)
+	}
+	if record.Component != auth.HealthFlush || record.Reason != auth.HealthSubmissionFailed || record.Detail != detail {
+		t.Fatalf("unrelated submission health changed: %+v, want flush/submission_failed/%q", record, detail)
+	}
+}
+
 func TestSuccessfulCurrentTargetDoesNotClearUnrelatedSubmissionFailure(t *testing.T) {
 	as := newFakeAS(t)
 	as.set(func(s *asState) { s.epoch, s.joinable = 1042, false })

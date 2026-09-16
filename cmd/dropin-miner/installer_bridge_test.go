@@ -274,7 +274,7 @@ func TestInstallShHandsOffToSetupWhenTheBinaryHasIt(t *testing.T) {
 	if err != nil || strings.Contains(string(cfg), "# the GATEWAY") {
 		t.Fatalf("setup did not write the config (or setup.sh did): %v\n%s", err, cfg)
 	}
-	if !strings.Contains(out, "Setup complete.") || !strings.Contains(out, "(looked for:") && !strings.Contains(out, "Not an interactive shell — not touching any agent") {
+	if !strings.Contains(out, "Setup complete") || !strings.Contains(out, "(looked for:") && !strings.Contains(out, "Not an interactive shell — not touching any agent") {
 		t.Errorf("setup's own narration missing:\n%s", out)
 	}
 	if reg, _, _ := platform.counts(); reg != 1 {

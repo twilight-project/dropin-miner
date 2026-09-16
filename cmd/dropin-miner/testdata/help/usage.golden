@@ -31,8 +31,10 @@ before the claim; mining (if granted) enrolls and declares a payout
 unattended once claimed.
   setup      the installers run this: everything after the binary, asked as
              it goes — reuse a previous installation, write or migrate the
-             config, connect, the shell profile (Windows: the user PATH and
-             TOKENDROP_CONFIG) and the coding agents found here.
+             config, connect, the shell profile (PATH, TOKENDROP_CONFIG and,
+             when a wallet was made here, TOKENDROP_WALLET_DIR; Windows: the
+             user PATH and TOKENDROP_CONFIG only) and the coding agents
+             found here.
              -yes answers the profile and agents questions, terminal or not
              -yes may come from automated callers; the installers never add it
              -yes never answers the mining question or adopts without a terminal

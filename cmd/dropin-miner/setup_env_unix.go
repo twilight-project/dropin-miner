@@ -71,6 +71,7 @@ func (r *setupRun) environmentStep() {
 	}
 	if r.noProfile {
 		r.printf("Left your shell profile alone (-no-profile).\n")
+		r.skip("shell profile")
 		return
 	}
 	target, existing, mode, err := profileTarget(candidate)
@@ -95,6 +96,7 @@ func (r *setupRun) environmentStep() {
 	}
 	if !r.d.interactive && !r.yes {
 		r.printf("Not an interactive shell — not touching %s (pass -yes to add them).\n", candidate)
+		r.skip("shell profile")
 		return
 	}
 	if !r.ask("Add them to " + tilde(r.d.userHome, candidate) + "?") {
