@@ -138,6 +138,13 @@ type setupRun struct {
 	changed       bool   // setup wrote or moved something it owns
 	shortCommands bool   // the profile or user environment carries PATH and TOKENDROP_CONFIG
 
+	// configWasFresh is set by config() when the run rendered a brand new
+	// config (configFresh) rather than finding one already valid or
+	// migrating one — agentsStep() needs it: on a dry run, config() prints
+	// what it would write but never calls publishSetupConfig, so nothing
+	// is on disk yet for the agents step's own config read to find.
+	configWasFresh bool
+
 	lineIn io.Reader
 }
 
@@ -538,6 +545,7 @@ func (r *setupRun) config() int {
 		r.say("Config already has a [miner] block: " + r.cfgPath + " (left as is)")
 		return exitOK
 	case configFresh:
+		r.configWasFresh = true
 		if r.dry {
 			r.printf("(dry run) would write %s\n", r.cfgPath)
 			return exitOK

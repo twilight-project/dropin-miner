@@ -1494,6 +1494,102 @@ func TestSetupNoAgentsWithCodexInstallsExactlyCodex(t *testing.T) {
 	assertOwnership(t, before, snapshotTree(t, s.root), append([]string{s.home}, targetOwnedPaths(paths, "codex")...)...)
 }
 
+// ── D2 (#59): a dry run's agent plan matches the real run's ─────────────
+
+// agentPlanWriteLines drives setup -with id, with or without -dry-run and
+// with or without a config already on disk, and returns the set of paths
+// printPlan listed under "write": the exact text both a dry run and the
+// real run print for the plan, before the real run goes on to commit it.
+// Comparing this set between the two, for a fresh installation and for one
+// where the config already exists, is the literal test D.2 (#59) asks for.
+func agentPlanWriteLines(t *testing.T, id string, dry, preExisting bool) map[string]bool {
+	t.Helper()
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	if preExisting {
+		v, err := resolveSetupValues(s.home, s.getenv, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := renderFreshConfig(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(s.home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(s.cfgPath(), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"-with", id}
+	if dry {
+		args = append(args, "-dry-run")
+	}
+	code, out, errOut := s.run(nil, false, args...)
+	if code != exitOK {
+		t.Fatalf("setup -with %s (dry=%v preExisting=%v): exit %d\n%s%s", id, dry, preExisting, code, out, errOut)
+	}
+	const prefix = "    write  "
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := line[len(prefix):]
+		i := strings.Index(rest, "  (")
+		if i < 0 {
+			t.Fatalf("write line has no trailing (why): %q", line)
+		}
+		set[rest[:i]] = true
+	}
+	if len(set) == 0 {
+		t.Fatalf("setup -with %s (dry=%v preExisting=%v) planned no writes:\n%s", id, dry, preExisting, out)
+	}
+	return set
+}
+
+func assertSameStringSet(t *testing.T, label string, dry, real map[string]bool) {
+	t.Helper()
+	for p := range dry {
+		if !real[p] {
+			t.Errorf("%s: dry run listed %s, the real run never wrote it", label, p)
+		}
+	}
+	for p := range real {
+		if !dry[p] {
+			t.Errorf("%s: the real run wrote %s, the dry run never listed it", label, p)
+		}
+	}
+}
+
+// TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts guards D.2 (#59):
+// on a fresh installation, the Codex plan a dry run prints used to list
+// only the skill plus an advisory note, because codexSandboxRoots read the
+// config from disk and the real run's config did not exist yet — the dry
+// run never publishes it (validateConfigSyntax's own invariant: nothing is
+// written anywhere to load it through pkg/config). setup's dry run now
+// plans every agent step from the config it would write, rendered in
+// memory (freshSetupConfig), so its listing equals the real run's writes.
+// The existing-config half is already correct — both a dry run and the
+// real run read the same bytes off disk — and is pinned here so it cannot
+// regress alongside the fresh-install fix.
+func TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts(t *testing.T) {
+	requireGoldenSequence(t)
+	for _, id := range goldenHostIDs {
+		t.Run("fresh/"+id, func(t *testing.T) {
+			dry := agentPlanWriteLines(t, id, true, false)
+			real := agentPlanWriteLines(t, id, false, false)
+			assertSameStringSet(t, id, dry, real)
+		})
+		t.Run("existing/"+id, func(t *testing.T) {
+			dry := agentPlanWriteLines(t, id, true, true)
+			real := agentPlanWriteLines(t, id, false, true)
+			assertSameStringSet(t, id, dry, real)
+		})
+	}
+}
+
 // The npm launch marker: an exec cache and a project-local install are
 // refused before anything is written; a global install and a non-npm binary
 // are accepted.

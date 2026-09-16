@@ -66,6 +66,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 //go:embed skill.md
@@ -182,6 +184,15 @@ func (o agentOps) paths(getenv func(string) string) agentPaths {
 type binEntry struct {
 	command string
 	cfg     string // absolute config path, or "" for discovery
+
+	// rendered, when non-nil, is the config codexSandboxRoots reads
+	// instead of cfg's own bytes on disk. setup's dry run on a fresh
+	// installation is the one caller that sets it: config() prints what
+	// it would write but never publishes it, so there is nothing at cfg
+	// for a normal disk read to find yet, and this is the config that run
+	// would have written, computed the same way renderFreshConfig itself
+	// does (freshSetupConfig) rather than by parsing anything.
+	rendered *config.Config
 }
 
 // searchCommand is the exact invocation the skill teaches.
@@ -962,12 +973,16 @@ func readWithMode(ops agentOps, path string) ([]byte, os.FileMode, error) {
 // writable because the claim resume and the flush rotate the refresh token
 // there — a deletion-only exposure, not an exfiltration one.
 func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
-	if entry.cfg == "" {
-		return nil
-	}
-	cfg, _, err := loadConfig(entry.cfg, getenv)
-	if err != nil || cfg == nil {
-		return nil
+	cfg := entry.rendered
+	if cfg == nil {
+		if entry.cfg == "" {
+			return nil
+		}
+		var err error
+		cfg, _, err = loadConfig(entry.cfg, getenv)
+		if err != nil || cfg == nil {
+			return nil
+		}
 	}
 	seen := map[string]bool{}
 	var roots []string

@@ -98,6 +98,12 @@ func (r *setupRun) agentsStep() {
 
 	r.printf("%s\n", agentsParagraph())
 	entry := binEntry{command: r.exe, cfg: r.cfgPath}
+	if r.dry && r.configWasFresh {
+		// config() printed what it would write but never published it, so
+		// there is nothing at r.cfgPath yet for codexSandboxRoots' own
+		// disk read to find — give it the same config in memory instead.
+		entry.rendered = freshSetupConfig(r.home)
+	}
 	plan := buildInstallPlan(ops, paths, selected, entry, r.d.getenv)
 	if r.explicitTargets {
 		r.printf("Setting up (named with -with): %s\n", strings.Join(labels(selected), ", "))
