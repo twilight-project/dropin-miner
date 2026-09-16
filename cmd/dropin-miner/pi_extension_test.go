@@ -98,7 +98,7 @@ func runPiExtension(t *testing.T, cases map[string][]piCall) map[string][]piOutc
   result[name] = outcomes;
  }
  process.stdout.write(JSON.stringify(result));`
-	input, err := json.Marshal(map[string]any{"extension": renderAgentScript(piExtensionTS), "cases": cases})
+	input, err := json.Marshal(map[string]any{"extension": renderAgentScript(piExtensionTS, shellPOSIX), "cases": cases})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,13 +201,19 @@ func TestPiExtensionRewritesOurSearchAndNothingElse(t *testing.T) {
 	got := runPiExtension(t, cases)
 	for name, cmd := range commands {
 		t.Run(name, func(t *testing.T) {
-			want := isSearchCommand(cmd) && !strings.Contains(cmd, bridgeEnv+"=")
-			if !want {
+			// H-R4: a bridge already on the command is no longer a reason to
+			// stand down. A stale one — or one a model wrote itself — is
+			// removed and replaced by this call's own, so the harness on the
+			// envelope is only ever ours when we put it there.
+			if !isSearchCommand(cmd) {
 				piNoBridge(t, got[name][0], cmd)
 				return
 			}
 			if env := piBridge(t, got[name][0]); env.Harness != "pi" {
 				t.Errorf("harness = %q, want pi", env.Harness)
+			}
+			if strings.Contains(got[name][0].Command, "stale") {
+				t.Errorf("the stale bridge survived: %q", got[name][0].Command)
 			}
 		})
 	}

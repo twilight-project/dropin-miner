@@ -173,12 +173,29 @@ func TestHermesHookFailsOpenWithoutASession(t *testing.T) {
 	}
 }
 
+// H-R4: a bridge already on the command is not a reason to stand down. One a
+// model wrote itself would otherwise reach the router carrying our harness —
+// a trace attributed to this client that this client did not build (#68).
+func TestHermesHookReplacesABridgeItDidNotWrite(t *testing.T) {
+	out, d := hermesRun(t, hermesPayload("s", "TOKENDROP_TRACE_BRIDGE=notours "+hermesSearch, map[string]any{"tool_call_id": "c"}))
+	if d == nil {
+		t.Fatalf("the hook stood down for a command carrying someone else's bridge: %q", out)
+	}
+	cmd, _ := d.ToolInput["command"].(string)
+	if strings.Contains(cmd, "notours") {
+		t.Fatalf("the foreign bridge survived: %q", cmd)
+	}
+	env := decodeBridgeFromCommand(t, cmd)
+	if env.Harness != "hermes" {
+		t.Fatalf("harness = %q, want hermes", env.Harness)
+	}
+}
+
 func TestHermesHookLeavesEverythingElseAlone(t *testing.T) {
 	for name, payload := range map[string]any{
 		"foreign command":  hermesPayload("s", "ls -la", nil),
 		"lookalike":        hermesPayload("s", "dropin-miner-helper search q", nil),
 		"another verb":     hermesPayload("s", "dropin-miner status", nil),
-		"already bridged":  hermesPayload("s", "TOKENDROP_TRACE_BRIDGE=x "+hermesSearch, nil),
 		"no command":       map[string]any{"hook_event_name": "pre_tool_call", "session_id": "s", "tool_input": map[string]any{"path": "/etc/hosts"}},
 		"null tool input":  map[string]any{"hook_event_name": "pre_tool_call", "session_id": "s", "tool_input": nil},
 		"command not text": map[string]any{"hook_event_name": "pre_tool_call", "session_id": "s", "tool_input": map[string]any{"command": 7}},

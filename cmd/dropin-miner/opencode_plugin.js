@@ -21,6 +21,12 @@
 
 // {{TRACE_COMMON}}
 
+// The shell opencode runs its bash tool in on THIS machine, written in by
+// the installer from the host's declaration. The bridge is an environment
+// assignment, and its syntax is the shell's: a POSIX prefix handed to
+// PowerShell is looked up as a program name and the search never runs (#68).
+const HOST_SHELL = "{{HOST_SHELL}}"
+
 export const DropinMinerLineage = async ({ client }) => {
   // sessionID -> how many times this session's context window has compacted.
   const compactions = new Map()
@@ -63,7 +69,13 @@ export const DropinMinerLineage = async ({ client }) => {
         }
         const bridge = traceBridge(env)
         if (bridge === null) return
-        output.args.command = TRACE_BRIDGE_ENV + "=" + bridge + " " + cmd
+        // H-R4: a bridge already on the command is not ours until we put it
+        // there. Every assignment we can prove standalone is removed and
+        // this call's own is prepended; a command carrying one we cannot
+        // remove with certainty is left exactly as it is.
+        const rewritten = withTraceBridge(cmd, bridge, HOST_SHELL)
+        if (rewritten === null) return
+        output.args.command = rewritten
       } catch {
         // fail-open: the search runs untraced rather than not at all
       }

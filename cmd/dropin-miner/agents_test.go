@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -152,7 +154,9 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}
 	skill := string(m.files["/home/u/.claude/skills/dropin-miner/SKILL.md"])
-	if !strings.Contains(skill, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) || !strings.Contains(skill, `tokendrop.toml" -format model`) || !strings.Contains(skill, "name: dropin-miner") {
+	// The paths are single-quoted from H2 on: that is POSIX quoting, where
+	// nothing expands, rather than Go's %q, where $ and ` still do.
+	if !strings.Contains(skill, `'/home/u/.tokendrop/bin/dropin-miner' search -config '`) || !strings.Contains(skill, `tokendrop.toml' -format model`) || !strings.Contains(skill, "name: dropin-miner") {
 		t.Errorf("skill:\n%s", skill)
 	}
 	var doc map[string]any
@@ -166,7 +170,11 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Fatalf("existing PreToolUse group not preserved first: %v", pre)
 	}
 	ours := pre[1].(map[string]any)
-	if ours["matcher"] != "Bash" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `tokendrop.toml" lineage`) {
+	// The matcher covers both shell tools from H3 on (#77): a search the model
+	// sends through Claude Code's PowerShell tool reaches this hook too. The
+	// value is written out rather than compared with the constant — a test
+	// that reads the constant agrees with whatever the constant becomes.
+	if ours["matcher"] != "Bash|PowerShell" || !strings.Contains(ours["hooks"].([]any)[0].(map[string]any)["command"].(string), `tokendrop.toml' lineage`) {
 		t.Errorf("our PreToolUse group: %v", ours)
 	}
 	for _, ev := range []string{"SessionStart", "PreCompact", "PostCompact", "Stop"} {
@@ -178,14 +186,18 @@ func TestAgentsInstallWritesClaudeSkillAndMergesHooksIntoSettings(t *testing.T) 
 		t.Error("a key reached settings.json")
 	}
 	allow := allowOf(t, m, settings)
-	if len(allow) != 3 || allow[0] != "Bash(git status:*)" {
-		t.Fatalf("the user's own allow rule must come first, then ours: %v", allow)
+	if len(allow) != 4 || allow[0] != "Bash(git status:*)" {
+		t.Fatalf("the user's own allow rule must come first, then our three spellings: %v", allow)
 	}
 	// The config path is absolutized by the host (a drive letter on Windows),
 	// so match around it rather than on it.
-	for i, prefix := range []string{`Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`, `Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`} {
+	for i, want := range []struct{ prefix, suffix string }{
+		{`Bash('/home/u/.tokendrop/bin/dropin-miner' search -config '`, `tokendrop.toml':*)`},
+		{`Bash("/home/u/.tokendrop/bin/dropin-miner" search -config "`, `tokendrop.toml":*)`},
+		{`Bash(/home/u/.tokendrop/bin/dropin-miner search -config "`, `tokendrop.toml":*)`},
+	} {
 		r := allow[i+1]
-		if !strings.HasPrefix(r, prefix) || !strings.HasSuffix(r, `tokendrop.toml":*)`) {
+		if !strings.HasPrefix(r, want.prefix) || !strings.HasSuffix(r, want.suffix) {
 			t.Errorf("allow rule %d: %s", i+1, r)
 		}
 	}
@@ -309,7 +321,7 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 	on := string(m.files[claudeSkill])
 	// The config path is host-absolutized (a drive letter on Windows), so
 	// match around it.
-	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `" agents prefer -config "`) || !strings.Contains(on, `tokendrop.toml" <argument>`) {
+	if !strings.Contains(on, "Prefer it over a built-in web search") || !strings.Contains(on, `' agents prefer -config '`) || !strings.Contains(on, `tokendrop.toml' <argument>`) {
 		t.Fatalf("shipped skill should prefer the router and name the prefer command:\n%s", on)
 	}
 	if code, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg); code != exitOK || !strings.Contains(out, "search default: on") {
@@ -337,7 +349,7 @@ func TestAgentsPreferOffRewritesSkillsAndInstallKeepsIt(t *testing.T) {
 		if strings.Contains(off, "Prefer it over a built-in web search") || !strings.Contains(off, "turned OFF as the default") || !strings.Contains(off, "Use the agent's built-in web") {
 			t.Errorf("%s not rewritten for off:\n%s", p, off)
 		}
-		if !strings.Contains(off, `"/home/u/.tokendrop/bin/dropin-miner" search -config "`) {
+		if !strings.Contains(off, `'/home/u/.tokendrop/bin/dropin-miner' search -config '`) {
 			t.Errorf("%s lost the search command", p)
 		}
 	}
@@ -496,8 +508,12 @@ func TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath(t *testin
 			t.Errorf("Claude %s after two installs: want 1 entry, got %d: %v", ev, len(list), list)
 		}
 	}
-	if allow := allowOf(t, m, settings); len(allow) != 2 {
-		t.Fatalf("Claude allow rules after two installs: want 2, got %d: %v", len(allow), allow)
+	// Three spellings of the same prefix rule, and still three after a
+	// second install: the single-quoted path the skill now renders, and
+	// v0.2.9's %q-quoted and bare ones, which an agent may still be
+	// repeating from a skill it read before the upgrade.
+	if allow := allowOf(t, m, settings); len(allow) != 3 {
+		t.Fatalf("Claude allow rules after two installs: want 3, got %d: %v", len(allow), allow)
 	}
 
 	cursorPath := "/home/u/.cursor/hooks.json"
@@ -535,4 +551,341 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// wantHookCommand is what this client would write for tg's hook event on
+// this OS, through the same renderer the installer uses.
+func wantHookCommand(t *testing.T, tg installTarget, e binEntry, sub ...string) string {
+	t.Helper()
+	shells, err := declaredShells(tg, runtime.GOOS, channelHook)
+	if err != nil {
+		t.Fatalf("%s hook shells on %s: %v", tg.ID(), runtime.GOOS, err)
+	}
+	cmd, _, err := e.hookCommandForRunners(shells, sub...)
+	if err != nil {
+		t.Fatalf("%s hook command for %v: %v", tg.ID(), shells, err)
+	}
+	return cmd
+}
+
+// TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall seeds both
+// hook files with an entry in every spelling this client has ever written a
+// hook command in, then requires install to leave exactly one — the current
+// rendering — and uninstall to leave none.
+//
+// No other test covered this. Every other one installs into a file this
+// client wrote itself, so the recognizer was only ever fed the spelling of
+// the version under test. The spelling that matters is the one already on
+// disk: an installation upgraded from v0.2.9 carries %q entries, and those
+// are exactly the ones that do not parse in PowerShell (#69). Until this
+// commit install saw its own binary in them, decided there was nothing to
+// do, and the fix never reached an upgraded machine.
+//
+// The Windows-style path is deliberate: with a POSIX path, %q and the cmd
+// double-quoted form are the same string and would not be two spellings.
+// Nothing here executes the path; it is a string inside JSON on every OS.
+func TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall(t *testing.T) {
+	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	// The installer resolves -config with filepath.Abs before it renders
+	// anything, so on Windows the path it writes is rooted on the runner's
+	// current drive (D:\home\u\... on the CI image) and is spelled with
+	// backslashes. The expectation has to come from the same resolution
+	// rather than from the literal flag value: building it from the literal
+	// is how the first version of this test failed on both Windows runners
+	// while the part it exists to check — the quoting — was already right.
+	cfg, err := filepath.Abs(testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := binEntry{command: bin, cfg: cfg}
+	spellings := func(sub string) []string {
+		return []string{
+			strconv.Quote(bin) + " hook -config " + strconv.Quote(cfg) + " " + sub,
+			bin + " hook -config " + cfg + " " + sub,
+			posixQuoteArg(bin) + " hook -config " + posixQuoteArg(cfg) + " " + sub,
+			"& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(cfg) + " " + sub,
+			`"` + bin + `" hook -config "` + cfg + `" ` + sub,
+		}
+	}
+	// Five spellings must be five distinct strings, or this test is weaker
+	// than it reads.
+	seen := map[string]bool{}
+	for _, s := range spellings("flush") {
+		if seen[s] {
+			t.Fatalf("two spellings are the same string: %q", s)
+		}
+		seen[s] = true
+	}
+
+	m, ops := newFakeMachine("claude", "cursor")
+	ops.executable = func() (string, error) { return bin, nil }
+
+	claudeStop := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "say done"}}}}
+	for _, c := range spellings("flush") {
+		claudeStop = append(claudeStop, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}})
+	}
+	cursorStop := []any{map[string]any{"command": "./hooks/mine.sh"}}
+	for _, c := range spellings("cursor stop") {
+		cursorStop = append(cursorStop, map[string]any{"command": c})
+	}
+	seed := func(path string, doc map[string]any) {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.files[path] = b
+	}
+	const settings, cursorPath = "/home/u/.claude/settings.json", "/home/u/.cursor/hooks.json"
+	seed(settings, map[string]any{"hooks": map[string]any{"Stop": claudeStop}})
+	seed(cursorPath, map[string]any{"version": 1, "hooks": map[string]any{"stop": cursorStop}})
+
+	claude, _ := targetByID(installTargets, "claude")
+	cursor, _ := targetByID(installTargets, "cursor")
+
+	// Twice: the first install replaces five stale entries with one, the
+	// second must find nothing left to do.
+	for i := 1; i <= 2; i++ {
+		if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install #%d: exit %d\n%s%s", i, code, out, errOut)
+		}
+		for _, c := range []struct {
+			what, path, event string
+			want, user        string
+			command           func(any) string
+		}{
+			{"Claude", settings, "Stop", wantHookCommand(t, claude, entry, "flush"), "say done", claudeGroupCommand},
+			{"Cursor", cursorPath, "stop", wantHookCommand(t, cursor, entry, "cursor", "stop"), "./hooks/mine.sh", cursorEntryCommand},
+		} {
+			list, _ := hooksOf(t, m, c.path)[c.event].([]any)
+			if len(list) != 2 {
+				t.Fatalf("%s %s after install #%d: want the user's entry and exactly one of ours, got %d: %v",
+					c.what, c.event, i, len(list), list)
+			}
+			if got := c.command(list[0]); got != c.user {
+				t.Errorf("%s %s: the user's own entry was disturbed: %q", c.what, c.event, got)
+			}
+			if got := c.command(list[1]); got != c.want {
+				t.Errorf("%s %s after install #%d:\n got %q\nwant %q", c.what, c.event, i, got, c.want)
+			}
+		}
+	}
+
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
+	}
+	for _, c := range []struct {
+		what, path, event, user string
+		command                 func(any) string
+	}{
+		{"Claude", settings, "Stop", "say done", claudeGroupCommand},
+		{"Cursor", cursorPath, "stop", "./hooks/mine.sh", cursorEntryCommand},
+	} {
+		list, _ := hooksOf(t, m, c.path)[c.event].([]any)
+		if len(list) != 1 || c.command(list[0]) != c.user {
+			t.Errorf("%s %s after uninstall: want only the user's %q, got %v", c.what, c.event, c.user, list)
+		}
+	}
+}
+
+func claudeGroupCommand(e any) string {
+	g, _ := e.(map[string]any)
+	hs, _ := g["hooks"].([]any)
+	if len(hs) == 0 {
+		return ""
+	}
+	h, _ := hs[0].(map[string]any)
+	s, _ := h["command"].(string)
+	return s
+}
+
+func cursorEntryCommand(e any) string {
+	h, _ := e.(map[string]any)
+	s, _ := h["command"].(string)
+	return s
+}
+
+// TestInstallUpgradesAV029InstallationInPlace is the upgrade a real machine
+// actually performs: exactly ONE v0.2.9 entry per event, in v0.2.9's %q
+// spelling, plus v0.2.9's two allow rules.
+//
+// TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall cannot see
+// what this sees. It seeds every spelling at once, so the merge loop replaces
+// because it counted more than one entry of ours — never because it compared
+// the one it found against what it would write now. A sameJSONValue that
+// answered "the same" for any two entries leaves that test green and leaves
+// every upgraded installation with the hook that does not parse in
+// PowerShell (#69). Here there is exactly one entry and it is stale, so the
+// replacement happens only if the comparison is real.
+//
+// The Windows-style binary path makes the stale spelling differ from the
+// current rendering on every runner: %q doubles the backslashes, and no
+// shell's quoting does.
+func TestInstallUpgradesAV029InstallationInPlace(t *testing.T) {
+	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	cfg, err := filepath.Abs(testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := binEntry{command: bin, cfg: cfg}
+	v029 := func(sub ...string) string {
+		return strconv.Quote(bin) + " hook -config " + strconv.Quote(cfg) + " " + strings.Join(sub, " ")
+	}
+
+	claudeEvents := []struct {
+		event string
+		sub   []string
+	}{
+		{"PreToolUse", []string{"lineage"}},
+		{"SessionStart", []string{"window", "session-start"}},
+		{"PreCompact", []string{"window", "pre-compact"}},
+		{"PostCompact", []string{"window", "post-compact"}},
+		{"Stop", []string{"flush"}},
+	}
+	cursorEvents := []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
+
+	m, ops := newFakeMachine("claude", "cursor")
+	ops.executable = func() (string, error) { return bin, nil }
+
+	// v0.2.9's settings.json: one group per event, PreToolUse still matching
+	// Bash alone, and one hook of the participant's own on two events.
+	claudeHooksSeed := map[string]any{}
+	for _, ce := range claudeEvents {
+		group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": v029(ce.sub...)}}}
+		if ce.event == "PreToolUse" {
+			group["matcher"] = "Bash"
+		}
+		list := []any{group}
+		if ce.event == "PreToolUse" || ce.event == "Stop" {
+			list = append(list, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "the participant's own " + ce.event}}})
+		}
+		claudeHooksSeed[ce.event] = list
+	}
+	cursorHooksSeed := map[string]any{}
+	for _, ev := range cursorEvents {
+		list := []any{map[string]any{"command": v029("cursor", ev)}}
+		if ev == "stop" {
+			list = append(list, map[string]any{"command": "./hooks/mine.sh"})
+		}
+		cursorHooksSeed[ev] = list
+	}
+	seed := func(path string, doc map[string]any) {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.files[path] = b
+	}
+	const settings, cursorPath = "/home/u/.claude/settings.json", "/home/u/.cursor/hooks.json"
+	seed(settings, map[string]any{
+		"hooks": claudeHooksSeed,
+		"permissions": map[string]any{"allow": []any{
+			fmt.Sprintf("Bash(%q search -config %q:*)", bin, cfg),
+			fmt.Sprintf("Bash(%s search -config %q:*)", bin, cfg),
+			"Bash(git status:*)",
+		}},
+	})
+	seed(cursorPath, map[string]any{"version": 1, "hooks": cursorHooksSeed})
+
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: exit %d\n%s%s", code, out, errOut)
+	}
+
+	claude, _ := targetByID(installTargets, "claude")
+	cursor, _ := targetByID(installTargets, "cursor")
+
+	claudeAfter := hooksOf(t, m, settings)
+	for _, ce := range claudeEvents {
+		list, _ := claudeAfter[ce.event].([]any)
+		want := wantHookCommand(t, claude, entry, ce.sub...)
+		var ours, foreign int
+		for _, e := range list {
+			switch got := claudeGroupCommand(e); {
+			case got == want:
+				ours++
+			case got == v029(ce.sub...):
+				t.Errorf("Claude %s: the v0.2.9 entry was left exactly as it was: %q", ce.event, got)
+			default:
+				foreign++
+			}
+		}
+		if ours != 1 {
+			t.Errorf("Claude %s: %d entries carry the current rendering %q, want 1: %v", ce.event, ours, want, list)
+		}
+		wantForeign := 0
+		if ce.event == "PreToolUse" || ce.event == "Stop" {
+			wantForeign = 1
+		}
+		if foreign != wantForeign {
+			t.Errorf("Claude %s: %d foreign entries, want %d: %v", ce.event, foreign, wantForeign, list)
+		}
+	}
+	// The replaced PreToolUse group carries the matcher this version writes,
+	// not v0.2.9's Bash-only one (#77).
+	for _, e := range claudeAfter["PreToolUse"].([]any) {
+		g, _ := e.(map[string]any)
+		if claudeGroupCommand(e) == wantHookCommand(t, claude, entry, "lineage") && g["matcher"] != claudeToolMatcher {
+			t.Errorf("the replaced PreToolUse group still matches %v", g["matcher"])
+		}
+	}
+
+	cursorAfter := hooksOf(t, m, cursorPath)
+	for _, ev := range cursorEvents {
+		list, _ := cursorAfter[ev].([]any)
+		want := wantHookCommand(t, cursor, entry, "cursor", ev)
+		var ours, foreign int
+		for _, e := range list {
+			switch got := cursorEntryCommand(e); {
+			case got == want:
+				ours++
+			case got == v029("cursor", ev):
+				t.Errorf("Cursor %s: the v0.2.9 entry was left exactly as it was: %q", ev, got)
+			default:
+				foreign++
+			}
+		}
+		if ours != 1 {
+			t.Errorf("Cursor %s: %d entries carry the current rendering %q, want 1: %v", ev, ours, want, list)
+		}
+		wantForeign := 0
+		if ev == "stop" {
+			wantForeign = 1
+		}
+		if foreign != wantForeign {
+			t.Errorf("Cursor %s: %d foreign entries, want %d: %v", ev, foreign, wantForeign, list)
+		}
+	}
+
+	// Every rule this version writes is present, the participant's own is
+	// untouched, and nothing is duplicated.
+	allow := allowOf(t, m, settings)
+	for _, rule := range claudeAllowRules(entry) {
+		if n := countString(allow, rule); n != 1 {
+			t.Errorf("allow rule %q appears %d times, want 1: %v", rule, n, allow)
+		}
+	}
+	if countString(allow, "Bash(git status:*)") != 1 {
+		t.Errorf("the participant's own allow rule was disturbed: %v", allow)
+	}
+
+	// And the upgrade settles: a second install writes nothing at all.
+	before, beforeCursor := string(m.files[settings]), string(m.files[cursorPath])
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("second install: exit %d\n%s%s", code, out, errOut)
+	}
+	if string(m.files[settings]) != before {
+		t.Errorf("a second install rewrote settings.json:\n got %s\nwant %s", m.files[settings], before)
+	}
+	if string(m.files[cursorPath]) != beforeCursor {
+		t.Errorf("a second install rewrote hooks.json:\n got %s\nwant %s", m.files[cursorPath], beforeCursor)
+	}
+}
+
+func countString(list []string, want string) int {
+	n := 0
+	for _, s := range list {
+		if s == want {
+			n++
+		}
+	}
+	return n
 }

@@ -132,7 +132,17 @@ govulncheck.
     32 KiB history tail → envelope → 48 KiB envelope check → base64url. A source entry too large
     to scrub whole is omitted whole, never sliced, because a slice can cut a secret in half. Raw
     host history never enters a command line; hosts that expose less (Hermes) send less; the hook
-    fails open and exits 0 on any internal error.
+    fails open and exits 0 on any internal error. **The bridge that carries the envelope is written
+    in the syntax of the shell that will run the command** (`bridge.go`, mirrored in
+    `agent_trace_common.js` and pinned by `TestBridgeGuardsAgree`), taken from the host's
+    declaration — or, for Claude Code, from the tool its payload names, since that host runs two.
+    A POSIX prefix handed to PowerShell is looked up as a program name, which is how every traced
+    opencode search on Windows lost its lineage (#68). **Provenance (H-R4): only a bridge an adapter
+    wrote for this call may carry that adapter's harness** — it removes every assignment it can
+    prove standalone in a declared shell's syntax and writes its own, and leaves a command carrying
+    one it cannot remove exactly as it found it. The trace is unauthenticated metadata either way:
+    the binary cannot prove where an environment variable came from, and nothing treats a harness
+    value as evidence of origin.
 17. **Verified replacement and explicit destruction.** `dropin-miner upgrade` fetches only from the
     compiled-in canonical `twilight-project/dropin-miner` GitHub release origin — the one exception
     to invariant 5 — over HTTPS, with no participant credential, following only its bounded GitHub
@@ -248,7 +258,18 @@ each line names the file that owns the rule and the test that proves it.
   of NO.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
-  silently, and the structural test proves the public ID set.
+  silently, and the structural test proves the public ID set. `targets.go` also owns **the
+  shell declaration**: per host and per OS, the set of shells that run its tool calls and what
+  runs its hook commands, each cell established by documentation, source or a live run —
+  `host_shells_test.go` holds the declaration to a written-out table so no cell moves without a
+  reviewed diff. `shell_commands.go` renders every command for a declared shell and owns the
+  quoting of the paths in it (never Go's `%q`, which is neither shell's); `skill_render.go`
+  renders one form per shell a host runs, and keeps v0.2.9's Bash form, with a line in the
+  install plan, for a cell nobody has established. `host_exec_test.go` is what makes any of it
+  true: it runs the rendered strings through real shells — bash, sh, Git Bash, both PowerShell
+  editions through `-EncodedCommand`, `cmd`, and Hermes' own splitter — against a test build
+  with loopback-only stubs, and compares the query the router received with the one that was
+  sent.
 - **Lifecycle coordination** — `cmd/dropin-miner/lifecycle.go` owns the gate `H.lifecycle.lock`
   (a sibling of the installation, never inside it and never deleted), the one lock order
   (gate → `setup.lock` → `connect.lock` → `flush.lock`; for `uninstall -binary` the same sequence
