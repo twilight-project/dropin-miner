@@ -231,28 +231,6 @@ func renderFreshConfig(v setupValues) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// freshSetupConfig is the *config.Config renderFreshConfig's own bytes
-// would parse into — every field it names, computed here directly from
-// home instead of by writing renderFreshConfig's bytes to disk and reading
-// them back. A dry run needs exactly this: config() prints what it would
-// write but never publishes it (validateConfigSyntax proves the bytes
-// parse; it does not write them anywhere, on a fresh install or a
-// migrated one, to keep a dry run's "nothing is written, moved or run"
-// literal), so agentsStep's own read of cfg would otherwise find nothing
-// at cfg for a fresh installation. The two must be kept in the same
-// shape: intake_dir/sessions_dir here match minerTable's, state_dir/
-// spool_dir match renderFreshConfig's own [mining] block, and
-// [miner] enabled is unconditionally true, the same as minerTable writes.
-func freshSetupConfig(home string) *config.Config {
-	var cfg config.Config
-	cfg.Mining.StateDir = filepath.Join(home, "state")
-	cfg.Mining.SpoolDir = filepath.Join(home, "spool")
-	cfg.Miner.Enabled = true
-	cfg.Miner.IntakeDir = filepath.Join(home, "intake")
-	cfg.Miner.SessionsDir = filepath.Join(home, "sessions")
-	return &cfg
-}
-
 // configOutcome is what the migration policy decided for one file.
 type configOutcome int
 

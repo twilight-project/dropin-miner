@@ -1496,39 +1496,67 @@ func TestSetupNoAgentsWithCodexInstallsExactlyCodex(t *testing.T) {
 
 // ── D2 (#59): a dry run's agent plan matches the real run's ─────────────
 
-// agentPlanWriteLines drives setup -with id, with or without -dry-run and
-// with or without a config already on disk, and returns the set of paths
-// printPlan listed under "write": the exact text both a dry run and the
-// real run print for the plan, before the real run goes on to commit it.
-// Comparing this set between the two, for a fresh installation and for one
-// where the config already exists, is the literal test D.2 (#59) asks for.
-func agentPlanWriteLines(t *testing.T, id string, dry, preExisting bool) map[string]bool {
+// configFixtureOutcome names which of the three outcomes planSetupConfig
+// can reach a test wants set up on disk before setup ever runs.
+type configFixtureOutcome int
+
+const (
+	fixtureConfigFresh configFixtureOutcome = iota
+	fixtureConfigLeft
+	fixtureConfigMigrated
+)
+
+// seedConfigFixture writes what outcome needs onto s's disk before setup
+// runs: nothing (fresh), a complete config with [miner] (left, untouched),
+// or a proxy-only config with [mining] but no [miner] (migrated — setup
+// adds the missing tables).
+func seedConfigFixture(t *testing.T, s *setupSandbox, outcome configFixtureOutcome) {
 	t.Helper()
-	s := newSetupSandbox(t)
-	s.platform.claim("credits")
-	if preExisting {
+	if outcome == fixtureConfigFresh {
+		return
+	}
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var data []byte
+	switch outcome {
+	case fixtureConfigLeft:
 		v, err := resolveSetupValues(s.home, s.getenv, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		data, err := renderFreshConfig(v)
+		data, err = renderFreshConfig(v)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(s.home, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(s.cfgPath(), data, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	case fixtureConfigMigrated:
+		data = []byte("[mining]\nas_url = " + mustTOML(t, s.as.srv.URL) + "\nchain_id = \"twilight-1\"\nslot_id = 7\nstate_dir = " +
+			mustTOML(t, filepath.Join(s.home, "state")) + "\n")
 	}
+	if err := os.WriteFile(s.cfgPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// agentPlanWriteLines drives setup -with id, with or without -dry-run and
+// against one of the three config outcomes already seeded on disk, and
+// returns the set of paths printPlan listed under "write": the exact text
+// both a dry run and the real run print for the plan, before the real run
+// goes on to commit it. Comparing this set between the two, for a fresh
+// installation, an existing one, and one being migrated, is the literal
+// test D.2 (#59) asks for.
+func agentPlanWriteLines(t *testing.T, id string, dry bool, outcome configFixtureOutcome) map[string]bool {
+	t.Helper()
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	seedConfigFixture(t, s, outcome)
 	args := []string{"-with", id}
 	if dry {
 		args = append(args, "-dry-run")
 	}
 	code, out, errOut := s.run(nil, false, args...)
 	if code != exitOK {
-		t.Fatalf("setup -with %s (dry=%v preExisting=%v): exit %d\n%s%s", id, dry, preExisting, code, out, errOut)
+		t.Fatalf("setup -with %s (dry=%v outcome=%v): exit %d\n%s%s", id, dry, outcome, code, out, errOut)
 	}
 	const prefix = "    write  "
 	set := map[string]bool{}
@@ -1544,7 +1572,7 @@ func agentPlanWriteLines(t *testing.T, id string, dry, preExisting bool) map[str
 		set[rest[:i]] = true
 	}
 	if len(set) == 0 {
-		t.Fatalf("setup -with %s (dry=%v preExisting=%v) planned no writes:\n%s", id, dry, preExisting, out)
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) planned no writes:\n%s", id, dry, outcome, out)
 	}
 	return set
 }
@@ -1564,28 +1592,182 @@ func assertSameStringSet(t *testing.T, label string, dry, real map[string]bool) 
 }
 
 // TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts guards D.2 (#59):
-// on a fresh installation, the Codex plan a dry run prints used to list
-// only the skill plus an advisory note, because codexSandboxRoots read the
-// config from disk and the real run's config did not exist yet — the dry
-// run never publishes it (validateConfigSyntax's own invariant: nothing is
-// written anywhere to load it through pkg/config). setup's dry run now
-// plans every agent step from the config it would write, rendered in
-// memory (freshSetupConfig), so its listing equals the real run's writes.
-// The existing-config half is already correct — both a dry run and the
-// real run read the same bytes off disk — and is pinned here so it cannot
-// regress alongside the fresh-install fix.
+// on a fresh installation or one being migrated, the Codex plan a dry run
+// prints used to list only the skill plus an advisory note (fresh) or the
+// pre-migration roots (migrated), because codexSandboxRoots read the
+// config from disk and the real run's config either did not exist yet or
+// had not gained its [miner] table yet — the dry run never publishes it
+// (validateConfigSyntax's own invariant: nothing is written anywhere to
+// load it through pkg/config). setup's dry run now plans every agent step
+// from the config it would write or add, parsed by the config package
+// itself (config.LoadBytes) from those exact bytes, so its listing equals
+// the real run's writes for both outcomes. The existing-config ("left")
+// case is already correct — both a dry run and the real run read the same
+// bytes off disk, unmodified — and is pinned here so it cannot regress
+// alongside the other two.
 func TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts(t *testing.T) {
+	requireGoldenSequence(t)
+	cases := []struct {
+		name    string
+		outcome configFixtureOutcome
+	}{
+		{"fresh", fixtureConfigFresh},
+		{"existing", fixtureConfigLeft},
+		{"migrated", fixtureConfigMigrated},
+	}
+	for _, id := range goldenHostIDs {
+		for _, tc := range cases {
+			t.Run(tc.name+"/"+id, func(t *testing.T) {
+				dry := agentPlanWriteLines(t, id, true, tc.outcome)
+				real := agentPlanWriteLines(t, id, false, tc.outcome)
+				assertSameStringSet(t, id, dry, real)
+			})
+		}
+	}
+}
+
+// contentFixtureValues is one setupValues used throughout the content
+// parity test: a fixed https AS/router/platform so renderFreshConfig and
+// planSetupConfig always produce a config that parses and validates,
+// without needing a real server behind any of the URLs (nothing here
+// dials one — only the URL's scheme and host shape are ever checked).
+func contentFixtureValues(home string) setupValues {
+	return setupValues{
+		home:         home,
+		router:       "https://router.example.invalid",
+		platformURL:  config.DefaultPlatformBaseURL,
+		agentsAPIURL: config.DefaultAgentsAPIURL,
+		asURL:        "https://as.example.invalid",
+		chainID:      "twilight-1",
+		slotID:       7,
+	}
+}
+
+// hostPlans computes buildInstallPlan's writes for id twice, from a single
+// real config file at cfgPath (codexSandboxRoots' own loadConfig always
+// reads the real filesystem, never a fake ops): once as a dry run would —
+// entry.rendered set to renderedDry when non-nil, read from whatever is on
+// cfgPath at that moment otherwise — and once as the real run would, from
+// cfgPath alone, after publish (if given) has replaced its bytes. Calling
+// buildInstallPlan captures each plan's writes immediately, so the two
+// calls seeing cfgPath in different states across the publish step is the
+// point, not a race: it reproduces a dry run reading the file before
+// setup ever writes to it, against the real run reading it after.
+func hostPlans(t *testing.T, id, cfgPath string, renderedDry *config.Config, publish []byte) (dryPlan, realPlan agentPlan) {
+	t.Helper()
+	surface, ok := surfaceByID(id)
+	if !ok {
+		t.Fatalf("no target for %q", id)
+	}
+	_, ops := newFakeMachine()
+	paths := ops.paths(noEnv)
+	entry := binEntry{command: goldenBin, cfg: cfgPath, rendered: renderedDry}
+	dryPlan = buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
+	if publish != nil {
+		if err := os.WriteFile(cfgPath, publish, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry.rendered = nil
+	realPlan = buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
+	return dryPlan, realPlan
+}
+
+// assertSameWriteContent is TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes'
+// literal assertion: the set of paths written and the bytes written to
+// each must be identical between the two plans.
+func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
+	t.Helper()
+	dryContents := map[string][]byte{}
+	for _, w := range dry.writes {
+		dryContents[w.path] = w.contents
+	}
+	realContents := map[string][]byte{}
+	for _, w := range real.writes {
+		realContents[w.path] = w.contents
+	}
+	for p, c := range dryContents {
+		rc, ok := realContents[p]
+		if !ok {
+			t.Errorf("%s: dry run plans a write to %s the real run's plan does not", label, p)
+			continue
+		}
+		if !bytes.Equal(c, rc) {
+			t.Errorf("%s: content for %s differs:\n--- dry ---\n%s\n--- real ---\n%s", label, p, c, rc)
+		}
+	}
+	for p := range realContents {
+		if _, ok := dryContents[p]; !ok {
+			t.Errorf("%s: the real run plans a write to %s the dry run's plan does not", label, p)
+		}
+	}
+}
+
+// TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes is
+// D.2 (#59)'s content half: the path-set test above can agree on WHICH
+// paths a dry run and the real run write while still disagreeing on WHAT
+// they write there — a fresh or migrated config that renders with the
+// wrong number of Codex sandbox roots (Miner.Enabled reads false until
+// [miner] actually lands, even though finishMiner already derives
+// intake_dir/sessions_dir from the state dir before checking it) changes
+// the Codex config.toml content, not its existence. For every host and
+// all three outcomes, the bytes buildInstallPlan plans for each write from
+// a dry run's would-be config equal the bytes it plans from what the real
+// run leaves on disk at that same point.
+func TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes(t *testing.T) {
 	requireGoldenSequence(t)
 	for _, id := range goldenHostIDs {
 		t.Run("fresh/"+id, func(t *testing.T) {
-			dry := agentPlanWriteLines(t, id, true, false)
-			real := agentPlanWriteLines(t, id, false, false)
-			assertSameStringSet(t, id, dry, real)
+			home := filepath.ToSlash(t.TempDir())
+			cfgPath := home + "/tokendrop.toml"
+			data, err := renderFreshConfig(contentFixtureValues(home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rendered, err := config.LoadBytes(data, noEnv)
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+			dry, real := hostPlans(t, id, cfgPath, rendered, data)
+			assertSameWriteContent(t, id, dry, real)
 		})
 		t.Run("existing/"+id, func(t *testing.T) {
-			dry := agentPlanWriteLines(t, id, true, true)
-			real := agentPlanWriteLines(t, id, false, true)
-			assertSameStringSet(t, id, dry, real)
+			home := filepath.ToSlash(t.TempDir())
+			cfgPath := home + "/tokendrop.toml"
+			data, err := renderFreshConfig(contentFixtureValues(home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// configLeft never renders anything in memory: both plans read
+			// the same, already-final bytes off disk.
+			dry, real := hostPlans(t, id, cfgPath, nil, nil)
+			assertSameWriteContent(t, id, dry, real)
+		})
+		t.Run("migrated/"+id, func(t *testing.T) {
+			home := filepath.ToSlash(t.TempDir())
+			cfgPath := home + "/tokendrop.toml"
+			v := contentFixtureValues(home)
+			proxy := []byte("[mining]\nas_url = " + mustTOML(t, v.asURL) + "\nchain_id = " + mustTOML(t, v.chainID) +
+				"\nslot_id = 7\nstate_dir = " + mustTOML(t, home+"/state") + "\n")
+			if err := os.WriteFile(cfgPath, proxy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := planSetupConfig(cfgPath, proxy, v, validateConfigSyntax)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.outcome != configMigrated {
+				t.Fatalf("fixture outcome = %v, want configMigrated", plan.outcome)
+			}
+			rendered, err := config.LoadBytes(plan.data, noEnv)
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+			dry, real := hostPlans(t, id, cfgPath, rendered, plan.data)
+			assertSameWriteContent(t, id, dry, real)
 		})
 	}
 }

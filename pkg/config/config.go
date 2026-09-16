@@ -320,29 +320,7 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		return nil, true, nil
 	}
 
-	// Defaults.
-	raw := rawConfig{
-		listen:                DefaultListen,
-		adminListen:           DefaultAdminListen,
-		shutdownGrace:         defaultShutdownGrace,
-		maxRequestBodyBytes:   defaultMaxRequestBodyBytes,
-		maxInboundConns:       defaultMaxInboundConns,
-		responseHeaderTimeout: 0,
-		providerName:          defaultProviderName,
-		providerTier:          "A",
-		upstream:              defaultUpstream,
-		logLevel:              "info",
-		platformBaseURL:       DefaultPlatformBaseURL,
-		observe: Observe{
-			MemoryBudgetBytes:    defaultObservationBudget,
-			RingBytes:            defaultRingBytes,
-			MaxEventBytes:        defaultMaxEventBytes,
-			MaxEvents:            defaultMaxEvents,
-			MaxObservedBodyBytes: defaultMaxObservedBody,
-			MaxDepth:             defaultMaxDepth,
-			MaxJSONKeyBytes:      defaultMaxJSONKeyBytes,
-		},
-	}
+	raw := newRawConfigDefaults()
 
 	// TOML file: explicit path (flag or env) is required to exist; the
 	// conventional ./tokendrop.toml is picked up when present.
@@ -364,22 +342,7 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		}
 	}
 
-	// Environment.
-	if v := getenv("TOKENDROP_LISTEN"); v != "" {
-		raw.listen = v
-	}
-	if v := getenv("TOKENDROP_ADMIN_LISTEN"); v != "" {
-		raw.adminListen = v
-	}
-	if v := getenv("TOKENDROP_UPSTREAM"); v != "" {
-		raw.upstream = v
-	}
-	if v := getenv("TOKENDROP_UPSTREAM_CA_FILE"); v != "" {
-		raw.upstreamCAFile = v
-	}
-	if v := getenv("TOKENDROP_LOG_LEVEL"); v != "" {
-		raw.logLevel = v
-	}
+	applyEnv(&raw, getenv)
 
 	// Flags.
 	if *flagListen != "" {
@@ -397,6 +360,69 @@ func Load(args []string, getenv func(string) string) (cfg *Config, showVersion b
 		return nil, false, err
 	}
 	return cfg, false, nil
+}
+
+// LoadBytes is Load's environment overlay and finish() applied to config
+// file bytes already in hand, instead of a path Load would read from disk.
+// It exists for a caller that knows what a file would contain before
+// anything writes it there — setup's dry run, which computes the exact
+// bytes it would publish but (by design) never does. There is no -config,
+// -listen, -admin-listen or -log-level flag to override it: those name a
+// path or a value on argv, and bytes already in memory have neither.
+func LoadBytes(data []byte, getenv func(string) string) (*Config, error) {
+	raw := newRawConfigDefaults()
+	if err := raw.applyBytes("config", data); err != nil {
+		return nil, err
+	}
+	applyEnv(&raw, getenv)
+	return raw.finish()
+}
+
+// newRawConfigDefaults is rawConfig before any file, environment or flag
+// has been applied — the same literal Load has always started from.
+func newRawConfigDefaults() rawConfig {
+	return rawConfig{
+		listen:                DefaultListen,
+		adminListen:           DefaultAdminListen,
+		shutdownGrace:         defaultShutdownGrace,
+		maxRequestBodyBytes:   defaultMaxRequestBodyBytes,
+		maxInboundConns:       defaultMaxInboundConns,
+		responseHeaderTimeout: 0,
+		providerName:          defaultProviderName,
+		providerTier:          "A",
+		upstream:              defaultUpstream,
+		logLevel:              "info",
+		platformBaseURL:       DefaultPlatformBaseURL,
+		observe: Observe{
+			MemoryBudgetBytes:    defaultObservationBudget,
+			RingBytes:            defaultRingBytes,
+			MaxEventBytes:        defaultMaxEventBytes,
+			MaxEvents:            defaultMaxEvents,
+			MaxObservedBodyBytes: defaultMaxObservedBody,
+			MaxDepth:             defaultMaxDepth,
+			MaxJSONKeyBytes:      defaultMaxJSONKeyBytes,
+		},
+	}
+}
+
+// applyEnv is Load's TOKENDROP_* environment overlay, the same for a config
+// read from a path (Load) or from bytes already in hand (LoadBytes).
+func applyEnv(r *rawConfig, getenv func(string) string) {
+	if v := getenv("TOKENDROP_LISTEN"); v != "" {
+		r.listen = v
+	}
+	if v := getenv("TOKENDROP_ADMIN_LISTEN"); v != "" {
+		r.adminListen = v
+	}
+	if v := getenv("TOKENDROP_UPSTREAM"); v != "" {
+		r.upstream = v
+	}
+	if v := getenv("TOKENDROP_UPSTREAM_CA_FILE"); v != "" {
+		r.upstreamCAFile = v
+	}
+	if v := getenv("TOKENDROP_LOG_LEVEL"); v != "" {
+		r.logLevel = v
+	}
 }
 
 // rawConfig holds pre-validation values from all sources.
@@ -445,10 +471,17 @@ func (r *rawConfig) applyFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
+	return r.applyBytes(path, data)
+}
+
+// applyBytes is applyFile's parse-and-apply step, taken alone: source names
+// the bytes in an error message (a path for a real file, or a fixed label
+// for bytes that only exist in memory — LoadBytes has no path to give it).
+func (r *rawConfig) applyBytes(source string, data []byte) error {
 	var f fileConfig
 	md, err := toml.Decode(string(data), &f)
 	if err != nil {
-		return fmt.Errorf("config file %s: %w", path, err)
+		return fmt.Errorf("config file %s: %w", source, err)
 	}
 	// Unknown keys are typos waiting to be silent; reject them.
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
@@ -456,7 +489,7 @@ func (r *rawConfig) applyFile(path string) error {
 		for i, k := range undecoded {
 			keys[i] = k.String()
 		}
-		return fmt.Errorf("config file %s: unknown key(s): %s", path, strings.Join(keys, ", "))
+		return fmt.Errorf("config file %s: unknown key(s): %s", source, strings.Join(keys, ", "))
 	}
 
 	if f.Privacy.LogContent {

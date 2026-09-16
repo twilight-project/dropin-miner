@@ -1121,6 +1121,61 @@ func TestPurgeDryRunListsTheFlushLockARealRunsOwnLockingWouldCreate(t *testing.T
 	}
 }
 
+// TestPurgeDoesNotInventAFlushLockWhenTheConfigNamesNoStateDir guards a
+// narrower defect ruled on during D2's review: a config that loads but
+// resolves no mining.state_dir at all (no [mining] block, and no user
+// config directory to default one from — every source os.UserConfigDir()
+// would read is blanked here) makes finishMiner derive no
+// miner.intake_dir either, so operationLockPaths reports no flush lock to
+// take at all — the real exclusion takes none. An earlier version of
+// predictedFlushLockPath treated a loaded config with no intake dir the
+// same as no config at all, and wrongly predicted home/flush.lock anyway
+// (falling back to r.cfg == nil's own default rather than asking
+// operationLockPaths, the function that actually decides what the real
+// exclusion locks). Neither the dry run nor the real run may list or
+// create a flush lock the real exclusion never touches.
+func TestPurgeDoesNotInventAFlushLockWhenTheConfigNamesNoStateDir(t *testing.T) {
+	s := newSetupSandbox(t)
+	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "AppData", "LOCALAPPDATA"} {
+		t.Setenv(k, "")
+	}
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A bare proxy config: no [mining], no [miner] — nothing for
+	// finishMining to default a state dir from (its own os.UserConfigDir
+	// fallback fails, since every source it reads was just blanked above)
+	// and nothing for finishMiner to derive an intake dir from either.
+	proxy := "[[provider]]\nname = \"search-router\"\nupstream = \"https://router.example.invalid\"\n"
+	if err := os.WriteFile(s.cfgPath(), []byte(proxy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := loadConfig(s.cfgPath(), s.getenv)
+	if err != nil {
+		t.Fatalf("fixture config does not load: %v", err)
+	}
+	if cfg.Mining.StateDir != "" || cfg.Miner.IntakeDir != "" {
+		t.Fatalf("fixture assumption broken: state_dir=%q intake_dir=%q, want both empty", cfg.Mining.StateDir, cfg.Miner.IntakeDir)
+	}
+	lockPath := filepath.Join(s.home, "flush.lock")
+
+	code, out, errOut := s.uninstall(t, strings.NewReader(""), false, nil, "-purge-state", "-dry-run")
+	if code != exitOK {
+		t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if strings.Contains(out, "remove "+lockPath) {
+		t.Errorf("dry run must not list a flush lock the real run's own locking would never take:\n%s", out)
+	}
+
+	code, out, errOut = s.uninstall(t, tty(s.home), true, nil, "-purge-state")
+	if code != exitOK {
+		t.Fatalf("real run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if lexists(lockPath) {
+		t.Error("the real run must not create a flush lock the config names no state for")
+	}
+}
+
 // installedOwningItsBinary is installed(t) plus a binary of its own at
 // home/bin, the way TestUninstallBinaryRemovesOnlyTheInstallationsOwnCopy
 // sets one up: the running executable IS that copy, so checkBinaryOwnership

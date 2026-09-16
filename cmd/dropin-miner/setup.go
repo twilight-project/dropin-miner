@@ -138,12 +138,14 @@ type setupRun struct {
 	changed       bool   // setup wrote or moved something it owns
 	shortCommands bool   // the profile or user environment carries PATH and TOKENDROP_CONFIG
 
-	// configWasFresh is set by config() when the run rendered a brand new
-	// config (configFresh) rather than finding one already valid or
-	// migrating one — agentsStep() needs it: on a dry run, config() prints
-	// what it would write but never calls publishSetupConfig, so nothing
-	// is on disk yet for the agents step's own config read to find.
-	configWasFresh bool
+	// configPlanData is set by config() to the bytes it is about to publish
+	// (configFresh or configMigrated; nil for configLeft, which changes
+	// nothing) — agentsStep() needs it: on a dry run, config() prints what
+	// it would write but never calls publishSetupConfig, so nothing is on
+	// disk yet for the agents step's own config read to find. It is set
+	// whether or not the run is dry, but only a dry run's agentsStep reads
+	// it — the real run has already published it to r.cfgPath by then.
+	configPlanData []byte
 
 	lineIn io.Reader
 }
@@ -540,12 +542,14 @@ func (r *setupRun) config() int {
 		fmt.Fprintf(r.d.stderr, "\ndropin-miner setup: %v\nNothing was changed in it. Fix or move the file aside, then run setup again.\n", err)
 		return exitTransport
 	}
+	if plan.data != nil {
+		r.configPlanData = plan.data
+	}
 	switch plan.outcome {
 	case configLeft:
 		r.say("Config already has a [miner] block: " + r.cfgPath + " (left as is)")
 		return exitOK
 	case configFresh:
-		r.configWasFresh = true
 		if r.dry {
 			r.printf("(dry run) would write %s\n", r.cfgPath)
 			return exitOK

@@ -186,12 +186,15 @@ type binEntry struct {
 	cfg     string // absolute config path, or "" for discovery
 
 	// rendered, when non-nil, is the config codexSandboxRoots reads
-	// instead of cfg's own bytes on disk. setup's dry run on a fresh
-	// installation is the one caller that sets it: config() prints what
-	// it would write but never publishes it, so there is nothing at cfg
-	// for a normal disk read to find yet, and this is the config that run
-	// would have written, computed the same way renderFreshConfig itself
-	// does (freshSetupConfig) rather than by parsing anything.
+	// instead of cfg's own bytes on disk. setup's dry run is the one
+	// caller that sets it, for a fresh or a migrated config: config()
+	// prints what it would write (or add) but never publishes it, so
+	// there is nothing at cfg for a normal disk read to find that
+	// reflects it yet. This is that same config, parsed by the config
+	// package itself (config.LoadBytes) from the exact bytes the real
+	// run would have published — not a hand-rolled approximation, so a
+	// change to the config package's own defaulting (finishMiner's
+	// intake/sessions derivation, for one) is reflected here too.
 	rendered *config.Config
 }
 

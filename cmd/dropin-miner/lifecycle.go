@@ -334,10 +334,21 @@ func operationLockPaths(home string, getenv func(string) string) (connectLock, f
 	return connectLock, flushLock, nil
 }
 
+// lockableDir is whether path's directory rules out taking a lock there at
+// all: only a directory that clearly does not exist does. Every other stat
+// outcome — the directory exists, or some other error (permission denied,
+// say) — leaves the attempt to tryLockFile itself, so a predictor of this
+// same outcome (uninstall.go's predictedFlushLockPath) must not treat an
+// error other than "not exist" as "does not exist" either.
+func lockableDir(path string) bool {
+	_, err := os.Stat(filepath.Dir(path))
+	return !errors.Is(err, fs.ErrNotExist)
+}
+
 // hold takes one operation lock and keeps it. A lock whose directory does not
 // exist cannot be held by anyone and is skipped.
 func (ex *lifecycleExclusion) hold(operation, path string) error {
-	if _, err := os.Stat(filepath.Dir(path)); errors.Is(err, fs.ErrNotExist) {
+	if !lockableDir(path) {
 		return nil
 	}
 	f, held, err := tryLockFile(path)
