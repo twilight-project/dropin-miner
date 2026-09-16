@@ -41,7 +41,12 @@ instance — reaches the rest of the installation and not the wallet. Running
 as a link to somewhere else); `doctor`'s `wallet access` line says whether anyone
 else can read it. On macOS and Linux an agent's sandbox runs as you, and file
 permissions cannot tell the two apart, so a sandboxed command can read the
-wallet file there; the key inside only spends with your passphrase.
+wallet file there; the key inside only spends with your passphrase. That makes
+the passphrase the thing protecting it, so choose one you use nowhere else, and
+write the 24 words on paper rather than keeping them on the machine. Anyone who
+can read the file can take a copy and try passphrases against it at their
+leisure, on their own computer — there is no limit on the attempts and nothing
+tells you they are trying.
 
 ## Setup
 

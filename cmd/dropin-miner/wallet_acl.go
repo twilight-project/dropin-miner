@@ -270,6 +270,12 @@ func inspectWalletAccess(dir string) walletAccessFacts {
 
 // doctorWalletCheck is the verdict. Someone else able to read a wallet object
 // is a fact whatever else could not be read, so it outranks an error.
+//
+// A reader says what to do and also that doing it may not be the end of it: the
+// entry was added by something — another program, or a machine policy that
+// refreshes on its own schedule — and that something can add it again, which is
+// a state this check will report again rather than a sign the repair failed.
+// Saying only "run setup" would read as a one-off.
 func doctorWalletCheck(f walletAccessFacts) doctorCheck {
 	c := doctorCheck{Name: "wallet access"}
 	if len(f.Readers) > 0 || len(f.Unsecurable) > 0 {
@@ -282,6 +288,9 @@ func doctorWalletCheck(f walletAccessFacts) doctorCheck {
 			parts = append(parts, p+" is a link or not a regular file, and setup will not secure it")
 		}
 		c.Detail = "someone other than you can read the wallet: " + strings.Join(parts, "; ")
+		if len(f.Readers) > 0 {
+			c.Detail += "; another program or a machine policy can add such an entry again, and dropin-miner setup re-applies the protection whenever it does"
+		}
 		if f.Err != nil {
 			c.Detail += " (and some of the wallet could not be checked: " + singleLineError(f.Err) + ")"
 		}

@@ -451,13 +451,13 @@ func TestDoctorWalletAccessCheck(t *testing.T) {
 		{"no wallet", walletAccessFacts{Checked: true, Dir: dir}, verdictOK, []string{"no wallet in " + dir}, nil},
 		{"owner only", walletAccessFacts{Checked: true, Dir: dir, Present: true}, verdictOK, []string{"only you can read " + dir}, nil},
 		{"another reader", walletAccessFacts{Checked: true, Dir: dir, Present: true, Readers: []walletReader{{Path: key, Principals: []string{`NT AUTHORITY\LogonSessionId_0_1`}}}},
-			verdictNo, []string{key, `NT AUTHORITY\LogonSessionId_0_1`}, []string{"dropin-miner setup"}},
+			verdictNo, []string{key, `NT AUTHORITY\LogonSessionId_0_1`, recurringEntryDetail}, []string{"dropin-miner setup"}},
 		{"a link", walletAccessFacts{Checked: true, Dir: dir, Present: true, Unsecurable: []string{filepath.Join(dir, "link")}},
 			verdictNo, []string{filepath.Join(dir, "link")}, []string{"move " + filepath.Join(dir, "link"), "dropin-miner setup"}},
 		{"unreadable", walletAccessFacts{Checked: true, Dir: dir, Present: true, Err: errors.Join(errors.New("first"), errors.New("second"))},
 			verdictUnknown, []string{"could not read", "first; second"}, nil},
 		{"a reader outranks what could not be read", walletAccessFacts{Checked: true, Dir: dir, Present: true, Readers: []walletReader{{Path: key, Principals: []string{"S-1-5-5-0-1"}}}, Err: errors.New("x")},
-			verdictNo, []string{key, "could not be checked"}, []string{"dropin-miner setup"}},
+			verdictNo, []string{key, recurringEntryDetail, "could not be checked"}, []string{"dropin-miner setup"}},
 	}
 	for _, c := range cases {
 		got := doctorWalletCheck(c.facts)
@@ -503,7 +503,17 @@ func TestDoctorWalletAccessCheck(t *testing.T) {
 	if lastJSON["name"] != "wallet access" || lastJSON["verdict"] != string(verdictNo) || lastJSON["fix"] != "dropin-miner setup" {
 		t.Errorf("doctor -json does not carry the wallet access check and its fix: %s", buf.String())
 	}
+	// The JSON detail is the text detail: a reader reaching a machine through
+	// -json learns the entry can come back exactly as one at a terminal does.
+	jsonDetail, _ := lastJSON["detail"].(string)
+	if jsonDetail != last.Detail || !strings.Contains(jsonDetail, recurringEntryDetail) {
+		t.Errorf("doctor -json detail = %q, want the text detail carrying %q", jsonDetail, recurringEntryDetail)
+	}
 }
+
+// recurringEntryDetail is what a reader must be told besides who and the fix:
+// the entry can be added again, and setup is what re-applies the protection.
+const recurringEntryDetail = "another program or a machine policy can add such an entry again, and dropin-miner setup re-applies the protection whenever it does"
 
 // doctor reads the wallet and changes nothing.
 func TestInspectWalletAccessOnlyReads(t *testing.T) {

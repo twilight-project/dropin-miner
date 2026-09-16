@@ -282,7 +282,11 @@ else who can read it. A coding agent's sandboxed commands can therefore still
 use `credentials.json` and the state directory, which a search and a flush
 need, and not the wallet. On macOS and Linux a sandboxed agent runs as you, and
 file modes cannot tell it apart from you: there the wallet file is readable to
-it, and the key inside stays sealed by its passphrase.
+it, and the key inside stays sealed by its passphrase. That makes the passphrase
+the thing protecting it, so give it one you use nowhere else, and keep the 24
+words off the machine: anyone who can read the file can copy it and try
+passphrases against that copy for as long as they like, on their own hardware,
+with nothing to slow them down and nothing to tell you it is happening.
 
 `wallet send` journals the transaction (`wallet/pending_tx.json`) before it
 broadcasts, so a lost node response is resolvable rather than guessed at: a

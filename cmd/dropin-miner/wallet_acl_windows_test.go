@@ -533,6 +533,12 @@ func TestDoctorReportsAnotherReaderOfTheWalletUntilSetupRepairsIt(t *testing.T) 
 	if !strings.Contains(detail, key) || !strings.Contains(detail, principalName(sid.String())) {
 		t.Errorf("the detail does not name the file and the reader: %q", detail)
 	}
+	// Against a real DACL too: the entry can come back — this fixture adds it
+	// again after setup, and a machine policy does the same on its own
+	// schedule — so the detail says so rather than reading as a one-off repair.
+	if !strings.Contains(detail, recurringEntryDetail) {
+		t.Errorf("the detail does not say the entry can be added again: %q", detail)
+	}
 	if check["fix"] != "dropin-miner setup" {
 		t.Errorf("fix = %v, want dropin-miner setup", check["fix"])
 	}
