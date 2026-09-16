@@ -1669,21 +1669,30 @@ func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
 // every rendered command would differ for a reason that has nothing to do
 // with behavior.
 func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
-	// A path a plan names is the raw root; a path a plan RENDERS — into a
-	// skill's search command, a Codex sandbox's writable_roots, a Cursor
-	// hooks.json command — is TOML-, Go %q- or JSON-escaped, and all three
-	// escape a backslash the same way: doubled. On Windows that means the
-	// raw root's own backslashes never occur as a contiguous run inside
-	// rendered content at all (TestAgentsHookAndAllowRuleMatchingSurvivesA
-	// WindowsStyleBinaryPath is this same defect, guarded elsewhere); the
-	// escaped form must be replaced first, or its already-doubled
-	// backslashes would otherwise partly match the plain root's replacement
-	// and leave the rest behind. A no-op on every other OS, where root has
-	// no backslash to double.
-	escapedRoot := strings.ReplaceAll(root, `\`, `\\`)
+	// A path a plan names is the raw root; a path a plan RENDERS is not
+	// always escaped just once. TOML, Go %q and JSON each double a
+	// backslash, and an escaping layer can nest: a Claude/Cursor allow
+	// rule or hook command is built with %q (one doubling) and that whole
+	// command string is then a JSON string value in settings.json/
+	// hooks.json (a second doubling on top), so the SAME root's
+	// backslashes appear doubled in a Codex sandbox block or a bare
+	// (unquoted) command segment, but quadrupled inside a quoted command
+	// segment embedded in JSON. On Windows the raw root's own backslashes
+	// then never occur as a contiguous run inside that quadrupled text at
+	// all (TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath
+	// is this same defect, guarded on the production side). Try the most
+	// escaped form first, so its already-doubled backslashes are not
+	// partly consumed by a shorter form's replacement first. A no-op on
+	// every other OS, where root has no backslash to double at any depth.
+	forms := []string{root}
+	for i := 0; i < 2; i++ {
+		forms = append(forms, strings.ReplaceAll(forms[len(forms)-1], `\`, `\\`))
+	}
 	repl := func(s string) string {
-		s = strings.ReplaceAll(s, escapedRoot, "<ROOT>")
-		return strings.ReplaceAll(s, root, "<ROOT>")
+		for i := len(forms) - 1; i >= 0; i-- {
+			s = strings.ReplaceAll(s, forms[i], "<ROOT>")
+		}
+		return s
 	}
 	replBytes := func(b []byte) []byte { return []byte(repl(string(b))) }
 	out := agentPlan{skipped: p.skipped, refused: p.refused}
@@ -1715,11 +1724,17 @@ func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
 // actual Windows path, so this runs on every OS the test matrix does.
 func TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping(t *testing.T) {
 	root := `C:\Users\runner\AppData\Local\Temp\TestName123`
+	once := strings.ReplaceAll(root, `\`, `\\`)
+	twice := strings.ReplaceAll(once, `\`, `\\`)
 	plan := agentPlan{writes: []agentWrite{{
-		surface: "Codex",
-		path:    root + `\user\.codex\config.toml`,
-		contents: []byte(`writable_roots = ["` + strings.ReplaceAll(root, `\`, `\\`) + `\\user\\.tokendrop\\state"]` + "\n" +
-			`command = "` + strings.ReplaceAll(root, `\`, `\\`) + `\\bin\\dropin-miner"` + "\n"),
+		surface: "Claude Code",
+		path:    root + `\user\.claude\settings.json`,
+		// The shapes actually seen in a real settings.json: a raw
+		// (unquoted) command segment escaped once by JSON alone, and a
+		// %q-quoted command segment escaped once for the quoting and
+		// again for JSON — the case the first version of this fix missed.
+		contents: []byte(`{"allow":["Bash(` + once + `\\bin\\dropin-miner search:*)",` +
+			`"Bash(\"` + twice + `\\\\bin\\\\dropin-miner\" search -config \"` + twice + `\\\\user\\\\.tokendrop\\\\tokendrop.toml\":*)"]}`),
 	}}}
 	got := normalizeAgentPlanRoots(plan, root)
 	w := got.writes[0]
@@ -1727,11 +1742,11 @@ func TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping(t *testing.T) {
 		t.Errorf("path still carries the raw root: %s", w.path)
 	}
 	content := string(w.contents)
-	if strings.Contains(content, root) || strings.Contains(content, strings.ReplaceAll(root, `\`, `\\`)) {
-		t.Errorf("content still carries the root, raw or escaped:\n%s", content)
+	if strings.Contains(content, root) || strings.Contains(content, once) || strings.Contains(content, twice) {
+		t.Errorf("content still carries the root, raw or escaped at some depth:\n%s", content)
 	}
-	if !strings.Contains(w.path, "<ROOT>") || strings.Count(content, "<ROOT>") != 2 {
-		t.Errorf("expected one <ROOT> in the path and two in the content:\npath: %s\ncontent: %s", w.path, content)
+	if !strings.Contains(w.path, "<ROOT>") || strings.Count(content, "<ROOT>") != 3 {
+		t.Errorf("expected one <ROOT> in the path and three in the content:\npath: %s\ncontent: %s", w.path, content)
 	}
 }
 
