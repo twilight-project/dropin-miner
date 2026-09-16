@@ -316,8 +316,35 @@ type flushStamp struct {
 
 func minerRoot(m config.Miner) string { return filepath.Dir(m.IntakeDir) }
 
-func flushStampPath(m config.Miner) string { return filepath.Join(minerRoot(m), "flush.json") }
-func flushLockPath(m config.Miner) string  { return filepath.Join(minerRoot(m), "flush.lock") }
+// flushStampPath is the stamp under mining.state_dir, which a sandboxed agent
+// can write (the miner root is not). With no state directory there is no
+// stamp: every read is the zero stamp and every write fails, which costs a
+// target lookup per flush and nothing else. A config with an authorization
+// server always has a state directory (pkg/config refuses one without).
+func flushStampPath(m config.Mining) string {
+	if m.StateDir == "" {
+		return ""
+	}
+	return filepath.Join(m.StateDir, "flush.json")
+}
+
+// legacyFlushStampPath is where 0.2.9 and earlier kept the stamp. It is read
+// only as a starting value while the new stamp is absent, never written, and
+// removed only by a purge.
+func legacyFlushStampPath(m config.Miner) string { return filepath.Join(minerRoot(m), "flush.json") }
+
+func flushLockPath(m config.Miner) string { return filepath.Join(minerRoot(m), "flush.lock") }
+
+// loadFlushStamp reads the stamp, falling back to the legacy one only when the
+// new one does not exist.
+func loadFlushStamp(path, legacy string) flushStamp {
+	if path != "" {
+		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+			return readFlushStamp(path)
+		}
+	}
+	return readFlushStamp(legacy)
+}
 
 func readFlushStamp(path string) flushStamp {
 	data, err := os.ReadFile(path) // #nosec G304 -- our own state dir
@@ -332,6 +359,9 @@ func readFlushStamp(path string) flushStamp {
 }
 
 func writeFlushStamp(path string, st flushStamp) error {
+	if path == "" {
+		return errors.New("mining.state_dir is empty, so the flush stamp has nowhere to live")
+	}
 	st.V = 1
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

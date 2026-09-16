@@ -157,8 +157,30 @@ each line names the file that owns the rule and the test that proves it.
 
 - **The mining decision and the health records** — `pkg/auth/mining_state.go` owns the four states
   and what makes one degraded; `pkg/auth/health.go` owns the three components and the closed reason
-  vocabulary. `cmd/dropin-miner/mining_state_health_test.go` drives search and flush through every
-  decision and every reason.
+  vocabulary (`decision_unreadable`, `intake_unwritable`, `sandbox_restricted`, `flush_spawn_failed`,
+  `flush_state_unavailable`, `auth_state_unavailable`, `submission_failed`, `spool_backlog`).
+  `cmd/dropin-miner/mining_state_health_test.go` drives search and flush through every decision and
+  every reason.
+- **The flush lock and stamp** — `cmd/dropin-miner/flushlock.go` owns the rule: one `flush.lock`
+  beside the intake directory for every flush of every version, because a 0.2.9 flush that overlaps
+  another re-spools records it already read and damages them in code no later binary can patch, so
+  the lock cannot be split across paths or generations. Where a sandbox denies writing it (Codex's
+  block never grants the miner root), `tryFlushLock` in `minerlock_unix.go`/`minerlock_windows.go`
+  opens the existing file read-only and takes the same exclusive lock; only a permission denial
+  falls back — `classifyFlushLockOpenError`, one per platform: `EACCES` or `EPERM` (what Codex's
+  macOS sandbox returns), `ERROR_ACCESS_DENIED` — and an absent lock it cannot create stops the flush
+  with `flush_state_unavailable`.
+  Setup, the upgrade transaction and every read-write flush create the file; nothing else uses the
+  fallback, because the gate, setup, connect and the destructive exclusion run outside any sandbox
+  and must refuse a lock they cannot open read-write. The stamp is a cache under `mining.state_dir`,
+  written only through `saveFlushStamp`; a failure never stops delivery. `flushlock_test.go`'s
+  `TestSandboxedFlushTakesTheLockReadOnlyAndDelivers` (with its fixture self-proof, `EACCES`),
+  `TestSandboxedFlushFallsBackOnEPERM` (macOS `chflags uchg`), the per-platform
+  `…FlushLockOpenErrorDecision` tables, `TestFlushLockExcludesAcrossProcessesInEveryOpenMode` and
+  `TestAFlushPausedAfterReadingIntakeMakesASandboxedFlushBusy` guard it. A permission test that
+  cannot establish its condition leaves through `skipPermissionTest`, which fails instead of
+  skipping under `CI=true`: CI runs `go test` without `-v`, so only that makes a green job mean the
+  test ran.
 - **The registration journal and the rebuild** — `cmd/dropin-miner/connect.go` owns the order
   (journal, publish, clear); `pkg/auth/store.go` owns the journal and the agent record;
   `pkg/platform/client.go` owns `Register`, `Status` and `Me`. Its guards, in

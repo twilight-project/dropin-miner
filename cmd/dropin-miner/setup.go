@@ -321,6 +321,9 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	if code := r.config(); code != exitOK {
 		return code
 	}
+	if code := r.flushLock(); code != exitOK {
+		return code
+	}
 
 	// ── 5. connect ──
 	r.say("Search context")
@@ -555,6 +558,38 @@ func (r *setupRun) config() int {
 	} else {
 		r.say("Wrote " + r.cfgPath)
 	}
+	return exitOK
+}
+
+// flushLock creates the flush lock the config names when it is absent. A flush
+// inside a sandbox that denies writes to the miner root can take the lock only
+// read-only, which needs the file to exist already (flushlock.go).
+func (r *setupRun) flushLock() int {
+	path := filepath.Join(r.home, "flush.lock")
+	if lexists(r.cfgPath) {
+		cfg, _, err := loadConfig(r.cfgPath, r.d.getenv)
+		if err != nil {
+			fmt.Fprintf(r.d.stderr, "dropin-miner setup: config %s: %v\n", r.cfgPath, err)
+			return exitTransport
+		}
+		path = ""
+		if cfg.Miner.IntakeDir != "" {
+			path = flushLockPath(cfg.Miner)
+		}
+	}
+	if path == "" || lexists(path) {
+		return exitOK
+	}
+	if r.dry {
+		r.printf("(dry run) would create %s\n", path)
+		return exitOK
+	}
+	created, err := ensureFlushLockFile(path)
+	if err != nil {
+		fmt.Fprintf(r.d.stderr, "dropin-miner setup: create the flush lock %s: %v\n", path, err)
+		return exitTransport
+	}
+	r.changed = r.changed || created
 	return exitOK
 }
 

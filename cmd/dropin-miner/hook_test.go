@@ -297,6 +297,135 @@ func TestHookLineageReadsTheSubagentsOwnTranscript(t *testing.T) {
 	}
 }
 
+// The four fixtures below are derived from a real Claude Code transcript
+// (record types and field layout byte-faithful, prose and ids scrubbed) of
+// exactly #65's shape: assistant text -> Skill tool_use -> tool_result ->
+// isMeta user text (the skill body Claude Code injects) -> attachments ->
+// Bash tool_use. Before the fix, `isUserTurn` took the isMeta entry as the
+// floor and the assistant's sentence was never found.
+
+func readHookFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "hook", name)) // #nosec G304 -- a fixed testdata path this file builds, not an external one
+	if err != nil {
+		t.Fatalf("fixture %s: %v", name, err)
+	}
+	return b
+}
+
+func TestHookLineageSkipsTheSkillsIsMetaEntryAndFindsTheAssistantSentence(t *testing.T) {
+	fs, ops := newFakeHookOps(nil)
+	fs.files["/t/s.jsonl"] = readHookFixture(t, "claude_code_skill_ismeta.jsonl")
+	hc := hookContext{}
+	cmd := `dropin-miner search -format model "latest stable Go release version"`
+	out, _ := runHook(t, ops, hc, "lineage", map[string]any{
+		"session_id": "s", "prompt_id": "p", "tool_use_id": "toolu_bash1",
+		"transcript_path": "/t/s.jsonl", "tool_input": map[string]any{"command": cmd},
+	})
+	var resp struct {
+		Out struct {
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("output: %s", out)
+	}
+	env := decodeBridgeFromCommand(t, resp.Out.Input["command"].(string))
+	if len(env.History) != 1 || env.History[0].Text != "Now performing one web search through my own dropin-miner skill (the Skill tool), per the test spec." {
+		t.Errorf("the isMeta entry was taken as the floor, or the wrong turn's prose leaked: %+v", env.History)
+	}
+}
+
+func TestHookLineageSkipsTheSkillsIsMetaEntryInASubagentTranscript(t *testing.T) {
+	fs, ops := newFakeHookOps(nil)
+	fs.files["/t/orch.jsonl"] = []byte(`{"type":"user","message":{"role":"user","content":"spawn a subagent"}}`)
+	fs.files[filepath.Join("/t", "sess", "subagents", "agent-a1.jsonl")] = readHookFixture(t, "claude_code_skill_ismeta_subagent.jsonl")
+	hc := hookContext{}
+	out, _ := runHook(t, ops, hc, "lineage", map[string]any{
+		"session_id": "sess", "prompt_id": "p", "agent_id": "a1", "tool_use_id": "toolu_subbash1",
+		"transcript_path": "/t/orch.jsonl",
+		"tool_input":      map[string]any{"command": "dropin-miner search -format model q"},
+	})
+	var resp struct {
+		Out struct {
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	_ = json.Unmarshal([]byte(out), &resp)
+	env := decodeBridgeFromCommand(t, resp.Out.Input["command"].(string))
+	if len(env.History) != 1 || env.History[0].Text != "Searching the web via my own dropin-miner skill for this subtask." {
+		t.Errorf("subagent's own isMeta entry was taken as the floor: %+v", env.History)
+	}
+}
+
+func TestHookLineageSkipsTheSkillsIsMetaEntryOnAWindowsTranscriptPath(t *testing.T) {
+	// The transcript_path a Windows host reports is used directly as the
+	// tail-read key (no filepath.Join here, since there is no AgentID) — the
+	// fix does not depend on POSIX-shaped paths.
+	fs, ops := newFakeHookOps(nil)
+	winPath := `C:\Users\tester\AppData\Roaming\Claude\projects\dropin-miner\transcript.jsonl`
+	fs.files[winPath] = readHookFixture(t, "claude_code_skill_ismeta.jsonl")
+	hc := hookContext{}
+	out, _ := runHook(t, ops, hc, "lineage", map[string]any{
+		"session_id": "s", "prompt_id": "p", "tool_use_id": "toolu_bash1",
+		"transcript_path": winPath,
+		"tool_input":      map[string]any{"command": `dropin-miner search -format model "latest stable Go release version"`},
+	})
+	var resp struct {
+		Out struct {
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	_ = json.Unmarshal([]byte(out), &resp)
+	env := decodeBridgeFromCommand(t, resp.Out.Input["command"].(string))
+	if len(env.History) != 1 || env.History[0].Text != "Now performing one web search through my own dropin-miner skill (the Skill tool), per the test spec." {
+		t.Errorf("Windows-style transcript path broke the isMeta exclusion: %+v", env.History)
+	}
+}
+
+// isMeta alone is not the floor-exclusion signal: it also marks a "user"
+// entry that STARTS a turn with no tool call behind it at all — a
+// continuation prompt, an autonomous-loop tick, a scheduled wake-up. Those
+// must still floor the scan (sourceToolUseID is what's absent on all of
+// them, and present on every isMeta entry the Skill tool injects). Both
+// fixtures here have no assistant text anywhere in the current turn, so a
+// correct floor sends no history; the previous turn's assistant prose
+// ("Answering the earlier question...") must not leak in as a substitute.
+func testHookLineageFloorsAtANoToolCallIsMetaEntry(t *testing.T, fixture, toolUseID string) {
+	fs, ops := newFakeHookOps(nil)
+	fs.files["/t/s.jsonl"] = readHookFixture(t, fixture)
+	hc := hookContext{}
+	out, _ := runHook(t, ops, hc, "lineage", map[string]any{
+		"session_id": "s", "prompt_id": "p", "tool_use_id": toolUseID,
+		"transcript_path": "/t/s.jsonl",
+		"tool_input":      map[string]any{"command": `dropin-miner search -format model "latest stable Go release version"`},
+	})
+	var resp struct {
+		Out struct {
+			Input map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("output: %s", out)
+	}
+	cmd, ok := resp.Out.Input["command"].(string)
+	if !ok {
+		t.Fatalf("no rewritten command for fixture %s: %s", fixture, out)
+	}
+	env := decodeBridgeFromCommand(t, cmd)
+	if len(env.History) != 0 {
+		t.Errorf("%s: floored past the turn-starting isMeta entry, leaking the previous turn's prose: %+v", fixture, env.History)
+	}
+}
+
+func TestHookLineageFloorsAtAContinuationIsMetaEntryWithNoToolCall(t *testing.T) {
+	testHookLineageFloorsAtANoToolCallIsMetaEntry(t, "claude_code_ismeta_continuation.jsonl", "toolu_bash2")
+}
+
+func TestHookLineageFloorsAtAnAutonomousLoopTickIsMetaEntryWithNoToolCall(t *testing.T) {
+	testHookLineageFloorsAtANoToolCallIsMetaEntry(t, "claude_code_ismeta_autonomous_loop.jsonl", "toolu_bash3")
+}
+
 func TestHookWindowCountsExactlyOnePerCompactionAndSessionStartFlushes(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{cfgPath: "/c.toml", sessionsDir: "/sessions"}

@@ -603,7 +603,7 @@ func gatherDoctorFactsFor(ctx context.Context, as asClient, m config.Mining, min
 	if f.MinerEnabled && f.MiningDecision.State == auth.MiningEnabled {
 		f.IntakeProbe = probeIntakeWritable(probe, miner.IntakeDir)
 		f.IntakeCount, f.IntakeErr = countIntakeJSON(miner.IntakeDir)
-		f.Stamp, f.StampPresent, f.StampErr = readFlushStampForDoctor(flushStampPath(miner))
+		f.Stamp, f.StampPresent, f.StampErr = doctorFlushStamp(flushStampPath(m), legacyFlushStampPath(miner))
 		f.SpoolCount, f.QuarantineCount, f.SpoolErr = countSpool(m.SpoolDir)
 	}
 
@@ -943,6 +943,20 @@ func doctorIntakeCheck(f doctorFacts) doctorCheck {
 		c.Fix = fmt.Sprintf("if searches run under Codex, re-run `dropin-miner agents install` so the sandbox allows %s", p.Dir)
 	}
 	return c
+}
+
+// doctorFlushStamp reads the stamp the way a flush chooses it: the stamp under
+// the state directory, or, only while that one does not exist, the legacy
+// stamp beside the intake directory. An unreadable new stamp is reported as
+// unreadable, not replaced by an older one.
+func doctorFlushStamp(path, legacy string) (flushStamp, bool, error) {
+	if path != "" {
+		st, present, err := readFlushStampForDoctor(path)
+		if present || err != nil {
+			return st, present, err
+		}
+	}
+	return readFlushStampForDoctor(legacy)
 }
 
 // readFlushStampForDoctor is readFlushStamp's opposite number.
