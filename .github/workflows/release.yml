@@ -225,7 +225,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
 
       # npm versions are immutable, so a rerun must find out whether this
       # one is already there before trying. "Already there" is not by
@@ -272,16 +271,13 @@ jobs:
           rm -rf "$tmp"
           echo "The published ${VERSION} matches npm/ at this tag; publication is already done."
 
-      # --provenance and OIDC trusted publishing need npm >= 11.5.1;
+      # trusted publishing and --provenance need >= 11.5.1;
       # actions/setup-node's bundled npm can be older than that
       # depending on the Node release, so it is upgraded explicitly
-      # rather than assumed. @latest rather than an exact version:
-      # latest resolves to 12.0.2 as of this writing, comfortably past
-      # the 11.5.1 floor, and there is no compatibility reason to pin
-      # narrower for a tool this job only uses to publish once.
+      # rather than assumed.
       - name: Ensure npm >= 11.5.1 for trusted publishing
         if: steps.registry.outputs.published == 'false'
-        run: npm install -g npm@latest # 12.0.2 as of writing
+        run: npm install -g npm@12.0.2
 
       # The version published is the one already committed at the tag.
       # Nothing here bumps a version, commits, or pushes: the release PR

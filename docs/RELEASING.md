@@ -194,12 +194,13 @@ Publishes `npm/` at the version already committed at the tag. Nothing here bumps
 version, commits, or pushes.
 
 `--ignore-scripts` is passed so publication never executes a lifecycle script from the
-package while the credential is in the environment. The package's own `postinstall`
+package while the OIDC-issued publish credential is live. The package's own `postinstall`
 still ships and still runs for whoever installs it; only the publish-time hooks are
 suppressed.
 
 This is the only job that references the `release` environment and the only one that
-can see `NPM_TOKEN`.
+declares `id-token: write` — the permission npm's trusted-publishing exchange needs to
+mint a short-lived publish token, and the only credential this job ever holds.
 
 ### 5. `smoke-npm` — install it for real, on three operating systems
 
@@ -322,34 +323,29 @@ constrains **who** may create a release tag, the preflight ancestry check constr
 **what commit** an honest tag may release, and the environment boundary constrains
 **what any workflow can reach**. Each covers a case the others do not.
 
-**A GitHub Environment named `release`,** holding `NPM_TOKEN` as an environment secret
-— not a repository secret. That distinction is the boundary: a repository secret is
-reachable from any job in any workflow, while an environment secret is handed only to a
-job that names the environment and passes its protection rules. Required reviewers on
-that environment are worth enabling; they are the one control a workflow file cannot
-route around.
+**A GitHub Environment named `release`,** with required reviewers configured on it. There
+is no npm secret to hold any more — see below.
 
-## npm authentication — temporary, and known to be
+## npm authentication — trusted publishing (OIDC)
 
-Publication currently authenticates with a **granular npm access token** stored as
-`NPM_TOKEN` in the `release` environment. It should be scoped to the `dropin-miner`
-package alone, with publish capability and no unrelated package or organisation
-authority, and with a finite expiry.
+Publication authenticates with npm's **Trusted Publishing**: `publish-npm` declares
+`id-token: write` and exchanges the resulting OIDC token for a short-lived npm publish
+token, so no npm secret exists in this repository or its environments, and none is read
+by the job. Authorization instead comes from a trusted-publisher record configured on the
+`dropin-miner` package on npmjs.com, naming this workflow exactly:
 
-**This is a bridge, not the destination.** npm Trusted Publishing (OIDC) is the intended
-replacement: it removes the long-lived credential entirely, and it is not implemented
-here because package-side OIDC authorization is not yet available to this project.
-Nothing about it is implemented or half-implemented — when it becomes available, the
-change is confined to the `publish-npm` job's authentication. Preflight, release
-ordering, artifact verification, propagation handling, smoke verification and the retry
-semantics are all independent of how that one job authenticates, which is why they are
-separate jobs.
+- **Owner:** `twilight-project`
+- **Repository:** `dropin-miner`
+- **Workflow file:** `release.yml`
+- **Environment:** `release`
 
-Until then: **the token expires and must be rotated.** A release that fails in
-`publish-npm` with an authentication error, after everything before it passed, is the
-expiry — rotate the token in the `release` environment and re-run; the run will resume
-past the completed GitHub Release. Never commit token material, and never add the secret
-to a job that does not publish.
+npm checks the OIDC token's claims against that record before minting a publish token, so
+a fork or a differently-named workflow cannot authenticate even with `id-token: write` —
+the record is npm-side, not something this repository's files can widen. The `release`
+environment's required reviewers remain the boundary that decides which run can reach the
+token exchange at all: `id-token: write` is granted to the job, but only a run that also
+passes the environment's protection rules gets to use it — the one control a workflow
+file cannot route around.
 
 ## The npm version, and the two releases that got it wrong
 
