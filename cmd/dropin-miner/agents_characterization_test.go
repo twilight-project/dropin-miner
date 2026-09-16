@@ -201,15 +201,51 @@ func withSkillPlaceholder(g goldenPlan) goldenPlan {
 	// unknown. Both are per-OS by design and both have their own guards —
 	// the host goldens for the first, TestUnknownToolCellKeepsTheBashForm
 	// for the second.
-	for i, n := range g.Notes {
+	var notes []string
+	for _, n := range g.Notes {
 		switch {
 		case strings.Contains(n, "add to AGENTS.md"):
-			g.Notes[i] = "<AGENTS.md rules line, rendered for this OS>"
+			notes = append(notes, "<AGENTS.md rules line, rendered for this OS>")
 		case strings.Contains(n, "is not established"):
-			g.Notes[i] = "<the shell is not established for this host on this OS>"
+			// Dropped, not replaced: this note EXISTS only on an OS where the
+			// host's cell is unknown — Codex on Windows and nowhere else — so
+			// its presence, not only its text, is per-OS.
+			// TestUnknownToolCellKeepsTheBashForm is its guard.
+		default:
+			notes = append(notes, n)
 		}
 	}
+	g.Notes = notes
 	return g
+}
+
+// These goldens are one file each, compared on four runners, so anything
+// in a plan that differs by OS has to leave them — and "differs by OS"
+// includes a note that exists on one OS and not another. Codex's
+// shell-not-established note is the case: present on Windows, absent
+// everywhere else, and it failed both Windows jobs when it was merely
+// replaced rather than dropped.
+func TestPlanGoldenCaptureDropsWhatDiffersByOS(t *testing.T) {
+	got := withSkillPlaceholder(goldenPlan{
+		Writes: []goldenWrite{{Path: "/h/skills/dropin-miner/SKILL.md", Content: "rendered for whichever OS this is"}},
+		Notes: []string{
+			"Codex: which shell runs its tool calls on windows is not established, so the skill keeps the Bash form",
+			"opencode: has no skill directory — add to AGENTS.md:\n  '/h/bin/dropin-miner' search --stdin",
+			"Codex: shell commands run sandboxed; if searches record nothing, allow this command network access",
+		},
+	})
+	if len(got.Notes) != 2 {
+		t.Fatalf("notes after capture: %q", got.Notes)
+	}
+	if strings.Contains(strings.Join(got.Notes, "\n"), "is not established") {
+		t.Errorf("the per-OS shell note survived into the golden: %q", got.Notes)
+	}
+	if got.Notes[0] != "<AGENTS.md rules line, rendered for this OS>" {
+		t.Errorf("the rules line kept its per-OS command: %q", got.Notes[0])
+	}
+	if !strings.Contains(got.Writes[0].Content, "see testdata/hosts") {
+		t.Errorf("the skill kept its per-OS bytes: %q", got.Writes[0].Content)
+	}
 }
 
 // TestInstallPlanGoldenPerHost characterizes buildInstallPlan one host at a
