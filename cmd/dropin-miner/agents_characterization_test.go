@@ -177,7 +177,25 @@ func capturePlanForGolden(id string, ops agentOps, entry binEntry, plan agentPla
 			got = replaceInGoldenPlan(got, hermesYAMLSingleQuoted(cmd), "<HERMES_HOOK_COMMAND>")
 		}
 	}
-	return got
+	return withSkillPlaceholder(got)
+}
+
+// withSkillPlaceholder replaces a skill's rendered bytes with a placeholder.
+//
+// From H2 a skill is rendered for the shells its host runs on THIS OS, so
+// its bytes differ between runners by design and this golden — one file,
+// compared on all four — cannot hold them. What it still holds is what the
+// plan is about: which files, with which modes, for which stated reason.
+// The skill's bytes have a stronger guard of their own,
+// testdata/hosts/<goos>.golden, which pins all three renderings on every
+// runner rather than whichever one the runner happens to produce.
+func withSkillPlaceholder(g goldenPlan) goldenPlan {
+	for i, w := range g.Writes {
+		if strings.Contains(w.Path, "SKILL.md") {
+			g.Writes[i].Content = "<SKILL.md, rendered for this OS; see testdata/hosts/*.golden>"
+		}
+	}
+	return g
 }
 
 // TestInstallPlanGoldenPerHost characterizes buildInstallPlan one host at a
@@ -359,7 +377,7 @@ func TestCodexSandboxPlanGolden(t *testing.T) {
 		_, ops := newFakeMachine()
 		paths := ops.paths(noEnv)
 		plan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
-		compareGoldenPlan(t, normalizeGoldenPlan(capturePlan(plan), home), filepath.Join("testdata", "agents", "codex-sandbox.install.golden"))
+		compareGoldenPlan(t, withSkillPlaceholder(normalizeGoldenPlan(capturePlan(plan), home)), filepath.Join("testdata", "agents", "codex-sandbox.install.golden"))
 	})
 
 	t.Run("uninstall", func(t *testing.T) {
@@ -372,7 +390,7 @@ func TestCodexSandboxPlanGolden(t *testing.T) {
 			t.Fatalf("committing the sandboxed install: %d failures", failures)
 		}
 		plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry)
-		compareGoldenPlan(t, normalizeGoldenPlan(capturePlan(plan), home), filepath.Join("testdata", "agents", "codex-sandbox.uninstall.golden"))
+		compareGoldenPlan(t, withSkillPlaceholder(normalizeGoldenPlan(capturePlan(plan), home)), filepath.Join("testdata", "agents", "codex-sandbox.uninstall.golden"))
 	})
 }
 

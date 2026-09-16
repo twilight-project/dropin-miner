@@ -166,6 +166,29 @@ func TestRecognizerFollowsTheBinaryNotItsSpelling(t *testing.T) {
 	}
 }
 
+// The hook learns its config path from its own argv, and the host's hook
+// command may spell it differently from the skill's: a `%q`-quoted hook
+// command on Windows hands the process doubled separators. Same file, other
+// bytes — and an exact-match recognizer that compared the spelling would
+// refuse the very command its own skill teaches, which is #66 again by
+// another route. This is what the Windows runner caught.
+func TestRecognizerComparesTheConfigAsAPathNotASpelling(t *testing.T) {
+	f := newRecognizerFixture(t, shellPOSIX)
+	command := f.renderedSearch(t, shellPOSIX, `{"version":1,"query":"q"}`)
+	doubled := strings.ReplaceAll(f.entry.cfg, string(filepath.Separator), strings.Repeat(string(filepath.Separator), 2))
+	if doubled == f.entry.cfg {
+		t.Fatal("this path has no separator to double")
+	}
+	got := recognizeCursorCommand(command, f.exe, doubled, f.shells)
+	if got == nil {
+		t.Fatalf("a hook holding %q refused the search rendered with %q", doubled, f.entry.cfg)
+	}
+	// A different file is still a different file.
+	if other := recognizeCursorCommand(command, f.exe, filepath.Join(t.TempDir(), "other.toml"), f.shells); other != nil {
+		t.Fatal("a command naming another installation's config was allowed")
+	}
+}
+
 // The skill's own text is the input: whatever the renderer produces, the
 // recognizer accepts that and the body inside it.
 func TestRecognizerAcceptsTheCommandTakenFromTheRenderedSkill(t *testing.T) {

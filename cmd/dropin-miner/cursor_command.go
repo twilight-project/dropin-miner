@@ -95,7 +95,16 @@ const binPlaceholder = "\x00BINARY\x00"
 
 // renderedCursorCommands is every command Cursor may auto-allow, rendered
 // for one shell, with the binary path and request body as placeholders.
+//
+// The config path is cleaned first. The hook learns it from its own argv,
+// and the host's hook command may spell it differently from the skill's —
+// on Windows a `%q`-quoted hook command hands the process `C:\\Users\\…`,
+// doubled separators and all, which names the same file but is not the same
+// bytes. A path is compared as a path; everything else is compared exactly.
 func renderedCursorCommands(cfg string, sh shellKind) []renderedCommand {
+	if cfg != "" {
+		cfg = filepath.Clean(cfg)
+	}
 	entry := binEntry{command: binPlaceholder, cfg: cfg}
 	var out []renderedCommand
 	if _, script, err := searchBlockForShell(sh, entry, bodyPlaceholder); err == nil {

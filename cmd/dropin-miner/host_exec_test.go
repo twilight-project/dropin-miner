@@ -520,7 +520,12 @@ type stdinDelivery string
 
 const (
 	deliveryInherited stdinDelivery = "inherited"
-	deliveryLiteral   stdinDelivery = "literal"
+	// deliveryLiteral is the rendered form: the encoding line the renderer
+	// writes, then the here-string piped in.
+	deliveryLiteral stdinDelivery = "literal"
+	// deliveryBareLiteral is the same pipe WITHOUT that line, which is what
+	// the form looked like before H2 and what makes the line necessary.
+	deliveryBareLiteral stdinDelivery = "literal-without-the-encoding-line"
 )
 
 // stdinBytesDelivered runs the hex-dump helper through sh and returns the
@@ -532,11 +537,14 @@ func stdinBytesDelivered(t *testing.T, sh execShell, delivery stdinDelivery, req
 	switch delivery {
 	case deliveryInherited:
 		stdin = []byte(request)
-	case deliveryLiteral:
+	case deliveryLiteral, deliveryBareLiteral:
 		if sh.kind != shellPowerShell {
 			t.Fatalf("a literal-piped request is only rendered for PowerShell, not %s", sh.name)
 		}
-		script = "'" + strings.ReplaceAll(request, "'", "''") + "' | " + script
+		script = "@'\n" + request + "\n'@ | " + script
+		if delivery == deliveryLiteral {
+			script = psOutputEncodingLine + "\n" + script
+		}
 	}
 	out := runInShell(t, sh, script, stdin, append(execEnv(), hexDumpHelperEnv+"=1"))
 	for _, line := range strings.Split(out.stdout, "\n") {
@@ -661,7 +669,7 @@ func TestWithoutTheEncodingLineWindowsPowerShellMangsTheQuery(t *testing.T) {
 		t.Skip("Windows PowerShell 5.1 runs on the Windows runners")
 	}
 	request := `{"version":1,"query":"café 東京 😀"}`
-	got := stdinBytesDelivered(t, shellWinPS, deliveryLiteral, request)
+	got := stdinBytesDelivered(t, shellWinPS, deliveryBareLiteral, request)
 	if want := mangledByASCIIEncoding(request); !bytes.Equal(got, want) {
 		t.Fatalf("a literal pipe without the encoding line delivered\n got %x\nwant %x", got, want)
 	}
