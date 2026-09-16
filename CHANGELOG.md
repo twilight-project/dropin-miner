@@ -13,7 +13,7 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
-## v0.2.10 — 2026-09-16
+## v0.2.10 — 2026-09-17
 
 0.2.10 is the stabilization release: the fixes from 0.2.9's field validation
 that were ready are cut now, so every 0.2.9 installation can make its first
@@ -72,9 +72,10 @@ below still applies first.
 
 - **Codex: the flush a search starts now runs inside the sandbox.** The
   flush lock stays at its one existing location for every binary, but a
-  flush that cannot open it for writing — because Codex's sandbox never
-  grants write access outside the workspace — now opens it read-only and
-  takes the same exclusive lock instead of failing silently. The flush
+  flush that cannot open it for writing — because the lock lives beside
+  the config, outside the directories the sandbox lets a search write —
+  now opens it read-only and takes the same exclusive lock instead of
+  failing silently. The flush
   stamp moves under the state directory, which a sandboxed flush can
   write. A Codex-only participant's searches are delivered.
 
