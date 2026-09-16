@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -211,7 +212,11 @@ func TestHookLineageStaysSilentWhenItShould(t *testing.T) {
 		payload any
 	}{
 		{"someone else's command", map[string]any{"session_id": "s", "tool_input": map[string]any{"command": "ls -la"}}},
-		{"already bridged", map[string]any{"session_id": "s", "tool_input": map[string]any{"command": "TOKENDROP_TRACE_BRIDGE=abc dropin-miner search q"}}},
+		// A bridge already on the command is no longer a reason to stand down
+		// (H-R4) — it is removed and replaced. What does keep the hook silent
+		// is a tool whose shell this client does not know, because the syntax
+		// of the prefix is exactly what it cannot guess.
+		{"a tool this client does not know", map[string]any{"session_id": "s", "tool_name": "SomeOtherShell", "tool_input": map[string]any{"command": "dropin-miner search q"}}},
 		{"no session id", map[string]any{"tool_input": map[string]any{"command": "dropin-miner search q"}}},
 		{"no tool input", map[string]any{"session_id": "s"}},
 		{"not json", "garbage"},
@@ -489,7 +494,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 	if out != "" {
 		t.Errorf("a foreign command got an opinion: %s", out)
 	}
-	out, _ = runHook(t, ops, hc, "cursor beforeShellExecution", with(map[string]any{"command": cursorTestSearch(t)}))
+	out, _ = runHook(t, ops, hc, "cursor beforeShellExecution", with(map[string]any{"command": cursorTestSearch(t, hc.cfgPath)}))
 	if strings.TrimSpace(out) != `{"permission":"allow"}` {
 		t.Errorf("our command was not allowed: %s", out)
 	}
@@ -519,7 +524,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 func TestHookCursorWithoutAConversationDoesNothingButAllow(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{sessionsDir: "/sessions"}
-	out, _ := runHook(t, ops, hc, "cursor beforeShellExecution", map[string]any{"command": cursorTestSearch(t)})
+	out, _ := runHook(t, ops, hc, "cursor beforeShellExecution", map[string]any{"command": cursorTestSearch(t, hc.cfgPath)})
 	if strings.TrimSpace(out) != `{"permission":"allow"}` {
 		t.Errorf("allow is owed even with no lineage: %s", out)
 	}
@@ -637,11 +642,24 @@ func keys(m map[string][]byte) []string {
 
 var _ = fmt.Sprintf
 
-func cursorTestSearch(t *testing.T) string {
+// cursorTestSearch is the search Cursor's skill renders for this
+// installation, in the shell Cursor runs on this OS — which is the only
+// thing the hook auto-allows (H-R3). The human form, which keeps the query
+// in argv, is not among them: Cursor asks about that one as it would about
+// any other command a person types.
+func cursorTestSearch(t *testing.T, cfg string) string {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return (binEntry{command: executable}).searchCommand() + ` "q"`
+	shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+	if err != nil {
+		t.Skip("Cursor declares no tool shell on this OS: " + err.Error())
+	}
+	_, script, err := searchBlockForShell(shells[0], binEntry{command: executable, cfg: cfg}, `{"version":1,"query":"q"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
 }

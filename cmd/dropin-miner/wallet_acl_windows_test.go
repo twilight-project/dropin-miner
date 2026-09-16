@@ -32,8 +32,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,7 +40,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf16"
 
 	"golang.org/x/sys/windows"
 )
@@ -183,17 +180,11 @@ func probeAsSecondPrincipal(t *testing.T, targets ...principalProbe) []uint32 {
 	return results
 }
 
-// encodePowerShellCommand is -EncodedCommand's form: UTF-16LE, base64. A
-// script passed that way reaches PowerShell byte for byte, which a -Command
-// argument does not.
-func encodePowerShellCommand(script string) string {
-	units := utf16.Encode([]rune(script))
-	buf := make([]byte, 2*len(units))
-	for i, u := range units {
-		binary.LittleEndian.PutUint16(buf[2*i:], u)
-	}
-	return base64.StdEncoding.EncodeToString(buf)
-}
+// encodePowerShellCommand lives in host_exec_test.go, which carries no build
+// tag: PR H's execution harness runs PowerShell through the same
+// -EncodedCommand form and needs the helper compiled on every OS. This file
+// and that one arrived from different branches with byte-identical copies;
+// the merge keeps one.
 
 // logonSessionSID is the SID the tests grant: a group every process of this
 // logon session holds, and one no default access list names.

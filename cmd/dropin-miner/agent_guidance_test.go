@@ -10,6 +10,7 @@ package main
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,11 +25,7 @@ func instructionTextFor(t *testing.T, surfaceID string, entry binEntry) string {
 	if surfaceID == "opencode" {
 		return rulesSnippet(entry)
 	}
-	note := ""
-	if surfaceID == "hermes" {
-		note = hermesApprovalNote
-	}
-	return string(renderSkill(entry, preferOn, note))
+	return renderedSkillFor(surfaceID, entry, runtime.GOOS)
 }
 
 func guidanceEntry() binEntry {
@@ -100,9 +97,14 @@ func taughtInvocation(t *testing.T, surfaceID string, entry binEntry) string {
 	if surfaceID == "opencode" {
 		return text
 	}
-	_, rest, found := strings.Cut(text, "```bash\n")
+	// The fence language follows the host's shell, so a skill rendered for
+	// PowerShell opens its first block with ```powershell.
+	_, rest, found := strings.Cut(text, "```")
 	if !found {
 		t.Fatalf("%s: the skill has no fenced command block:\n%s", surfaceID, text)
+	}
+	if _, after, ok := strings.Cut(rest, "\n"); ok {
+		rest = after
 	}
 	block, _, found := strings.Cut(rest, "```")
 	if !found {

@@ -110,7 +110,94 @@ const traceBridge = (env) => {
   return Buffer.from(JSON.stringify(env)).toString("base64url")
 }
 
-// needsTraceBridge: our search command, not already carrying a bridge.
+// ── the bridge this adapter puts on the command ─────────────────────────
+//
+// H-R4: only a bridge THIS adapter generated for THIS call may carry this
+// adapter's harness. So an adapter never stands down because a bridge is
+// already there — a model can write one itself, and #68 is what that looks
+// like at the router: a trace the model assembled, attributed to us. It
+// removes every assignment it RECOGNIZES and prepends its own.
+//
+// "Recognized" is a syntactically standalone assignment statement in a
+// declared shell's syntax, and nothing else: a leading NAME=value word in
+// POSIX, a standalone `$env:NAME = …` statement in PowerShell, `set NAME=…`
+// as its own command in cmd. Never a substring inside quoted text, inside
+// another argument, or inside the JSON request body — a query that mentions
+// the variable is still just a query. An assignment somewhere this cannot
+// prove is standalone leaves the command untouched and no lineage claimed.
+//
+// The binary cannot authenticate an environment variable, so the client
+// trace stays unauthenticated metadata either way; what this protects is
+// the meaning of the harness field, not the trust in it.
+
+// A standalone bridge assignment at the START of the command, in each
+// declared shell's syntax, with the rest of the command after it.
+const BRIDGE_ASSIGNMENT_RE = new RegExp(
+  "^(?:" +
+    // POSIX: NAME=value as a leading word.
+    TRACE_BRIDGE_ENV + "=[^\\s]*\\s+" +
+    "|" +
+    // PowerShell: $env:NAME = '…' or "…" or a bare word, as its own
+    // statement, ended by a newline or a semicolon.
+    "\\$env:" + TRACE_BRIDGE_ENV + "\\s*=\\s*(?:'[^']*'|\"[^\"]*\"|[^\\s;]*)\\s*[;\\n]\\s*" +
+    "|" +
+    // cmd: set NAME=value as its own command.
+    "set\\s+" + TRACE_BRIDGE_ENV + "=[^&\\n]*(?:&+|\\n)\\s*" +
+    ")",
+  "i",
+)
+
+// The try/finally wrapper this adapter writes around a PowerShell command,
+// so one it has already rewritten is unwrapped rather than wrapped twice.
+const PS_WRAPPER_RE = new RegExp(
+  "^try \\{ ([\\s\\S]*)\\n\\} finally \\{ Remove-Item Env:" + TRACE_BRIDGE_ENV + "[^}]*\\}$",
+)
+
+// stripBridgeAssignments removes every bridge assignment it can prove is a
+// standalone statement at the front of the command, and unwraps this
+// adapter's own PowerShell wrapper.
+const stripBridgeAssignments = (cmd) => {
+  let rest = cmd
+  for (;;) {
+    const match = BRIDGE_ASSIGNMENT_RE.exec(rest)
+    if (match) {
+      rest = rest.slice(match[0].length)
+      continue
+    }
+    const wrapped = PS_WRAPPER_RE.exec(rest)
+    if (wrapped) {
+      rest = wrapped[1]
+      continue
+    }
+    return rest
+  }
+}
+
+// carriesUnremovableBridge: the command still mentions the variable in a
+// position this cannot prove is a standalone assignment. The adapter leaves
+// such a command exactly as it found it.
+const carriesUnremovableBridge = (cmd) => cmd.includes(TRACE_BRIDGE_ENV + "=") || cmd.includes(TRACE_BRIDGE_ENV + " =")
+
+// needsTraceBridge: our search command. A bridge already on it is not a
+// reason to stand down (H-R4); it is a reason to remove it first.
 // Recognition only — the host has already decided to run this command.
-const needsTraceBridge = (cmd) =>
-  typeof cmd === "string" && SEARCH_RE.test(cmd) && !cmd.includes(TRACE_BRIDGE_ENV + "=")
+const needsTraceBridge = (cmd) => typeof cmd === "string" && SEARCH_RE.test(cmd)
+
+// withTraceBridge returns the command carrying THIS adapter's bridge, in the
+// syntax of the shell that will run it, or null when the command must be
+// left alone.
+const withTraceBridge = (cmd, bridge, shell) => {
+  const stripped = stripBridgeAssignments(cmd)
+  if (carriesUnremovableBridge(stripped)) return null
+  if (shell === "powershell") {
+    // Assignment, then removal in a finally. A `& { … }` block looks like it
+    // would scope this and does not: $env: is the process environment, and
+    // both editions were measured leaving the variable set afterwards, which
+    // would hand the host's NEXT command this call's envelope.
+    return (
+      "$env:" + TRACE_BRIDGE_ENV + " = '" + bridge + "'; try { " + stripped +
+      "\n} finally { Remove-Item Env:" + TRACE_BRIDGE_ENV + " -ErrorAction SilentlyContinue }"
+    )
+  }
+  return TRACE_BRIDGE_ENV + "=" + bridge + " " + stripped
+}

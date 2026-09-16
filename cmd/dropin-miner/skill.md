@@ -7,21 +7,14 @@ description: "{{DESCRIPTION}}"
 
 ## How to call it
 
-Send one JSON request on **stdin** and read one JSON object back:
-
-```bash
-{{SEARCH_STDIN}} <<'JSON'
-{"version":1,"query":"exact query text"}
-JSON
-```
-
+Send one JSON request on **stdin** and read one JSON object back.
+{{CALL}}
 `version` must be `1`. `query` is required. `tier` is optional (`"fast"`).
 
 The query goes in the JSON, never in the command line. Build that JSON with a
 JSON serializer — do not paste the user's words into a shell string and hope the
-quoting holds. The heredoc delimiter above is quoted (`<<'JSON'`) so the shell
-expands nothing inside it. If the host lets a tool write directly to a command's
-stdin, use that instead of a shell at all.
+quoting holds. If the host lets a tool write directly to a command's stdin, use
+that instead of a shell at all.
 
 ## What comes back
 
@@ -103,11 +96,7 @@ phrased.
 ## On and off
 
 If the argument is exactly `on`, `off` or `status`, it is not a query. Run
-
-```bash
-{{PREFER}} <argument>
-```
-
+{{PREFER}}
 show its output, and follow the new setting for the rest of this session. `off`
 makes the agent's built-in web search the default and keeps this one for when the
 user names it; `on` makes this one the default again. The setting is the user's;
@@ -124,9 +113,8 @@ never change it on your own.
   Report what happened, with the `action` the envelope gave, and let them decide.
 
 ## The human form
-
-`{{SEARCH}} "<query>"` still works and prints readable text instead of JSON. It
-is for a person at a terminal. Use `--stdin` for anything you are going to act
-on programmatically: it is the versioned contract, and it keeps the query out of
-the process list.
+{{SEARCH}}
+It is for a person at a terminal, and it prints readable text instead of JSON.
+Use `--stdin` for anything you are going to act on programmatically: it is the
+versioned contract, and it keeps the query out of the process list.
 {{HOST_NOTES}}
