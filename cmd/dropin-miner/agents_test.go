@@ -703,3 +703,189 @@ func cursorEntryCommand(e any) string {
 	s, _ := h["command"].(string)
 	return s
 }
+
+// TestInstallUpgradesAV029InstallationInPlace is the upgrade a real machine
+// actually performs: exactly ONE v0.2.9 entry per event, in v0.2.9's %q
+// spelling, plus v0.2.9's two allow rules.
+//
+// TestEveryHookSpellingIsReplacedOnInstallAndRemovedOnUninstall cannot see
+// what this sees. It seeds every spelling at once, so the merge loop replaces
+// because it counted more than one entry of ours — never because it compared
+// the one it found against what it would write now. A sameJSONValue that
+// answered "the same" for any two entries leaves that test green and leaves
+// every upgraded installation with the hook that does not parse in
+// PowerShell (#69). Here there is exactly one entry and it is stale, so the
+// replacement happens only if the comparison is real.
+//
+// The Windows-style binary path makes the stale spelling differ from the
+// current rendering on every runner: %q doubles the backslashes, and no
+// shell's quoting does.
+func TestInstallUpgradesAV029InstallationInPlace(t *testing.T) {
+	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	cfg, err := filepath.Abs(testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := binEntry{command: bin, cfg: cfg}
+	v029 := func(sub ...string) string {
+		return strconv.Quote(bin) + " hook -config " + strconv.Quote(cfg) + " " + strings.Join(sub, " ")
+	}
+
+	claudeEvents := []struct {
+		event string
+		sub   []string
+	}{
+		{"PreToolUse", []string{"lineage"}},
+		{"SessionStart", []string{"window", "session-start"}},
+		{"PreCompact", []string{"window", "pre-compact"}},
+		{"PostCompact", []string{"window", "post-compact"}},
+		{"Stop", []string{"flush"}},
+	}
+	cursorEvents := []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
+
+	m, ops := newFakeMachine("claude", "cursor")
+	ops.executable = func() (string, error) { return bin, nil }
+
+	// v0.2.9's settings.json: one group per event, PreToolUse still matching
+	// Bash alone, and one hook of the participant's own on two events.
+	claudeHooksSeed := map[string]any{}
+	for _, ce := range claudeEvents {
+		group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": v029(ce.sub...)}}}
+		if ce.event == "PreToolUse" {
+			group["matcher"] = "Bash"
+		}
+		list := []any{group}
+		if ce.event == "PreToolUse" || ce.event == "Stop" {
+			list = append(list, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "the participant's own " + ce.event}}})
+		}
+		claudeHooksSeed[ce.event] = list
+	}
+	cursorHooksSeed := map[string]any{}
+	for _, ev := range cursorEvents {
+		list := []any{map[string]any{"command": v029("cursor", ev)}}
+		if ev == "stop" {
+			list = append(list, map[string]any{"command": "./hooks/mine.sh"})
+		}
+		cursorHooksSeed[ev] = list
+	}
+	seed := func(path string, doc map[string]any) {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.files[path] = b
+	}
+	const settings, cursorPath = "/home/u/.claude/settings.json", "/home/u/.cursor/hooks.json"
+	seed(settings, map[string]any{
+		"hooks": claudeHooksSeed,
+		"permissions": map[string]any{"allow": []any{
+			fmt.Sprintf("Bash(%q search -config %q:*)", bin, cfg),
+			fmt.Sprintf("Bash(%s search -config %q:*)", bin, cfg),
+			"Bash(git status:*)",
+		}},
+	})
+	seed(cursorPath, map[string]any{"version": 1, "hooks": cursorHooksSeed})
+
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: exit %d\n%s%s", code, out, errOut)
+	}
+
+	claude, _ := targetByID(installTargets, "claude")
+	cursor, _ := targetByID(installTargets, "cursor")
+
+	claudeAfter := hooksOf(t, m, settings)
+	for _, ce := range claudeEvents {
+		list, _ := claudeAfter[ce.event].([]any)
+		want := wantHookCommand(t, claude, entry, ce.sub...)
+		var ours, foreign int
+		for _, e := range list {
+			switch got := claudeGroupCommand(e); {
+			case got == want:
+				ours++
+			case got == v029(ce.sub...):
+				t.Errorf("Claude %s: the v0.2.9 entry was left exactly as it was: %q", ce.event, got)
+			default:
+				foreign++
+			}
+		}
+		if ours != 1 {
+			t.Errorf("Claude %s: %d entries carry the current rendering %q, want 1: %v", ce.event, ours, want, list)
+		}
+		wantForeign := 0
+		if ce.event == "PreToolUse" || ce.event == "Stop" {
+			wantForeign = 1
+		}
+		if foreign != wantForeign {
+			t.Errorf("Claude %s: %d foreign entries, want %d: %v", ce.event, foreign, wantForeign, list)
+		}
+	}
+	// The replaced PreToolUse group carries the matcher this version writes,
+	// not v0.2.9's Bash-only one (#77).
+	for _, e := range claudeAfter["PreToolUse"].([]any) {
+		g, _ := e.(map[string]any)
+		if claudeGroupCommand(e) == wantHookCommand(t, claude, entry, "lineage") && g["matcher"] != claudeToolMatcher {
+			t.Errorf("the replaced PreToolUse group still matches %v", g["matcher"])
+		}
+	}
+
+	cursorAfter := hooksOf(t, m, cursorPath)
+	for _, ev := range cursorEvents {
+		list, _ := cursorAfter[ev].([]any)
+		want := wantHookCommand(t, cursor, entry, "cursor", ev)
+		var ours, foreign int
+		for _, e := range list {
+			switch got := cursorEntryCommand(e); {
+			case got == want:
+				ours++
+			case got == v029("cursor", ev):
+				t.Errorf("Cursor %s: the v0.2.9 entry was left exactly as it was: %q", ev, got)
+			default:
+				foreign++
+			}
+		}
+		if ours != 1 {
+			t.Errorf("Cursor %s: %d entries carry the current rendering %q, want 1: %v", ev, ours, want, list)
+		}
+		wantForeign := 0
+		if ev == "stop" {
+			wantForeign = 1
+		}
+		if foreign != wantForeign {
+			t.Errorf("Cursor %s: %d foreign entries, want %d: %v", ev, foreign, wantForeign, list)
+		}
+	}
+
+	// Every rule this version writes is present, the participant's own is
+	// untouched, and nothing is duplicated.
+	allow := allowOf(t, m, settings)
+	for _, rule := range claudeAllowRules(entry) {
+		if n := countString(allow, rule); n != 1 {
+			t.Errorf("allow rule %q appears %d times, want 1: %v", rule, n, allow)
+		}
+	}
+	if countString(allow, "Bash(git status:*)") != 1 {
+		t.Errorf("the participant's own allow rule was disturbed: %v", allow)
+	}
+
+	// And the upgrade settles: a second install writes nothing at all.
+	before, beforeCursor := string(m.files[settings]), string(m.files[cursorPath])
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("second install: exit %d\n%s%s", code, out, errOut)
+	}
+	if string(m.files[settings]) != before {
+		t.Errorf("a second install rewrote settings.json:\n got %s\nwant %s", m.files[settings], before)
+	}
+	if string(m.files[cursorPath]) != beforeCursor {
+		t.Errorf("a second install rewrote hooks.json:\n got %s\nwant %s", m.files[cursorPath], beforeCursor)
+	}
+}
+
+func countString(list []string, want string) int {
+	n := 0
+	for _, s := range list {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
