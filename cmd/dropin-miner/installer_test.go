@@ -1774,6 +1774,9 @@ func agentObservedPlan(t *testing.T, id string, dry bool, outcome configFixtureO
 	if !observed {
 		t.Fatalf("setup -with %s (dry=%v outcome=%v) never reached agentsStep's plan", id, dry, outcome)
 	}
+	if len(captured.writes) == 0 {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) observed a plan with no writes", id, dry, outcome)
+	}
 	return captured, s
 }
 
