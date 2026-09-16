@@ -409,12 +409,12 @@ func TestAgentsPrintsRulesWhenNoAgentIsFoundAndClientOverridesDetection(t *testi
 func TestAgentsStatusReportsPathAndInstallState(t *testing.T) {
 	m, ops := newFakeMachine("cursor")
 	_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
-	if !strings.Contains(out, "Cursor       on PATH      not installed") || !strings.Contains(out, "Claude Code  not on PATH  not installed") {
+	if !strings.Contains(out, "Cursor       found: cursor on PATH      not installed") || !strings.Contains(out, "Claude Code  not found                  not installed") {
 		t.Fatalf("status:\n%s", out)
 	}
 	_, _, _ = runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
 	_, out, _ = runAgents(t, ops, nil, "status", "-config", testCfg)
-	if !strings.Contains(out, "Cursor       on PATH      installed (skill+hooks)") {
+	if !strings.Contains(out, "Cursor       found: cursor on PATH      installed (skill+hooks)") {
 		t.Fatalf("status after install:\n%s", out)
 	}
 	_ = m

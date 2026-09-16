@@ -9,6 +9,9 @@
     }
   ],
   "removes": [
-    "\u003cHERMES_HOME\u003e/skills/dropin-miner"
+    {
+      "surface": "Hermes",
+      "path": "\u003cHERMES_HOME\u003e/skills/dropin-miner"
+    }
   ]
 }

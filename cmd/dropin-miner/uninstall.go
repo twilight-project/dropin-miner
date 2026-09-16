@@ -519,12 +519,12 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 		var agnostic agentPlan
 		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand}, &agnostic)
 		skip := map[string]bool{}
-		if foreign := foreignBinary(ops, agnostic.removes, r.candidates, r.d.windows); foreign != "" {
+		if foreign := foreignBinary(ops, agnostic.removedPaths(), r.candidates, r.d.windows); foreign != "" {
 			for _, w := range agnostic.writes {
 				skip[w.path] = true
 			}
 			for _, rm := range agnostic.removes {
-				skip[rm] = true
+				skip[rm.path] = true
 			}
 			left = append(left, fmt.Sprintf("%s: left in place; it runs %s, not this installation", t.Label(), foreign))
 		}
@@ -550,7 +550,7 @@ func planWithout(p agentPlan, skip map[string]bool) agentPlan {
 		}
 	}
 	for _, rm := range p.removes {
-		if !skip[rm] {
+		if !skip[rm.path] {
 			out.removes = append(out.removes, rm)
 		}
 	}

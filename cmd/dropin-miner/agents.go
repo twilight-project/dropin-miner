@@ -5,8 +5,9 @@ package main
 // server.
 //
 //	agents install     detect Claude Code, Codex, Cursor, opencode, Pi and
-//	                   Hermes on PATH and give each a skill naming
-//	                   `dropin-miner search`, plus the hooks that host
+//	                   Hermes — by the command that launches them, or by the
+//	                   config directory they keep — and give each a skill
+//	                   naming `dropin-miner search`, plus the hooks that host
 //	                   supports
 //	agents status      what is installed where, and which search is the default
 //	agents uninstall   take it all back out, and nothing else
@@ -16,8 +17,9 @@ package main
 // The shape is a staged plan: detection and file reads build a list of
 // writes and removals, the plan is printed, and only then — after -yes or
 // a prompt — is anything committed. -dry-run is the plan without the
-// commit. Detection is a PATH lookup and nothing more; no agent is
-// executed to find out whether it exists.
+// commit. Detection reads PATH and the filesystem and nothing more; no agent
+// is executed to find out whether it exists, and each host answers with the
+// signal it was found by, which setup and status both print.
 //
 // What each host gets:
 //
@@ -320,12 +322,33 @@ type agentWrite struct {
 	why      string
 }
 
+// agentRemove carries the same surface a write does. It has to: printPlan
+// prints a host heading when the surface changes, and while removes were bare
+// paths they printed under whichever host wrote last — in the Windows soak,
+// opencode's, Pi's and Hermes' removals all appeared under "Cursor", the last
+// host in the registry with a file to rewrite rather than only files to
+// delete (#88, item 1).
+type agentRemove struct {
+	surface string
+	path    string
+}
+
 type agentPlan struct {
 	writes  []agentWrite
-	removes []string
+	removes []agentRemove
 	skipped []string
 	refused []string
 	notes   []string
+}
+
+// removedPaths is the plan's removals as plain paths, for the callers that
+// only ask "what would this take away".
+func (p *agentPlan) removedPaths() []string {
+	out := make([]string, 0, len(p.removes))
+	for _, r := range p.removes {
+		out = append(out, r.path)
+	}
+	return out
 }
 
 func (p *agentPlan) empty() bool { return len(p.writes) == 0 && len(p.removes) == 0 }
@@ -341,7 +364,8 @@ func cmdAgents(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv 
 
 var agentsUsage = `usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
        dropin-miner agents prefer on|off|status [-config file]
-  install     detect coding agents on PATH and give each the search skill and hooks
+  install     detect coding agents (by command or config directory) and give each
+              the search skill and hooks
   status      what is installed where, and which search is the default
   uninstall   remove exactly what install wrote
   prefer      off: the agent's own web search is the default and this one is used
@@ -382,7 +406,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	paths := ops.paths(getenv)
-	selected, detected, err := selectSurfaces(ops, paths, getenv, clients)
+	selected, detected, signals, err := selectSurfaces(ops, paths, getenv, clients)
 	if err != nil {
 		fmt.Fprintln(stderr, "dropin-miner agents:", err)
 		return exitUsage
@@ -394,7 +418,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	if sub == "status" {
-		printAgentStatus(ops, paths, entry, detected, stdout)
+		printAgentStatus(ops, paths, entry, signals, stdout)
 		return exitOK
 	}
 
@@ -407,8 +431,12 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 
 	fmt.Fprintf(stdout, "dropin-miner agents %s\n", sub)
 	if len(detected) == 0 && len(clients) == 0 {
-		fmt.Fprintf(stdout, "  no coding agent found on PATH (looked for: %s)\n", targetIDs(targetHost))
+		fmt.Fprintf(stdout, "  no coding agent found (looked for: %s)\n", targetIDs(targetHost))
 	} else {
+		// Labels alone, not signals: this line lists the SELECTED targets, and
+		// -client names a host whether or not detection found it. Where a
+		// target was detected, `agents status` and setup's "Found on this
+		// machine" are the lines that say by what.
 		fmt.Fprintf(stdout, "  agents: %s\n", strings.Join(labels(selected), ", "))
 	}
 	if sub == "install" {
@@ -551,20 +579,45 @@ func refusedExit(p *agentPlan) int {
 	return exitOK
 }
 
-func selectSurfaces(ops agentOps, paths agentPaths, getenv func(string) string, clients []string) (selected, detected []installTarget, err error) {
+// detectHosts runs every host's Detect once and keeps what each answered.
+// Once, because detection reads the filesystem and PATH: asking a second time
+// to print what the first asking decided invites the two to disagree.
+func detectHosts(ops agentOps, paths agentPaths, getenv func(string) string) (detected []installTarget, signals map[string]string) {
+	signals = map[string]string{}
 	for _, t := range targetsByKind(targetHost) {
-		if t.Detect(ops, paths, getenv) {
+		if sig := t.Detect(ops, paths, getenv); sig != "" {
 			detected = append(detected, t)
+			signals[t.ID()] = sig
 		}
 	}
+	return detected, signals
+}
+
+func selectSurfaces(ops agentOps, paths agentPaths, getenv func(string) string, clients []string) (selected, detected []installTarget, signals map[string]string, err error) {
+	detected, signals = detectHosts(ops, paths, getenv)
 	if len(clients) == 0 {
-		return detected, detected, nil
+		return detected, detected, signals, nil
 	}
 	selected, err = hostTargetsByIDs(clients)
 	if err != nil {
-		return nil, detected, err
+		return nil, detected, signals, err
 	}
-	return selected, detected, nil
+	return selected, detected, signals, nil
+}
+
+// labelsWithSignals is how a detected host is named to the participant: its
+// label and what made it count. "Found on this machine: Cursor" was the line
+// #61 argued with; "Cursor (~/.cursor)" can be argued with precisely.
+func labelsWithSignals(ts []installTarget, signals map[string]string) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		if sig := signals[t.ID()]; sig != "" {
+			out = append(out, t.Label()+" ("+sig+")")
+			continue
+		}
+		out = append(out, t.Label())
+	}
+	return out
 }
 
 func resolveEntry(ops agentOps, cfgPath string, getenv func(string) string) (binEntry, string, error) {
@@ -1092,11 +1145,10 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget
 // asking — why is this not working — with the word "installed". Each
 // target's own Status method decides this for itself; printAgentStatus
 // only renders what it returns.
-func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected []installTarget, stdout io.Writer) {
-	isDetected := map[string]bool{}
-	for _, t := range detected {
-		isDetected[t.ID()] = true
-	}
+// printAgentStatus names the detection signal per host rather than the old
+// "on PATH" / "not on PATH", which was a lie for any host detected by its
+// config directory and was the line #61 was filed against.
+func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals map[string]string, stdout io.Writer) {
 	fmt.Fprintln(stdout, "dropin-miner agents status")
 	fmt.Fprintf(stdout, "  search default: %s\n", preferLabel(readPrefer(ops, entry)))
 	for _, t := range targetsByKind(targetHost) {
@@ -1105,15 +1157,21 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, detected [
 		if st.installed {
 			state = "installed (" + st.detail + ")"
 		}
-		found := "not on PATH"
-		if isDetected[t.ID()] {
-			found = "on PATH"
+		found := "not found"
+		if sig := signals[t.ID()]; sig != "" {
+			found = "found: " + sig
 		}
-		fmt.Fprintf(stdout, "  %-12s %-12s %s\n", t.Label(), found, state)
+		fmt.Fprintf(stdout, "  %-12s %-26s %s\n", t.Label(), found, state)
 	}
 }
 
 // ── plan mechanics ──────────────────────────────────────────────────────
+
+// planRemove records a removal under the host that owns it, so the plan can
+// be printed host by host.
+func planRemove(p *agentPlan, surface, path string) {
+	p.removes = append(p.removes, agentRemove{surface: surface, path: path})
+}
 
 func planWrite(ops agentOps, surface, path string, contents []byte, mode os.FileMode, why string, p *agentPlan) bool {
 	if existing, err := ops.readFile(path); err == nil && bytes.Equal(existing, contents) {
@@ -1321,16 +1379,39 @@ func printPlan(p *agentPlan, home string, w io.Writer) {
 	for _, s := range p.skipped {
 		fmt.Fprintf(w, "  %s\n", s)
 	}
-	last := ""
-	for _, wr := range p.writes {
-		if wr.surface != last {
-			fmt.Fprintf(w, "  %s\n", wr.surface)
-			last = wr.surface
+	// One heading per host, with everything that host does under it. Printing
+	// every write and then every removal put one host's files under another
+	// host's heading whenever the plan held more than one (#88, item 1): a
+	// host with only files to delete, like opencode, had no heading of its
+	// own at all. Order is first appearance, which is the registry's order.
+	var order []string
+	writes := map[string][]agentWrite{}
+	removes := map[string][]agentRemove{}
+	seen := func(surface string) {
+		if _, ok := writes[surface]; ok {
+			return
 		}
-		fmt.Fprintf(w, "    write  %s  (%s)\n", tilde(home, wr.path), wr.why)
+		if _, ok := removes[surface]; ok {
+			return
+		}
+		order = append(order, surface)
+	}
+	for _, wr := range p.writes {
+		seen(wr.surface)
+		writes[wr.surface] = append(writes[wr.surface], wr)
 	}
 	for _, r := range p.removes {
-		fmt.Fprintf(w, "    remove %s\n", tilde(home, r))
+		seen(r.surface)
+		removes[r.surface] = append(removes[r.surface], r)
+	}
+	for _, surface := range order {
+		fmt.Fprintf(w, "  %s\n", surface)
+		for _, wr := range writes[surface] {
+			fmt.Fprintf(w, "    write  %s  (%s)\n", tilde(home, wr.path), wr.why)
+		}
+		for _, r := range removes[surface] {
+			fmt.Fprintf(w, "    remove %s\n", tilde(home, r.path))
+		}
 	}
 	for _, r := range p.refused {
 		fmt.Fprintf(w, "  refused: %s\n", r)
@@ -1356,12 +1437,12 @@ func commitPlan(ops agentOps, p *agentPlan, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "wrote %s\n", tilde(ops.home, wr.path))
 	}
 	for _, r := range p.removes {
-		if err := ops.removeAll(r); err != nil {
-			fmt.Fprintf(stderr, "dropin-miner agents: remove %s: %v\n", r, err)
+		if err := ops.removeAll(r.path); err != nil {
+			fmt.Fprintf(stderr, "dropin-miner agents: remove %s: %v\n", r.path, err)
 			failures++
 			continue
 		}
-		fmt.Fprintf(stdout, "removed %s\n", tilde(ops.home, r))
+		fmt.Fprintf(stdout, "removed %s\n", tilde(ops.home, r.path))
 	}
 	return failures
 }

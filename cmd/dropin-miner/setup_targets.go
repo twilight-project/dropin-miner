@@ -20,11 +20,11 @@ import (
 // setupTargets resolves the run's selection. explicit is true when -with
 // named the targets: that naming is the participant's answer, so nothing is
 // asked about them.
-func setupTargets(ops agentOps, paths agentPaths, getenv func(string) string, with []string, noAgents bool) (selected []installTarget, explicit bool, err error) {
+func setupTargets(ops agentOps, paths agentPaths, getenv func(string) string, with []string, noAgents bool) (selected []installTarget, signals map[string]string, explicit bool, err error) {
 	if len(with) > 0 {
 		resolved, err := targetsByIDs(with)
 		if err != nil {
-			return nil, true, err
+			return nil, nil, true, err
 		}
 		seen := map[string]bool{}
 		for _, t := range resolved {
@@ -34,17 +34,13 @@ func setupTargets(ops agentOps, paths agentPaths, getenv func(string) string, wi
 			seen[t.ID()] = true
 			selected = append(selected, t)
 		}
-		return selected, true, nil
+		return selected, nil, true, nil
 	}
 	if noAgents {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
-	for _, t := range targetsByKind(targetHost) {
-		if t.Detect(ops, paths, getenv) {
-			selected = append(selected, t)
-		}
-	}
-	return selected, false, nil
+	selected, signals = detectHosts(ops, paths, getenv)
+	return selected, signals, false, nil
 }
 
 // joinLabels is "A", "A and B", "A, B and C".
@@ -90,7 +86,7 @@ func (r *setupRun) agentsStep() {
 			r.printf("Left the agents alone (-no-agents). When you are ready:\n\n    %s\n", later)
 			return
 		case len(selected) == 0:
-			r.printf("No coding agent found on PATH (looked for: %s). When one is installed:\n\n    %s\n", targetIDs(targetHost), later)
+			r.printf("No coding agent found (looked for: %s, each by its command or its config directory). When one is installed:\n\n    %s\n", targetIDs(targetHost), later)
 			return
 		case !r.d.interactive && !r.yes && !r.dry:
 			r.printf("Not an interactive shell — not touching any agent (pass -yes to set them up). When you are ready:\n\n    %s\n", later)
@@ -118,7 +114,7 @@ func (r *setupRun) agentsStep() {
 	if r.explicitTargets {
 		r.printf("Setting up (named with -with): %s\n", strings.Join(labels(selected), ", "))
 	} else {
-		r.printf("Found on this machine: %s\n", strings.Join(labels(selected), ", "))
+		r.printf("Found on this machine: %s\n", strings.Join(labelsWithSignals(selected, r.targetSignals), ", "))
 	}
 	printPlan(&plan, ops.home, r.d.stdout)
 	if plan.empty() {

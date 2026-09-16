@@ -1,6 +1,7 @@
 usage: dropin-miner agents install|status|uninstall [-config file] [-client name]... [-dry-run] [-yes]
        dropin-miner agents prefer on|off|status [-config file]
-  install     detect coding agents on PATH and give each the search skill and hooks
+  install     detect coding agents (by command or config directory) and give each
+              the search skill and hooks
   status      what is installed where, and which search is the default
   uninstall   remove exactly what install wrote
   prefer      off: the agent's own web search is the default and this one is used

@@ -38,11 +38,18 @@ type targetStatus struct {
 // never renamed, because it is how a participant and a script both name
 // this target on the command line and it is what an uninstall matches a
 // hook or allow-rule entry against.
+//
+// Detect answers with the SIGNAL that says the host is in use on this
+// machine — "cursor-agent on PATH", "~/.cursor" — and the empty string when
+// nothing does. It is a signal rather than a bool because the participant is
+// entitled to know why a host was or was not offered: setup's "Found on this
+// machine" and `agents status` both print it, and #61 was reported as
+// "Cursor not on PATH" on a machine where Cursor was plainly installed.
 type installTarget interface {
 	ID() string
 	Label() string
 	Kind() targetKind
-	Detect(ops agentOps, paths agentPaths, getenv func(string) string) bool
+	Detect(ops agentOps, paths agentPaths, getenv func(string) string) string
 	PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan)
 	PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan)
 	Status(ops agentOps, paths agentPaths, entry binEntry) targetStatus
@@ -316,6 +323,30 @@ func pathExists(ops agentOps, path string) bool {
 	return err == nil
 }
 
+// detectCommand is the signal every host but Cursor still answers with: the
+// command it is launched by, found on PATH. The names are tried in order and
+// the first that resolves is the signal, so a host reachable under two names
+// reports the one the participant actually has.
+func detectCommand(ops agentOps, names ...string) string {
+	for _, n := range names {
+		if _, err := ops.lookPath(n); err == nil {
+			return n + " on PATH"
+		}
+	}
+	return ""
+}
+
+// detectConfigDir is the second kind of signal: the directory the host keeps
+// its own configuration in. A populated config directory is the participant
+// using the host; the shell command is incidental, and for two of Cursor's
+// three configurations it is simply absent (#61).
+func detectConfigDir(ops agentOps, dir string) string {
+	if !pathExists(ops, dir) {
+		return ""
+	}
+	return tilde(ops.home, dir)
+}
+
 // hooksHaveOurs reports whether a host's hook file (Claude Code's
 // settings.json, Cursor's hooks.json) already carries an entry for this
 // binary, for status's "skill+hooks" vs. "skill only" distinction.
@@ -377,9 +408,8 @@ func (claudeTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellUnknown}
 }
 
-func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("claude")
-	return err == nil
+func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string {
+	return detectCommand(ops, "claude")
 }
 
 func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
@@ -398,7 +428,7 @@ func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 func (t claudeTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.claudeSkill)) {
-		p.removes = append(p.removes, filepath.Dir(paths.claudeSkill))
+		planRemove(p, t.Label(), filepath.Dir(paths.claudeSkill))
 		removed = true
 	}
 	if planHooksRemove(ops, t.Label(), paths.claudeSettings, p, entry.command, "hooks") {
@@ -458,9 +488,8 @@ func (codexTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellNoChannel}
 }
 
-func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("codex")
-	return err == nil
+func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string {
+	return detectCommand(ops, "codex")
 }
 
 func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
@@ -478,7 +507,7 @@ func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry,
 func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.codexSkill)) {
-		p.removes = append(p.removes, filepath.Dir(paths.codexSkill))
+		planRemove(p, t.Label(), filepath.Dir(paths.codexSkill))
 		removed = true
 	}
 	if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
@@ -558,9 +587,32 @@ func (cursorTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellUnknown}
 }
 
-func (cursorTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("cursor")
-	return err == nil
+// Cursor is the one host reached under two command names and installable
+// without either. The editor provides a `cursor` shim only after the user
+// runs "Install 'cursor' command in PATH" from its palette; the Agent CLI is
+// `cursor-agent`; and an editor whose participant never ran the palette
+// command has neither, while keeping a populated ~/.cursor the whole time.
+// v0.2.9 looked for `cursor` alone, so it saw a Cursor user in exactly one of
+// those three configurations — #61, where setup reported "Claude Code, Codex"
+// on a machine with /Applications/Cursor.app, ~/.cursor and cursor-agent.
+//
+// The config directory is last because a command is the better answer to
+// print: it says which Cursor is here. But it is not weaker evidence. It is
+// where this host's own skill and hooks are written, so if it exists we are
+// reading and writing there either way.
+func (cursorTarget) Detect(ops agentOps, paths agentPaths, _ func(string) string) string {
+	if cmd := detectCommand(ops, "cursor", "cursor-agent"); cmd != "" {
+		return cmd
+	}
+	return detectConfigDir(ops, cursorConfigDir(paths))
+}
+
+// cursorConfigDir is ~/.cursor (%USERPROFILE%\.cursor), taken from the paths
+// this host already writes into rather than rebuilt from the home directory:
+// the directory detection reports and the directory install uses are then the
+// same one by construction.
+func cursorConfigDir(paths agentPaths) string {
+	return filepath.Dir(paths.cursorHooks)
 }
 
 func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
@@ -586,7 +638,7 @@ func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 func (t cursorTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.cursorSkill)) {
-		p.removes = append(p.removes, filepath.Dir(paths.cursorSkill))
+		planRemove(p, t.Label(), filepath.Dir(paths.cursorSkill))
 		removed = true
 	}
 	if planHooksRemove(ops, t.Label(), paths.cursorHooks, p, entry.command, "hooks") {
@@ -648,9 +700,8 @@ func (opencodeTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellNoChannel}
 }
 
-func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("opencode")
-	return err == nil
+func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string {
+	return detectCommand(ops, "opencode")
 }
 
 func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
@@ -666,7 +717,7 @@ func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEnt
 
 func (t opencodeTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
 	if pathExists(ops, paths.opencodePlugin) {
-		p.removes = append(p.removes, paths.opencodePlugin)
+		planRemove(p, t.Label(), paths.opencodePlugin)
 		return
 	}
 	p.skipped = append(p.skipped, t.Label()+": not installed")
@@ -705,9 +756,8 @@ func (piTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellNoChannel}
 }
 
-func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("pi")
-	return err == nil
+func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string {
+	return detectCommand(ops, "pi")
 }
 
 func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
@@ -724,11 +774,11 @@ func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ 
 func (t piTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.piSkill)) {
-		p.removes = append(p.removes, filepath.Dir(paths.piSkill))
+		planRemove(p, t.Label(), filepath.Dir(paths.piSkill))
 		removed = true
 	}
 	if pathExists(ops, paths.piExtension) {
-		p.removes = append(p.removes, paths.piExtension)
+		planRemove(p, t.Label(), paths.piExtension)
 		removed = true
 	}
 	if !removed {
@@ -785,9 +835,8 @@ func (hermesTarget) Shells(goos string) hostShells {
 	return hostShells{tool: cellUnknown, hook: cellUnknown}
 }
 
-func (hermesTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bool {
-	_, err := ops.lookPath("hermes")
-	return err == nil
+func (hermesTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string {
+	return detectCommand(ops, "hermes")
 }
 
 func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
@@ -805,7 +854,7 @@ func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.hermesSkill)) {
-		p.removes = append(p.removes, filepath.Dir(paths.hermesSkill))
+		planRemove(p, t.Label(), filepath.Dir(paths.hermesSkill))
 		removed = true
 	}
 	if existing, mode, err := readWithMode(ops, paths.hermesConfig); err == nil && existing != nil {

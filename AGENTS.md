@@ -258,7 +258,19 @@ each line names the file that owns the rule and the test that proves it.
   of NO.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
-  silently, and the structural test proves the public ID set. `targets.go` also owns **the
+  silently, and the structural test proves the public ID set. `Detect` answers with **the
+  signal** that made a host count — `detectCommand` for the command it is launched by,
+  `detectConfigDir` for the directory it keeps — never a bare yes, because setup's "Found on
+  this machine" and `agents status` both print it, and #61 was filed against a machine told
+  "Cursor not on PATH" while Cursor sat in `~/.cursor` with its Agent CLI on PATH under
+  another name. A config directory is evidence on the same footing as a command: it is where
+  the skill and hooks go, so if it is there this client writes there either way.
+  `host_detect_test.go` holds each host's signal to a literal and drives soak row S18 —
+  `-with cursor`, uninstall, plain setup — because uninstall removed by what was installed
+  while setup restored by what was detected, so anything installed with `-with` was lost by a
+  round trip. A removal carries its host (`agentRemove.surface`) for the same reason a write
+  does: `printPlan` groups by host, and a host with only files to delete used to print under
+  the previous host's heading (#88). `targets.go` also owns **the
   shell declaration**: per host and per OS, the set of shells that run its tool calls and what
   runs its hook commands, each cell established by documentation, source or a live run —
   `host_shells_test.go` holds the declaration to a written-out table so no cell moves without a

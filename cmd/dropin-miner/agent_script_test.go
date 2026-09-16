@@ -42,8 +42,8 @@ type powerShellDeclaringHost struct{}
 func (powerShellDeclaringHost) ID() string       { return "fake-powershell-host" }
 func (powerShellDeclaringHost) Label() string    { return "Fake PowerShell Host" }
 func (powerShellDeclaringHost) Kind() targetKind { return targetHost }
-func (powerShellDeclaringHost) Detect(agentOps, agentPaths, func(string) string) bool {
-	return false
+func (powerShellDeclaringHost) Detect(agentOps, agentPaths, func(string) string) string {
+	return ""
 }
 func (powerShellDeclaringHost) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }

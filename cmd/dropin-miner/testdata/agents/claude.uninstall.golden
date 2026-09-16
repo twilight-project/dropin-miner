@@ -9,6 +9,9 @@
     }
   ],
   "removes": [
-    "/home/u/.claude/skills/dropin-miner"
+    {
+      "surface": "Claude Code",
+      "path": "/home/u/.claude/skills/dropin-miner"
+    }
   ]
 }

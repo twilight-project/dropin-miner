@@ -9,6 +9,9 @@
     }
   ],
   "removes": [
-    "/home/u/.cursor/skills/dropin-miner"
+    {
+      "surface": "Cursor",
+      "path": "/home/u/.cursor/skills/dropin-miner"
+    }
   ]
 }

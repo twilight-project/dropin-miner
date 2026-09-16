@@ -138,6 +138,7 @@ type setupRun struct {
 	values  setupValues
 
 	targets         []installTarget
+	targetSignals   map[string]string // host id → what made it count as present
 	explicitTargets bool
 
 	adoptFrom     string // the accepted adoption source, if any
@@ -269,7 +270,7 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	r.exe = exe
 
 	paths := d.agents.paths(d.getenv)
-	r.targets, r.explicitTargets, err = setupTargets(d.agents, paths, d.getenv, with, r.noAgents)
+	r.targets, r.targetSignals, r.explicitTargets, err = setupTargets(d.agents, paths, d.getenv, with, r.noAgents)
 	if err != nil {
 		fmt.Fprintln(d.stderr, "dropin-miner setup: -with:", err)
 		return exitUsage

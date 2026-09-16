@@ -111,6 +111,63 @@ func installed(t *testing.T) *setupSandbox {
 	return s
 }
 
+// TestDryRunGroupsEveryHostsLinesUnderItsOwnHeading is #88, item 1, from the
+// Windows soak: the dry run printed opencode's, Pi's and Hermes' removals
+// under the "Cursor" heading. The cause was that a removal carried only a
+// path while a write carried its host, and the printer emitted a heading only
+// when a write's host changed — so a host with nothing to rewrite, only files
+// to delete, never got a heading and its lines fell under the previous one.
+//
+// The assertion walks the output and attributes every file line to the last
+// heading above it, which is exactly how a participant reads it.
+func TestDryRunGroupsEveryHostsLinesUnderItsOwnHeading(t *testing.T) {
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	// Cursor writes hooks.json and deletes a skill; opencode only deletes;
+	// Pi only deletes, two files. That ordering is the soak's.
+	if code, out, errOut := s.run(nil, false, "-yes", "-with", "cursor", "-with", "opencode", "-with", "pi"); code != exitOK {
+		t.Fatalf("setup exited %d\n%s\n%s", code, out, errOut)
+	}
+	s.onPath = map[string]bool{}
+
+	code, out, errOut := s.uninstall(t, nil, false, nil, "-dry-run")
+	if code != exitOK {
+		t.Fatalf("uninstall -dry-run exited %d\n%s\n%s", code, out, errOut)
+	}
+
+	paths := s.paths()
+	wantHeadingOf := map[string]string{
+		tilde(s.userHome, paths.cursorHooks):               "Cursor",
+		tilde(s.userHome, filepath.Dir(paths.cursorSkill)): "Cursor",
+		tilde(s.userHome, paths.opencodePlugin):            "opencode",
+		tilde(s.userHome, filepath.Dir(paths.piSkill)):     "Pi",
+		tilde(s.userHome, paths.piExtension):               "Pi",
+	}
+	heading := ""
+	seen := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "    write  "), strings.HasPrefix(line, "    remove "):
+			fields := strings.Fields(strings.TrimSpace(line))
+			if len(fields) >= 2 {
+				seen[fields[1]] = heading
+			}
+		case strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   "):
+			heading = strings.TrimSpace(line)
+		}
+	}
+	for path, want := range wantHeadingOf {
+		got, ok := seen[path]
+		if !ok {
+			t.Errorf("the dry run never listed %s:\n%s", path, out)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s is printed under the %q heading, want %q:\n%s", path, got, want, out)
+		}
+	}
+}
+
 // walletFixtureAddress is a valid twilight bech32 address for a fixed key.
 func walletFixtureAddress(t *testing.T) string {
 	t.Helper()
@@ -263,14 +320,14 @@ type uninstallIntegrationTarget struct{ file string }
 func (uninstallIntegrationTarget) ID() string       { return "fake-integration" }
 func (uninstallIntegrationTarget) Label() string    { return "Fake integration" }
 func (uninstallIntegrationTarget) Kind() targetKind { return targetIntegration }
-func (uninstallIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) bool {
-	return false
+func (uninstallIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) string {
+	return ""
 }
 func (uninstallIntegrationTarget) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
 func (f uninstallIntegrationTarget) PlanUninstall(ops agentOps, _ agentPaths, _ binEntry, p *agentPlan) {
 	if pathExists(ops, f.file) {
-		p.removes = append(p.removes, f.file)
+		planRemove(p, f.Label(), f.file)
 	}
 }
 func (uninstallIntegrationTarget) Status(agentOps, agentPaths, binEntry) targetStatus {
