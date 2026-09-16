@@ -37,7 +37,6 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -542,11 +541,18 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 			hold("left in place; it belongs to " + other + ", not this installation")
 		case attributionUnknown:
 			// #73: an uninstall that cannot attribute a file leaves it and
-			// says so. An artifact naming no installation is v0.2.9's, or one
-			// this version has not rewritten yet; on a machine with one
-			// installation it is almost certainly ours, and "almost certainly"
-			// is not the standard for removing somebody else's file.
-			hold("left in place; it names no installation, so it cannot be attributed — run `agents install` to re-stamp it, or remove it by hand")
+			// says so. The case is narrow — every skill and hook command has
+			// named its config since v0.2.9, so the only artifacts naming none
+			// are the JavaScript adapters from before they carried
+			// INSTALL_CONFIG — and claiming those by their binary alone is
+			// precisely the opencode-plugin complaint. So the message names
+			// the files and gives the participant the instruction that makes
+			// the problem go away by itself: one `agents install` stamps them,
+			// and the next uninstall can then remove them unaided.
+			hold(fmt.Sprintf("left in place; %s names no installation, so this one cannot claim it. "+
+				"Running `%s agents install -config %s` once would stamp it, and a later uninstall could then remove it; "+
+				"otherwise remove it by hand",
+				unattributedPaths(ops, agnostic), displayPath(r.exe), displayPath(r.cfgPath)))
 		}
 		for _, c := range r.candidates {
 			var p agentPlan
@@ -577,30 +583,22 @@ func planWithout(p agentPlan, skip map[string]bool) agentPlan {
 	return out
 }
 
+// A rendered word, as any of this client's renderers may have written it: a
+// double-quoted one (cmd's literal, and v0.2.9's %q), or a single-quoted one
+// (POSIX and PowerShell). Both regexes below capture the WHOLE word, quotes
+// included, because reading it back is unquoteRenderedPath's job and there
+// must be exactly one function that does it.
+const renderedWordRe = `"(?:[^"\\\n]|\\.)*"|'[^'\n]*(?:(?:'\\''|'')[^'\n]*)*'`
+
 // installedCommand finds the binaries a rendered skill runs: the quoted path
 // before " search", " hook" or " agents prefer".
 //
-// Two spellings, because two renderers have written this file. v0.2.9 quoted
-// every path with Go's %q; from H2 a skill is rendered for its host's shell,
-// which single-quotes the path (POSIX and PowerShell both). Matching only the
-// first would make every skill written by a current install look like a file
-// that names no binary at all — and a skill that names no binary is one
-// uninstall removes, including another installation's.
-var installedCommand = regexp.MustCompile(`(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*(?:(?:'\\''|'')[^'\n]*)*)') (?:search|hook|agents prefer)\b`)
-
-// renderedPathCandidates is how a matched path may have been quoted: Go's
-// %q, POSIX single quotes with '\” for an embedded quote, or PowerShell's
-// doubled ”. A path containing no quote reads the same under all three.
-func renderedPathCandidates(m []string) []string {
-	if m[1] != "" {
-		if bin, err := strconv.Unquote(`"` + m[1] + `"`); err == nil {
-			return []string{bin}
-		}
-		return nil
-	}
-	raw := m[2]
-	return []string{strings.ReplaceAll(raw, `'\''`, "'"), strings.ReplaceAll(raw, "''", "'")}
-}
+// Several spellings, because several renderers have written this file. v0.2.9
+// quoted every path with Go's %q; from H2 a skill is rendered for its host's
+// shell, which single-quotes the path (POSIX and PowerShell) or double-quotes
+// it literally (cmd). Matching only some of them would make a file written by
+// a current install look like one that names no binary at all.
+var installedCommand = regexp.MustCompile(`(` + renderedWordRe + `) (?:search|hook|agents prefer)\b`)
 
 // installedConfig finds the installation a rendered artifact declares: the
 // `-config <path>` of a command it teaches, or the INSTALL_CONFIG line a
@@ -608,13 +606,13 @@ func renderedPathCandidates(m []string) []string {
 //
 // The adapter line exists because opencode's plugin names no binary and no
 // command at all — it rewrites commands, it does not run any — so until it
-// carried one, `foreignBinary` had nothing to match and read it as unowned.
+// carried one, the attribution had nothing to match and read it as unowned.
 // A disposable installation's purge therefore removed the main installation's
 // plugin, which is #73's own last comment.
-// The third alternative is a BARE path: Hermes' splitter takes one, and
+// The last alternative is a BARE path: Hermes' splitter takes one, and
 // hermesQuoteArg deliberately leaves an ordinary POSIX path unquoted because
 // the same string is the snippet a participant is asked to paste by hand.
-var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*(?:(?:'\\''|'')[^'\n]*)*)'|([^\s"'\n]+))`)
+var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(` + renderedWordRe + `|[^\s"'\n]+)`)
 
 // attribution is what the files a target would remove say about who they
 // belong to.
@@ -665,10 +663,46 @@ func attributeRemoved(ops agentOps, removes []string, ref installationRef, windo
 	return attributionUnknown, ""
 }
 
+// namedBinaries and namedConfigs both read a rendered path back through
+// unquoteRenderedPath, and that is the point: there is one function in this
+// codebase that reads a rendered path, so the two halves of an attribution
+// cannot disagree about what a Windows path says.
+//
+// They used to share a different helper, which read a double-quoted word only
+// through strconv.Unquote. A cmd-rendered Windows path — "C:\Users\…", a
+// literal, which is what Cursor's hooks.json holds on Windows — fails that on
+// \U, and the helper answered "no path here". The config half went red on the
+// Windows runners; the binary half did not, because an artifact naming no
+// binary is treated as contradicting nothing, so it failed OPEN and quietly
+// widened what uninstall would claim. One reading, not two.
+// unattributedPaths names the files that could not be attributed, tilde-
+// shortened, so the message points at something the participant can look at
+// rather than at a host label. Bounded: a plan that would remove a directory
+// names the directory, not every file in it.
+func unattributedPaths(ops agentOps, p agentPlan) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rm := range p.removes {
+		display := tilde(ops.home, rm.path)
+		if seen[display] {
+			continue
+		}
+		seen[display] = true
+		out = append(out, display)
+	}
+	switch len(out) {
+	case 0:
+		return "what is installed"
+	case 1:
+		return out[0]
+	}
+	return strings.Join(out[:len(out)-1], ", ") + " and " + out[len(out)-1]
+}
+
 func namedBinaries(content string) []string {
 	var out []string
 	for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
-		out = append(out, renderedPathCandidates(m)...)
+		out = append(out, unquoteRenderedPath(m[1])...)
 	}
 	return out
 }
@@ -676,11 +710,7 @@ func namedBinaries(content string) []string {
 func namedConfigs(content string) []string {
 	var out []string
 	for _, m := range installedConfig.FindAllStringSubmatch(content, -1) {
-		if m[1] == "" && m[2] == "" {
-			out = append(out, m[3])
-			continue
-		}
-		out = append(out, renderedPathCandidates(m)...)
+		out = append(out, unquoteRenderedPath(m[1])...)
 	}
 	return out
 }

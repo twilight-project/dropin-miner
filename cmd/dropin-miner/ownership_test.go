@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -196,17 +197,35 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 			// The shared files — the two hook files, which are MERGED rather
 			// than overwritten, so each installation owns its own entries —
 			// keep the disposable's and lose this one's.
+			//
+			// Asked through the production matcher, over the DECODED JSON.
+			// The bytes on disk are JSON-escaped, so on Windows a hook command
+			// reads "'C:\\Users\\…'" and a raw path never appears in them: a
+			// strings.Contains against filepath.Join can only ever fail there.
+			// That is the same mistake as 79ea5ba, f97df97 and 41faaac, and it
+			// is what made this test red on both Windows runners.
+			binPath := filepath.Join(s.home, "bin", binaryNameFor())
+			mine := installationRef{bins: []string{s.exe, binPath}, cfg: s.cfgPath()}
+			theirs := installationRef{bins: []string{s.exe, filepath.Join(disposable, "bin", binaryNameFor())}, cfg: filepath.Join(disposable, setupConfigFile)}
 			for _, hooks := range []string{paths.claudeSettings, paths.cursorHooks} {
-				body, err := os.ReadFile(hooks) // #nosec G304 -- this test's own sandbox
-				if err != nil {
-					t.Errorf("uninstalling %s removed %s, which still holds %s's hooks: %v", s.home, hooks, disposable, err)
+				entries := allHookEntries(t, hooks)
+				if len(entries) == 0 {
+					t.Errorf("uninstalling %s left no hook entries in %s, but %s's were there", s.home, hooks, disposable)
 					continue
 				}
-				if strings.Contains(string(body), s.cfgPath()) {
-					t.Errorf("%s still names the installation that was just uninstalled:\n%s", hooks, body)
+				for _, e := range entries {
+					if entryIsOurs(e, mine) {
+						t.Errorf("%s still holds an entry of the installation just uninstalled: %v", hooks, e)
+					}
 				}
-				if !strings.Contains(string(body), filepath.Join(disposable, setupConfigFile)) {
-					t.Errorf("%s lost %s's hooks:\n%s", hooks, disposable, body)
+				kept := 0
+				for _, e := range entries {
+					if entryIsOurs(e, theirs) {
+						kept++
+					}
+				}
+				if kept == 0 {
+					t.Errorf("%s lost every entry belonging to %s: %v", hooks, disposable, entries)
 				}
 			}
 
@@ -217,6 +236,100 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// allHookEntries is every entry in every event of a host's hook file, read
+// back the way the production code reads it — decoded, not scanned as bytes.
+func allHookEntries(t *testing.T, path string) []any {
+	t.Helper()
+	body, err := os.ReadFile(path) // #nosec G304 -- this test's own sandbox
+	if err != nil {
+		t.Errorf("reading %s: %v", path, err)
+		return nil
+	}
+	m, err := decodeJSONObject(body)
+	if err != nil {
+		t.Errorf("%s is not plain JSON: %v", path, err)
+		return nil
+	}
+	var out []any
+	hooks, _ := m["hooks"].(map[string]any)
+	for _, v := range hooks {
+		if list, ok := v.([]any); ok {
+			out = append(out, list...)
+		}
+	}
+	return out
+}
+
+func binaryNameFor() string {
+	if runtime.GOOS == "windows" {
+		return "dropin-miner.exe"
+	}
+	return "dropin-miner"
+}
+
+// ── a rendered path is read back one way ────────────────────────────────
+
+// TestARenderedPathIsReadBackWhicheverShellQuotedIt is the guard the Windows
+// runners had to supply before it existed.
+//
+// H5 shipped with two readings of a rendered path: unquoteRenderedPath, and a
+// second helper whose double-quoted branch only tried strconv.Unquote. A
+// cmd-rendered Windows path — `"C:\Users\…"`, a LITERAL, which is exactly what
+// Cursor's hooks.json holds on Windows — fails Unquote on \U, so that helper
+// answered "no path here". The config half of the attribution went red on both
+// Windows runners; the binary half did NOT, because an artifact naming no
+// binary is treated as contradicting nothing, so it failed open and silently
+// widened what uninstall would claim.
+//
+// Written as a unit case over literal strings so it needs no Windows runner:
+// a Windows path is only ever a string here, and nothing executes it.
+func TestARenderedPathIsReadBackWhicheverShellQuotedIt(t *testing.T) {
+	const winBin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	const winCfg = `C:\Users\u\.tokendrop\tokendrop.toml`
+	e := binEntry{command: winBin, cfg: winCfg}
+
+	// One row per renderer that has ever written one of these files.
+	for _, tc := range []struct {
+		name string
+		sh   shellKind
+	}{
+		{"cmd (Cursor's Windows hook form)", shellCmd},
+		{"POSIX (Claude Code's Windows hook form, Git Bash)", shellPOSIX},
+		{"PowerShell", shellPowerShell},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command, err := e.hookCommandForShell(tc.sh, "cursor", "sessionStart")
+			if err != nil {
+				t.Fatalf("rendering for %s: %v", tc.sh, err)
+			}
+
+			gotCfg := namedConfigs(command)
+			if !containsPath(gotCfg, winCfg) {
+				t.Errorf("the config is unreadable in the %s form:\n  %s\n  namedConfigs -> %q", tc.sh, command, gotCfg)
+			}
+			gotBin := namedBinaries(command)
+			if !containsPath(gotBin, winBin) {
+				t.Errorf("the binary is unreadable in the %s form:\n  %s\n  namedBinaries -> %q", tc.sh, command, gotBin)
+			}
+		})
+	}
+
+	// v0.2.9's %q, which an upgraded installation still carries.
+	legacy := strconv.Quote(winBin) + " hook -config " + strconv.Quote(winCfg) + " cursor sessionStart"
+	if !containsPath(namedConfigs(legacy), winCfg) || !containsPath(namedBinaries(legacy), winBin) {
+		t.Errorf("a v0.2.9 entry is unreadable:\n  %s\n  configs %q\n  binaries %q", legacy, namedConfigs(legacy), namedBinaries(legacy))
+	}
+}
+
+func containsPath(got []string, want string) bool {
+	for _, g := range got {
+		if samePath(g, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── every artifact says whose it is ─────────────────────────────────────

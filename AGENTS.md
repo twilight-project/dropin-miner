@@ -316,9 +316,19 @@ each line names the file that owns the rule and the test that proves it.
   — including the JavaScript adapters, which run no command of ours and therefore carry an
   `INSTALL_CONFIG` line for no other purpose; without it opencode's plugin named nothing and a
   disposable installation's purge deleted the main installation's copy. An artifact naming no
-  installation is left and reported, never deleted on the assumption it is ours.
+  installation is left and reported, never deleted on the assumption it is ours — with the file
+  named and the one `agents install` that would stamp it, so the dead end self-heals.
+  **One function reads a rendered path**, `unquoteRenderedPath`, and both halves of an
+  attribution go through it: the earlier pair disagreed, because the binary half's helper read a
+  double-quoted word only through `strconv.Unquote`, which a cmd-rendered Windows path fails on
+  `\U`. The config half went red on the Windows runners and the binary half failed OPEN, which
+  is the more dangerous direction and the reason the two must not drift apart again.
   `ownership_test.go`'s `TestUninstallingOneInstallationLeavesAnothersIntegrations` drives soak
-  row S20 on each CI OS, plain and `-purge-state`.
+  row S20 on each CI OS, plain and `-purge-state`, and asks the production matcher over decoded
+  JSON rather than scanning bytes — a raw native path never appears in a JSON-escaped file, which
+  is the mistake `79ea5ba`, `f97df97` and `41faaac` each made once.
+  `TestARenderedPathIsReadBackWhicheverShellQuotedIt` pins every renderer's spelling as a unit
+  case, so that defect no longer needs a Windows runner to surface.
 
 - **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
   a durable same-directory copy, the candidate renamed over the binary, the canonical path run and

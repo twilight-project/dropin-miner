@@ -205,8 +205,11 @@ func readSetupLine(r io.Reader) (string, error) {
 }
 
 // displayPath quotes a path for a command a participant copies, only when it
-// needs it.
-func (r *setupRun) displayPath(p string) string {
+// needs it. A plain function as well as a method, because uninstall prints
+// such a command too and the two must quote identically.
+func (r *setupRun) displayPath(p string) string { return displayPath(p) }
+
+func displayPath(p string) string {
 	if strings.ContainsAny(p, " \t\n'\"\\$`&;|<>()*?[]#~!{}") && filepath.Separator == '/' {
 		return shellQuote(p)
 	}

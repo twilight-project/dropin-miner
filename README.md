@@ -195,9 +195,13 @@ out whenever either was uninstalled. Codex's sandbox block names directories
 rather than a config, so it is matched by its writable roots lying under this
 installation. Anything that names another installation is left in place and
 reported, the same as the shell-profile block; so is anything that names no
-installation at all, since a file uninstall cannot attribute is not one it
-will delete. A hook file left holding nothing but the entries just removed is
-removed with them.
+installation at all, since a file uninstall cannot attribute is not one it will
+delete. In practice only the opencode plugin and the Pi extension can be in
+that state, and only if they were written before this version — every skill and
+hook command has named its config since v0.2.9 — so uninstall names the file
+and tells you that one `agents install` would stamp it, after which a later
+uninstall removes it unaided. A hook file left holding nothing but the entries
+just removed is removed with them.
 
 ## Commands
 
