@@ -1129,7 +1129,11 @@ func TestPurgeDryRunListsTheFlushLockARealRunsOwnLockingWouldCreate(t *testing.T
 func installedOwningItsBinary(t *testing.T) *setupSandbox {
 	t.Helper()
 	s := newSetupSandbox(t)
-	s.exe = filepath.Join(s.home, "bin", "dropin-miner")
+	name := "dropin-miner"
+	if runtime.GOOS == "windows" {
+		name = "dropin-miner.exe"
+	}
+	s.exe = filepath.Join(s.home, "bin", name)
 	writeFileT(t, s.exe, "the binary")
 	s.platform.claim("credits")
 	s.onPath["claude"] = true
