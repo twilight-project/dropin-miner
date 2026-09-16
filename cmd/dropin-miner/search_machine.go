@@ -91,6 +91,7 @@ func decodeMachineSearchRequest(r io.Reader) (machineSearchRequest, error) {
 	if !utf8.Valid(raw) {
 		return machineSearchRequest{}, inputErrorf(codeInvalidUTF8, "the request is not valid UTF-8")
 	}
+	raw = trimUTF8BOM(raw)
 	if err := singleJSONObject(raw); err != nil {
 		return machineSearchRequest{}, inputErrorf(codeInvalidJSON,
 			"the request must be exactly one JSON object with nothing after it")

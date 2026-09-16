@@ -192,6 +192,24 @@ dropin-miner search --stdin <<'JSON'
 JSON
 ```
 
+The skill each agent is given carries that command written for the shell
+that agent actually runs, with the paths of your own installation already
+quoted for it. Where the shell is PowerShell — Cursor and opencode on
+Windows, and Claude Code's PowerShell tool — it is a here-string piped into
+the call instead, with a first line that sets the output encoding:
+
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
+{"version":1,"query":"what is proof of authority consensus"}
+'@ | & 'C:\Users\you\.tokendrop\bin\dropin-miner.exe' search --stdin
+```
+
+That first line is what makes a query with an apostrophe, a quotation mark
+or any non-ASCII character arrive exactly as written: without it, Windows
+PowerShell 5.1 replaces every non-ASCII character with a question mark on
+the way to the program, and the search answers a different question.
+
 That prints exactly one JSON object. Eight fields are always there —
 `version`, `command`, `ok`, `exit_code`, `status`, `code`, `retryable` and
 `action` — and they say what happened and what to do about it; `result`
