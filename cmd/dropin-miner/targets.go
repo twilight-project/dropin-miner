@@ -7,7 +7,9 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -363,7 +365,7 @@ func hooksHaveOurs(ops agentOps, path string, entry binEntry) bool {
 	for _, v := range hooks {
 		if list, ok := v.([]any); ok {
 			for _, e := range list {
-				if entryIsOurs(e, entry.command) {
+				if entryIsOurs(e, refFor(entry)) {
 					return true
 				}
 			}
@@ -431,7 +433,7 @@ func (t claudeTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 		planRemove(p, t.Label(), filepath.Dir(paths.claudeSkill))
 		removed = true
 	}
-	if planHooksRemove(ops, t.Label(), paths.claudeSettings, p, entry.command, "hooks") {
+	if planHooksRemove(ops, t.Label(), paths.claudeSettings, p, entry, "hooks") {
 		removed = true
 	}
 	if !removed {
@@ -504,21 +506,98 @@ func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry,
 	}
 }
 
-func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
+func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.codexSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.codexSkill))
 		removed = true
 	}
 	if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
-		if next, had := removeMarkedBlock(existing); had {
+		switch next, had, ours := removeOurSandboxBlock(existing, entry); {
+		case had && ours:
 			planWrite(ops, t.Label(), paths.codexConfig, next, mode, "remove sandbox block", p)
 			removed = true
+		case had:
+			p.notes = append(p.notes, t.Label()+": left the sandbox block in "+paths.codexConfig+
+				": its writable roots are another installation's, not this one's")
 		}
 	}
 	if !removed {
 		p.skipped = append(p.skipped, t.Label()+": not installed")
 	}
+}
+
+// removeOurSandboxBlock takes out the marked [sandbox_workspace_write] block
+// only when it is this installation's. The block names no binary and no
+// config — it names DIRECTORIES — so it is attributed the way it is written:
+// its writable roots are the state, intake, sessions and spool directories of
+// one installation, all of them under that installation's home. A block whose
+// roots lie elsewhere widens the sandbox for another installation, and
+// removing it would silence that installation's searches (#73).
+//
+// had says a marked block was there at all; ours says it was this one's.
+func removeOurSandboxBlock(existing []byte, entry binEntry) (next []byte, had, ours bool) {
+	next, had = removeMarkedBlock(existing)
+	if !had {
+		return existing, false, false
+	}
+	if entry.cfg == "" {
+		// Discovery: there is no installation directory to compare against,
+		// and v0.2.9 wrote the block from whatever config it found. Keep
+		// v0.2.9's behavior rather than strand a block nothing can attribute.
+		return next, true, true
+	}
+	home := filepath.Dir(entry.cfg)
+	roots := markedSandboxRoots(existing)
+	if len(roots) == 0 {
+		// A block we cannot read the roots of is one we cannot attribute.
+		return next, true, false
+	}
+	for _, r := range roots {
+		if !pathUnder(r, home) {
+			return next, true, false
+		}
+	}
+	return next, true, true
+}
+
+// markedSandboxRoots reads the writable_roots out of the marked block, in the
+// one spelling sandboxSettings writes them: a single line of %q-quoted paths.
+func markedSandboxRoots(existing []byte) []string {
+	block, ok := markedBlock(existing)
+	if !ok {
+		return nil
+	}
+	m := sandboxRootsLine.FindStringSubmatch(block)
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, q := range sandboxRootQuoted.FindAllString(m[1], -1) {
+		if p, err := strconv.Unquote(q); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+var (
+	sandboxRootsLine  = regexp.MustCompile(`(?m)^writable_roots\s*=\s*\[([^\]]*)\]`)
+	sandboxRootQuoted = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+)
+
+// pathUnder: is p inside dir, or dir itself? Both are compared the way
+// samePath compares, so Windows case differences do not make an installation
+// look foreign to itself.
+func pathUnder(p, dir string) bool {
+	if samePath(p, dir) {
+		return true
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(p))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (codexTarget) Status(ops agentOps, paths agentPaths, _ binEntry) targetStatus {
@@ -641,7 +720,7 @@ func (t cursorTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 		planRemove(p, t.Label(), filepath.Dir(paths.cursorSkill))
 		removed = true
 	}
-	if planHooksRemove(ops, t.Label(), paths.cursorHooks, p, entry.command, "hooks") {
+	if planHooksRemove(ops, t.Label(), paths.cursorHooks, p, entry, "hooks") {
 		removed = true
 	}
 	if !removed {
@@ -705,7 +784,7 @@ func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) 
 }
 
 func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
-	if !planAgentScript(ops, t, paths.opencodePlugin, opencodePluginJS, "lineage plugin", p) {
+	if !planAgentScript(ops, t, paths.opencodePlugin, opencodePluginJS, "lineage plugin", entry, p) {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
@@ -763,7 +842,7 @@ func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string
 func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
-	if planAgentScript(ops, t, paths.piExtension, piExtensionTS, "lineage extension", p) {
+	if planAgentScript(ops, t, paths.piExtension, piExtensionTS, "lineage extension", entry, p) {
 		changed = true
 	}
 	if !changed {

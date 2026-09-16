@@ -515,22 +515,42 @@ func (r *uninstallRun) plan() {
 // of ours are taken out, and the rest is left and reported.
 func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) (changed bool, left []string) {
 	paths := ops.paths(r.d.getenv)
+	ref := installationRef{bins: r.candidates, cfg: r.cfgPath}
 	for _, t := range r.d.targets {
 		var agnostic agentPlan
-		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand}, &agnostic)
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: r.cfgPath}, &agnostic)
 		skip := map[string]bool{}
-		if foreign := foreignBinary(ops, agnostic.removedPaths(), r.candidates, r.d.windows); foreign != "" {
+		hold := func(why string) {
 			for _, w := range agnostic.writes {
 				skip[w.path] = true
 			}
 			for _, rm := range agnostic.removes {
 				skip[rm.path] = true
 			}
-			left = append(left, fmt.Sprintf("%s: left in place; it runs %s, not this installation", t.Label(), foreign))
+			left = append(left, fmt.Sprintf("%s: %s", t.Label(), why))
+		}
+		// Only a target that HAS something here can have it left: an empty
+		// agnostic plan is a host that is simply not installed, and saying
+		// "left in place" about a file that does not exist would be a lie in
+		// the one place a participant is checking what survived.
+		kind, other := attributionOurs, ""
+		if !agnostic.empty() {
+			kind, other = attributeRemoved(ops, agnostic.removedPaths(), ref, r.d.windows)
+		}
+		switch kind {
+		case attributionForeign:
+			hold("left in place; it belongs to " + other + ", not this installation")
+		case attributionUnknown:
+			// #73: an uninstall that cannot attribute a file leaves it and
+			// says so. An artifact naming no installation is v0.2.9's, or one
+			// this version has not rewritten yet; on a machine with one
+			// installation it is almost certainly ours, and "almost certainly"
+			// is not the standard for removing somebody else's file.
+			hold("left in place; it names no installation, so it cannot be attributed — run `agents install` to re-stamp it, or remove it by hand")
 		}
 		for _, c := range r.candidates {
 			var p agentPlan
-			t.PlanUninstall(ops, paths, binEntry{command: c}, &p)
+			t.PlanUninstall(ops, paths, binEntry{command: c, cfg: r.cfgPath}, &p)
 			p = planWithout(p, skip)
 			if p.empty() && len(p.refused) == 0 {
 				continue
@@ -582,28 +602,128 @@ func renderedPathCandidates(m []string) []string {
 	return []string{strings.ReplaceAll(raw, `'\''`, "'"), strings.ReplaceAll(raw, "''", "'")}
 }
 
-// foreignBinary returns a binary named in the files a target would remove
-// when none of them names one of candidates, and "" otherwise — including
-// when they name no binary at all.
-func foreignBinary(ops agentOps, removes, candidates []string, windows bool) string {
-	foreign := ""
+// installedConfig finds the installation a rendered artifact declares: the
+// `-config <path>` of a command it teaches, or the INSTALL_CONFIG line a
+// JavaScript adapter carries.
+//
+// The adapter line exists because opencode's plugin names no binary and no
+// command at all — it rewrites commands, it does not run any — so until it
+// carried one, `foreignBinary` had nothing to match and read it as unowned.
+// A disposable installation's purge therefore removed the main installation's
+// plugin, which is #73's own last comment.
+// The third alternative is a BARE path: Hermes' splitter takes one, and
+// hermesQuoteArg deliberately leaves an ordinary POSIX path unquoted because
+// the same string is the snippet a participant is asked to paste by hand.
+var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*(?:(?:'\\''|'')[^'\n]*)*)'|([^\s"'\n]+))`)
+
+// attribution is what the files a target would remove say about who they
+// belong to.
+type attribution int
+
+const (
+	attributionOurs    attribution = iota // named this installation
+	attributionForeign                    // named another installation
+	attributionUnknown                    // named none, or none we can read
+)
+
+// attributeRemoved decides, from the bytes on disk, whether the files a
+// target would remove are this installation's.
+//
+// Both halves must agree, which is the whole of #73: two installations that
+// share a binary are told apart only by the config each names, and matching
+// on the binary alone made every uninstall plan the removal of both. A file
+// that names an installation other than this one is foreign; a file that
+// names none — a v0.2.9 artifact, or an adapter written before this version —
+// is UNKNOWN, and unknown is left alone and reported rather than assumed to
+// be ours.
+func attributeRemoved(ops agentOps, removes []string, ref installationRef, windows bool) (attribution, string) {
+	other := ""
+	sawAny := false
 	for _, path := range removes {
 		for _, content := range readRemoved(ops, path) {
-			for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
-				for _, bin := range renderedPathCandidates(m) {
-					for _, c := range candidates {
-						if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
-							return ""
-						}
-					}
-					if foreign == "" {
-						foreign = bin
-					}
-				}
+			bins := namedBinaries(content)
+			cfgs := namedConfigs(content)
+			if len(bins) == 0 && len(cfgs) == 0 {
+				continue
+			}
+			sawAny = true
+			if binsInclude(bins, ref.bins, windows) && configsInclude(cfgs, ref.cfg) {
+				return attributionOurs, ""
+			}
+			if other == "" {
+				other = describeOther(bins, cfgs, ref)
 			}
 		}
 	}
-	return foreign
+	switch {
+	case other != "":
+		return attributionForeign, other
+	case sawAny:
+		// Every artifact named something, and none of it named us.
+		return attributionForeign, "another installation"
+	}
+	return attributionUnknown, ""
+}
+
+func namedBinaries(content string) []string {
+	var out []string
+	for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
+		out = append(out, renderedPathCandidates(m)...)
+	}
+	return out
+}
+
+func namedConfigs(content string) []string {
+	var out []string
+	for _, m := range installedConfig.FindAllStringSubmatch(content, -1) {
+		if m[1] == "" && m[2] == "" {
+			out = append(out, m[3])
+			continue
+		}
+		out = append(out, renderedPathCandidates(m)...)
+	}
+	return out
+}
+
+func binsInclude(named, candidates []string, windows bool) bool {
+	if len(named) == 0 {
+		return true // an artifact that names no binary cannot contradict one
+	}
+	for _, bin := range named {
+		for _, c := range candidates {
+			if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func configsInclude(named []string, cfg string) bool {
+	if len(named) == 0 {
+		return true // as above: silence is not a contradiction
+	}
+	for _, c := range named {
+		if samePath(c, cfg) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeOther names the other installation the way the profile block's
+// refusal does: by what the artifact actually says, so the participant can
+// see which one it is.
+func describeOther(bins, cfgs []string, ref installationRef) string {
+	for _, c := range cfgs {
+		if !samePath(c, ref.cfg) {
+			return "the installation configured by " + c
+		}
+	}
+	for _, b := range bins {
+		return b
+	}
+	return "another installation"
 }
 
 // readRemoved is the text of a file, or of the regular files directly in a

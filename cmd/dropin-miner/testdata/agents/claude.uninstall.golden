@@ -1,17 +1,13 @@
 {
-  "writes": [
-    {
-      "surface": "Claude Code",
-      "path": "/home/u/.claude/settings.json",
-      "mode": 384,
-      "why": "remove hooks",
-      "content": "{\n  \"hooks\": {},\n  \"permissions\": {}\n}\n"
-    }
-  ],
+  "writes": null,
   "removes": [
     {
       "surface": "Claude Code",
       "path": "/home/u/.claude/skills/dropin-miner"
+    },
+    {
+      "surface": "Claude Code",
+      "path": "/home/u/.claude/settings.json"
     }
   ]
 }

@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -337,7 +338,11 @@ func (uninstallIntegrationTarget) Status(agentOps, agentPaths, binEntry) targetS
 func TestUninstallReachesATargetOfEveryKind(t *testing.T) {
 	s := installed(t)
 	file := filepath.Join(s.userHome, ".fake-integration", "dropin-miner.conf")
-	writeFileT(t, file, "installed by an integration target")
+	// Naming the installation is what every artifact this client writes does
+	// from H5 on (TestEveryArtifactNamesTheInstallationThatWroteIt); an
+	// artifact that names none cannot be attributed and is left alone, so a
+	// fixture that left it out would be testing the wrong branch.
+	writeFileT(t, file, "installed by an integration target\nINSTALL_CONFIG = "+strconv.Quote(s.cfgPath())+"\n")
 	d, out, errOut := s.uninstallDeps(nil, false, &revokeRecorder{})
 	d.targets = append(append([]installTarget{}, installTargets...), uninstallIntegrationTarget{file: file})
 	if code := uninstallMain(d, []string{"-yes"}); code != exitOK {
@@ -412,7 +417,7 @@ func TestUninstallLeavesAnotherInstallationsIntegrations(t *testing.T) {
 	if !lexists(paths.claudeSkill) || !lexists(paths.codexSkill) {
 		t.Error("skills that run another installation's binary must be left in place")
 	}
-	if !strings.Contains(out.String(), "left in place; it runs "+s.exe) {
+	if !strings.Contains(out.String(), "left in place; it belongs to the installation configured by "+s.cfgPath()) {
 		t.Errorf("uninstall must report what it left and why:\n%s", out.String())
 	}
 }

@@ -303,6 +303,22 @@ each line names the file that owns the rule and the test that proves it.
   classifier setup, `uninstall -binary` and upgrade consult. `uninstall_test.go`'s
   `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
   and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
+  **`ownership_match.go` owns which installation an integration belongs to**: one of this
+  installation's binaries AND this installation's resolved config, because two installations
+  share a binary whenever the second was made by running the first's copy, and matching on the
+  binary alone removed both installations' integrations from either one's uninstall (#73). It is
+  the rule the profile block already followed, applied everywhere. The spellings come from the
+  same per-shell renderers install writes with, never a hand-kept list; the config is compared
+  with `samePath`, because v0.2.9's `%q` hands Windows doubled separators naming the same file.
+  Codex's sandbox block names directories rather than a config, so `removeOurSandboxBlock`
+  attributes it by its writable roots lying under this installation. **Every artifact this client
+  writes names the installation that wrote it** — `TestEveryArtifactNamesTheInstallationThatWroteIt`
+  — including the JavaScript adapters, which run no command of ours and therefore carry an
+  `INSTALL_CONFIG` line for no other purpose; without it opencode's plugin named nothing and a
+  disposable installation's purge deleted the main installation's copy. An artifact naming no
+  installation is left and reported, never deleted on the assumption it is ours.
+  `ownership_test.go`'s `TestUninstallingOneInstallationLeavesAnothersIntegrations` drives soak
+  row S20 on each CI OS, plain and `-purge-state`.
 
 - **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
   a durable same-directory copy, the candidate renamed over the binary, the canonical path run and

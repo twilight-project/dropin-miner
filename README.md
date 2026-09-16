@@ -185,7 +185,19 @@ is executed to find out whether it exists.
 | Hermes | skill | `hermes` on PATH | Bash everywhere (Git Bash on Windows) | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
 | anything else | rules line | not detected; `setup -with <id>` names one | Bash | per-shell | printed for you to paste |
 
-Uninstall removes exactly those, and only hook entries that name this binary.
+Uninstall removes exactly those, and only what belongs to the installation
+being uninstalled: a hook entry, an allow rule or a skill is this
+installation's only when it runs one of this installation's binaries **and**
+names this installation's config. Two installations on one machine commonly
+share a binary — `setup -home <dir>` run from an existing one makes exactly
+that — and matching on the binary alone took both installations' integrations
+out whenever either was uninstalled. Codex's sandbox block names directories
+rather than a config, so it is matched by its writable roots lying under this
+installation. Anything that names another installation is left in place and
+reported, the same as the shell-profile block; so is anything that names no
+installation at all, since a file uninstall cannot attribute is not one it
+will delete. A hook file left holding nothing but the entries just removed is
+removed with them.
 
 ## Commands
 

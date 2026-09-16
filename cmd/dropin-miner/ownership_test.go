@@ -1,0 +1,422 @@
+package main
+
+// H5's subject: which installation an agent integration belongs to.
+//
+// #73, soak row S20. Two installations on one machine share a binary whenever
+// the second was made by running the first's copy — `~/.tokendrop/bin/
+// dropin-miner setup -home ~/dm-disposable` is the documented way. v0.2.9
+// matched an integration by its binary path alone, so the disposable
+// installation's `uninstall -purge-state` planned the removal of the soak
+// installation's Claude Code hooks, Codex sandbox block and Cursor hooks. The
+// shell-profile block was already right: it is matched by the config it
+// names, and it was correctly left with a line saying why.
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// ── the rule, in isolation ──────────────────────────────────────────────
+
+func TestAnIntegrationIsOursOnlyWhenItNamesOurBinaryAndOurConfig(t *testing.T) {
+	const bin = "/home/u/.tokendrop/bin/dropin-miner"
+	const ours = "/home/u/.tokendrop/tokendrop.toml"
+	const theirs = "/home/u/dm-disposable/tokendrop.toml"
+	ref := installationRef{bins: []string{bin}, cfg: ours}
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		// Every spelling this client has written, naming our config.
+		{"POSIX", posixQuoteArg(bin) + " hook -config " + posixQuoteArg(ours) + " lineage", true},
+		{"PowerShell", "& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(ours) + " lineage", true},
+		{"cmd", `"` + bin + `" hook -config "` + ours + `" lineage`, true},
+		{"v0.2.9 %q", strconv.Quote(bin) + " hook -config " + strconv.Quote(ours) + " lineage", true},
+		{"bare", bin + " hook -config " + ours + " lineage", true},
+
+		// The same binary, the other installation's config. This is the whole
+		// of #73: every one of these was "ours" before H5.
+		{"POSIX, their config", posixQuoteArg(bin) + " hook -config " + posixQuoteArg(theirs) + " lineage", false},
+		{"PowerShell, their config", "& " + powerShellQuoteArg(bin) + " hook -config " + powerShellQuoteArg(theirs) + " lineage", false},
+		{"cmd, their config", `"` + bin + `" hook -config "` + theirs + `" lineage`, false},
+		{"v0.2.9 %q, their config", strconv.Quote(bin) + " hook -config " + strconv.Quote(theirs) + " lineage", false},
+
+		// A different binary is not ours whatever config it names.
+		{"another binary, our config", posixQuoteArg("/opt/other/dropin-miner") + " hook -config " + posixQuoteArg(ours) + " lineage", false},
+
+		// An installation with a config does not own a discovery command.
+		{"no -config at all", posixQuoteArg(bin) + " hook lineage", false},
+
+		// Not ours, and not a command of ours either.
+		{"someone else entirely", "/usr/bin/env echo hello", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ref.commandIsOurs(tc.command); got != tc.want {
+				t.Errorf("commandIsOurs(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+// An installation running on discovery wrote no -config, so for it the
+// absence of the flag is the match and its presence is somebody else's.
+func TestADiscoveryInstallationOwnsOnlyCommandsWithNoConfig(t *testing.T) {
+	const bin = "/home/u/.tokendrop/bin/dropin-miner"
+	ref := installationRef{bins: []string{bin}, cfg: ""}
+	if !ref.commandIsOurs(posixQuoteArg(bin) + " hook lineage") {
+		t.Error("a discovery installation must own the command it actually writes")
+	}
+	if ref.commandIsOurs(posixQuoteArg(bin) + " hook -config " + posixQuoteArg("/home/u/.tokendrop/tokendrop.toml") + " lineage") {
+		t.Error("a command naming a config belongs to the installation that config configures, not to a discovery one")
+	}
+}
+
+// The config is compared as a PATH, not as bytes: v0.2.9's %q hands Windows a
+// path whose separators are doubled, naming the same file in other bytes.
+func TestTheConfigIsComparedAsAPathNotAsBytes(t *testing.T) {
+	const bin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	const cfg = `C:\Users\u\.tokendrop\tokendrop.toml`
+	ref := installationRef{bins: []string{bin}, cfg: cfg}
+	// Exactly what a v0.2.9 hooks.json holds, doubled separators and all.
+	command := strconv.Quote(bin) + " hook -config " + strconv.Quote(cfg) + " lineage"
+	if !strings.Contains(command, `\\`) {
+		t.Fatal("this fixture is meant to carry doubled separators; it does not, so it proves nothing")
+	}
+	if !ref.commandIsOurs(command) {
+		t.Errorf("a v0.2.9 entry for this installation was not recognized: %s", command)
+	}
+}
+
+func TestRenderedWordsKeepsAQuotedPathWhole(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{`a b c`, []string{"a", "b", "c"}},
+		{`'/a path/x' hook -config '/b path/y'`, []string{`'/a path/x'`, "hook", "-config", `'/b path/y'`}},
+		{`"C:\x y" hook`, []string{`"C:\x y"`, "hook"}},
+		{`'it'\''s' hook`, []string{`'it'\''s'`, "hook"}},
+		{`'it''s' hook`, []string{`'it''s'`, "hook"}},
+	} {
+		if got := renderedWords(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("renderedWords(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// ── two installations sharing one binary, end to end ────────────────────
+
+// installationWithAgents sets up a second installation under home, using the
+// same sandbox — and therefore the same binary — as the first.
+func installationWithAgents(t *testing.T, s *setupSandbox, home string, with ...string) {
+	t.Helper()
+	args := append([]string{"-yes", "-home", home}, with...)
+	if code, out, errOut := s.run(nil, false, args...); code != exitOK {
+		t.Fatalf("setup -home %s exited %d\n%s\n%s", home, code, out, errOut)
+	}
+}
+
+// TestUninstallingOneInstallationLeavesAnothersIntegrations is S20.
+//
+// Both installations run the SAME binary, which is what made every match
+// succeed before H5. Each host is installed by the second installation after
+// the first, so the files on disk name the second — and uninstalling the
+// FIRST must therefore leave every one of them exactly as it found it, and
+// say which ones and why.
+func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		name := "plain"
+		if purge {
+			name = "purge-state"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newSetupSandbox(t)
+			s.platform.claim("credits")
+			hosts := []string{"-with", "claude", "-with", "codex", "-with", "cursor", "-with", "opencode", "-with", "pi", "-with", "hermes"}
+
+			// The first installation is the sandbox's own home; the second is
+			// a disposable one set up by running the first's binary.
+			installationWithAgents(t, s, s.home, hosts...)
+			disposable := filepath.Join(s.root, "dm-disposable")
+			installationWithAgents(t, s, disposable, hosts...)
+
+			// The single-copy artifacts — a skill, the plugin, the extension —
+			// belong wholly to whoever wrote them last, which is the
+			// disposable installation. They must come through untouched.
+			paths := s.paths()
+			whole := []string{
+				paths.claudeSkill, paths.codexSkill, paths.cursorSkill,
+				paths.opencodePlugin, paths.piSkill, paths.piExtension, paths.hermesSkill,
+			}
+			before := map[string]fileSig{}
+			for _, p := range whole {
+				snap := snapshotTree(t, p)
+				sig, ok := snap[p]
+				if !ok {
+					t.Fatalf("setup wrote no %s, so leaving it would prove nothing", p)
+				}
+				before[p] = sig
+			}
+
+			var out string
+			if purge {
+				// -purge-state needs the typed confirmation at a terminal.
+				var code int
+				code, out, _ = s.uninstall(t, tty(s.home), true, nil, "-purge-state", "-home", s.home)
+				if code != exitOK {
+					t.Fatalf("uninstall -purge-state exited %d\n%s", code, out)
+				}
+			} else {
+				var code int
+				var errOut string
+				code, out, errOut = s.uninstall(t, nil, false, nil, "-yes", "-home", s.home)
+				if code != exitOK {
+					t.Fatalf("uninstall exited %d\n%s\n%s", code, out, errOut)
+				}
+			}
+
+			for p, want := range before {
+				got, ok := snapshotTree(t, p)[p]
+				if !ok {
+					t.Errorf("uninstalling %s removed %s, which belongs to %s", s.home, p, disposable)
+					continue
+				}
+				if !reflect.DeepEqual(want, got) {
+					t.Errorf("uninstalling %s rewrote %s, which belongs to %s", s.home, p, disposable)
+				}
+			}
+
+			// The shared files — the two hook files, which are MERGED rather
+			// than overwritten, so each installation owns its own entries —
+			// keep the disposable's and lose this one's.
+			for _, hooks := range []string{paths.claudeSettings, paths.cursorHooks} {
+				body, err := os.ReadFile(hooks) // #nosec G304 -- this test's own sandbox
+				if err != nil {
+					t.Errorf("uninstalling %s removed %s, which still holds %s's hooks: %v", s.home, hooks, disposable, err)
+					continue
+				}
+				if strings.Contains(string(body), s.cfgPath()) {
+					t.Errorf("%s still names the installation that was just uninstalled:\n%s", hooks, body)
+				}
+				if !strings.Contains(string(body), filepath.Join(disposable, setupConfigFile)) {
+					t.Errorf("%s lost %s's hooks:\n%s", hooks, disposable, body)
+				}
+			}
+
+			// And it said what it left, naming the installation it left it to
+			// — the way the profile block's refusal already read.
+			if !strings.Contains(out, "left in place; it belongs to the installation configured by "+filepath.Join(disposable, setupConfigFile)) {
+				t.Errorf("uninstall did not report what it left and to whom:\n%s", out)
+			}
+		})
+	}
+}
+
+// ── every artifact says whose it is ─────────────────────────────────────
+
+// TestEveryArtifactNamesTheInstallationThatWroteIt is the structural guard
+// behind the rule. Uninstall can only attribute a file that names an
+// installation, and a file it cannot attribute it must leave — so an artifact
+// that names none is one this client can never take back out.
+//
+// opencode's plugin is why this exists: it rewrites commands and runs none, so
+// it named no binary and no config at all, and a disposable installation's
+// purge removed the main installation's copy (#73's last comment).
+func TestEveryArtifactNamesTheInstallationThatWroteIt(t *testing.T) {
+	entry := goldenEntry()
+	for _, id := range goldenHostIDs {
+		t.Run(id, func(t *testing.T) {
+			surface, ok := surfaceByID(id)
+			if !ok {
+				t.Fatalf("no target registered as %q", id)
+			}
+			_, ops := newFakeMachine()
+			paths := ops.paths(noEnv)
+			plan := buildInstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
+			if len(plan.writes) == 0 {
+				t.Fatalf("%s wrote nothing, so this proves nothing about what it names", id)
+			}
+			for _, w := range plan.writes {
+				if strings.HasSuffix(w.path, "config.toml") {
+					// Codex's sandbox block names directories, not a config;
+					// it is attributed by its writable roots instead, which
+					// TestTheCodexSandboxBlockIsAttributedByItsWritableRoots
+					// covers.
+					continue
+				}
+				named := namedConfigs(string(w.contents))
+				ours := false
+				for _, c := range named {
+					if samePath(c, entry.cfg) {
+						ours = true
+					}
+				}
+				if !ours {
+					t.Errorf("%s names no installation, so uninstall could never attribute it: %s\nnamed: %v", w.path, w.why, named)
+				}
+			}
+		})
+	}
+}
+
+// ── the emptied hook file ───────────────────────────────────────────────
+
+// A hook file left holding nothing but what this client put there is removed,
+// and one still holding somebody else's entry is kept. The first half closes
+// H4's leftover: uninstall used to leave ~/.cursor/hooks.json as
+// `{"hooks":{},"version":1}`, bytes only this client writes, so a machine
+// that never had Cursor detected as Cursor from then on.
+func TestAnEmptiedHookFileIsRemovedAndASharedOneIsKept(t *testing.T) {
+	t.Run("nothing but ours", func(t *testing.T) {
+		m, ops := newFakeMachine("cursor")
+		if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install: %d\n%s%s", code, out, errOut)
+		}
+		if _, ok := m.files["/home/u/.cursor/hooks.json"]; !ok {
+			t.Fatal("install wrote no hooks.json, so removing it proves nothing")
+		}
+		if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("uninstall: %d\n%s%s", code, out, errOut)
+		}
+		if body, ok := m.files["/home/u/.cursor/hooks.json"]; ok {
+			t.Errorf("hooks.json held nothing but ours and survived: %s", body)
+		}
+	})
+
+	t.Run("a foreign entry keeps the file", func(t *testing.T) {
+		m, ops := newFakeMachine("cursor")
+		if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("install: %d\n%s%s", code, out, errOut)
+		}
+		// One hook of the participant's own, on an event we also use.
+		doc := hooksOf(t, m, "/home/u/.cursor/hooks.json")
+		list, _ := doc["stop"].([]any)
+		doc["stop"] = append(list, map[string]any{"command": "/usr/local/bin/their-tool stop"})
+		writeJSONFile(t, m, "/home/u/.cursor/hooks.json", map[string]any{"hooks": doc, "version": 1})
+
+		if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+			t.Fatalf("uninstall: %d\n%s%s", code, out, errOut)
+		}
+		body, ok := m.files["/home/u/.cursor/hooks.json"]
+		if !ok {
+			t.Fatal("a hooks.json still holding somebody else's hook was removed")
+		}
+		if !strings.Contains(string(body), "their-tool") {
+			t.Errorf("the foreign hook did not survive: %s", body)
+		}
+	})
+}
+
+func writeJSONFile(t *testing.T, m *fakeMachine, path string, v any) {
+	t.Helper()
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.files[path] = append(b, '\n')
+}
+
+// ── Codex's sandbox block ───────────────────────────────────────────────
+
+// The block names no binary and no config; it names DIRECTORIES. So it is
+// attributed by them: its writable roots are one installation's state, intake,
+// sessions and spool, all under that installation's home.
+func TestTheCodexSandboxBlockIsAttributedByItsWritableRoots(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "install")
+	cfg := filepath.Join(home, setupConfigFile)
+	entry := binEntry{command: filepath.Join(home, "bin", "dropin-miner"), cfg: cfg}
+
+	ours := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(home, "state"), filepath.Join(home, "intake")}))
+	theirs := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(t.TempDir(), "other", "state")}))
+
+	if _, had, isOurs := removeOurSandboxBlock(ours, entry); !had || !isOurs {
+		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", had, isOurs)
+	}
+	if _, had, isOurs := removeOurSandboxBlock(theirs, entry); !had || isOurs {
+		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", had, isOurs)
+	}
+	if _, had, _ := removeOurSandboxBlock([]byte("[nothing]\n"), entry); had {
+		t.Error("a config with no marked block reported one")
+	}
+}
+
+func TestPathUnderIsContainmentNotAPrefixTest(t *testing.T) {
+	dir := filepath.Join("/home", "u", ".tokendrop")
+	for _, tc := range []struct {
+		p    string
+		want bool
+	}{
+		{dir, true},
+		{filepath.Join(dir, "state"), true},
+		{filepath.Join(dir, "a", "b"), true},
+		// The prefix test this replaces would have said true: the string
+		// starts with the directory's own bytes.
+		{"/home/u/.tokendrop-other/state", false},
+		{"/home/u", false},
+		{"/elsewhere", false},
+	} {
+		if got := pathUnder(tc.p, dir); got != tc.want {
+			t.Errorf("pathUnder(%q, %q) = %v, want %v", tc.p, dir, got, tc.want)
+		}
+	}
+}
+
+// ── the adapters carry their installation ───────────────────────────────
+
+func TestAJavaScriptAdapterCarriesTheConfigItWasInstalledWith(t *testing.T) {
+	cfg := filepath.Join(string(filepath.Separator)+"home", "u", ".tokendrop", "tokendrop.toml")
+	for name, template := range map[string]string{
+		"opencode plugin": opencodePluginJS,
+		"pi extension":    piExtensionTS,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rendered := renderAgentScript(template, shellPOSIX, cfg)
+			if strings.Contains(rendered, traceConfigMarker) {
+				t.Fatal("the marker survived rendering, so the adapter names no installation")
+			}
+			named := namedConfigs(rendered)
+			ours := false
+			for _, c := range named {
+				if samePath(c, cfg) {
+					ours = true
+				}
+			}
+			if !ours {
+				t.Errorf("the rendered adapter does not name %s; named: %v", cfg, named)
+			}
+		})
+	}
+}
+
+// A Windows path is mostly backslashes, and the marker sits inside a
+// JavaScript string literal: rendered without escaping, the adapter would not
+// parse and its own path would come back wrong.
+func TestTheAdaptersConfigSurvivesAWindowsPath(t *testing.T) {
+	const cfg = `C:\Users\u\.tokendrop\tokendrop.toml`
+	rendered := renderAgentScript(opencodePluginJS, shellPOSIX, cfg)
+	if !strings.Contains(rendered, `"C:\\Users\\u\\.tokendrop\\tokendrop.toml"`) {
+		t.Fatalf("the config was not escaped for a JavaScript string literal:\n%s", firstLineNaming(rendered, "INSTALL_CONFIG"))
+	}
+	for _, c := range namedConfigs(rendered) {
+		if c == cfg {
+			return
+		}
+	}
+	t.Errorf("the escaped config does not read back as %s: %v", cfg, namedConfigs(rendered))
+}
+
+func firstLineNaming(s, want string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, want) {
+			return line
+		}
+	}
+	return "(no line names " + want + ")"
+}

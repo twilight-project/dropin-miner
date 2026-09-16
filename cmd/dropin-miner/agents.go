@@ -107,15 +107,27 @@ const traceCommonMarker = "// {{TRACE_COMMON}}"
 // the installer, which knows both the host and the OS, writes the answer in.
 const traceShellMarker = "{{HOST_SHELL}}"
 
-func renderAgentScript(template string, sh shellKind) string {
+// traceConfigMarker is where the adapter records which installation wrote it.
+// An adapter runs no command of ours, so it names no binary and no config of
+// its own accord — and an artifact that names no installation is one uninstall
+// cannot attribute, which is how a disposable installation's purge removed the
+// main installation's opencode plugin (#73).
+const traceConfigMarker = "{{INSTALL_CONFIG}}"
+
+func renderAgentScript(template string, sh shellKind, cfg string) string {
 	out := strings.Replace(template, traceCommonMarker, strings.TrimRight(agentTraceCommonJS, "\n"), 1)
-	return strings.Replace(out, traceShellMarker, string(sh), 1)
+	out = strings.Replace(out, traceShellMarker, string(sh), 1)
+	// JSON quoting, because the marker sits inside a JavaScript string
+	// literal and a Windows path is full of backslashes. json.Marshal of a
+	// string cannot fail.
+	quoted, _ := json.Marshal(cfg)
+	return strings.Replace(out, `"`+traceConfigMarker+`"`, string(quoted), 1)
 }
 
 // planAgentScript renders a JavaScript host's artifact for the shell that
 // host runs tool calls in on this OS, or refuses in the plan rather than
 // installing an adapter that writes the wrong syntax.
-func planAgentScript(ops agentOps, t installTarget, path, template, why string, p *agentPlan) bool {
+func planAgentScript(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) bool {
 	shells, err := declaredShells(t, runtime.GOOS, channelTool)
 	if err != nil || len(shells) != 1 {
 		if err == nil {
@@ -124,7 +136,7 @@ func planAgentScript(ops agentOps, t installTarget, path, template, why string, 
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
 		return false
 	}
-	return planWrite(ops, t.Label(), path, []byte(renderAgentScript(template, shells[0])), 0o600, why, p)
+	return planWrite(ops, t.Label(), path, []byte(renderAgentScript(template, shells[0], entry.cfg)), 0o600, why, p)
 }
 
 const (
@@ -862,24 +874,22 @@ func claudeAllowRules(entry binEntry) []string {
 // Windows the quoted rule's bytes never contain bin's own backslashes as a
 // contiguous run; a substring test only ever catches the bare rule there,
 // leaving the quoted one behind on uninstall.
-func ruleIsOurs(e any, bin string) bool {
+func ruleIsOurs(e any, ref installationRef) bool {
 	r, ok := e.(string)
 	if !ok {
 		return false
 	}
-	// Every spelling claudeAllowRules has ever written, or uninstall leaves
-	// behind the one it does not know: the single-quoted path (H2's rendering
-	// for POSIX), the %q-quoted one and the bare one.
-	for _, prefix := range []string{
-		"Bash(" + posixQuoteArg(bin) + " ",
-		"Bash(" + strconv.Quote(bin) + " ",
-		"Bash(" + bin + " ",
-	} {
-		if strings.HasPrefix(r, prefix) {
-			return true
-		}
+	// A rule is "Bash(" + a rendered command + ":*)". Unwrapping the Bash()
+	// gives exactly the command shape commandIsOurs decides, so a rule for
+	// another installation's config — which shares our binary — is left, the
+	// same as a hook entry naming it.
+	inner, ok := strings.CutPrefix(r, "Bash(")
+	if !ok {
+		return false
 	}
-	return false
+	inner, _ = strings.CutSuffix(inner, ")")
+	inner = strings.TrimSuffix(inner, ":*")
+	return ref.commandIsOurs(inner)
 }
 
 func cursorHooks(entry binEntry, shells []shellKind) (hooksSpec, string, error) {
@@ -934,18 +944,18 @@ func cursorHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, st
 // runner its host declares. Both have to be recognized — the old one so an
 // upgraded installation's entries can be replaced and removed, the new one
 // so this installation's can.
-func entryIsOurs(e any, bin string) bool {
+func entryIsOurs(e any, ref installationRef) bool {
 	m, ok := e.(map[string]any)
 	if !ok {
 		return false
 	}
-	if c, ok := m["command"].(string); ok && hookCommandIsOurs(c, bin) {
+	if c, ok := m["command"].(string); ok && hookCommandIsOurs(c, ref) {
 		return true
 	}
 	if hs, ok := m["hooks"].([]any); ok {
 		for _, h := range hs {
 			if hm, ok := h.(map[string]any); ok {
-				if c, ok := hm["command"].(string); ok && hookCommandIsOurs(c, bin) {
+				if c, ok := hm["command"].(string); ok && hookCommandIsOurs(c, ref) {
 					return true
 				}
 			}
@@ -955,24 +965,15 @@ func entryIsOurs(e any, bin string) bool {
 }
 
 // hookCommandIsOurs recognizes every spelling this client has written a hook
-// command in: the shell quoting it renders from H3 (single quotes for POSIX,
-// with the call operator for PowerShell, double quotes for cmd) and v0.2.9's
-// %q. An installation upgraded from v0.2.9 still has the old entries in its
-// host's config until the next `agents install`, and an uninstall that did
-// not recognize them would leave a hook running a binary that is gone.
-func hookCommandIsOurs(command, bin string) bool {
-	for _, prefix := range []string{
-		posixQuoteArg(bin) + " ",
-		"& " + powerShellQuoteArg(bin) + " ",
-		`"` + bin + `" `,
-		strconv.Quote(bin) + " ",
-		bin + " ",
-	} {
-		if strings.HasPrefix(command, prefix) {
-			return true
-		}
-	}
-	return false
+// command in — the shell quoting it renders from H3 and v0.2.9's %q — and
+// then asks the question that decides ownership: does it name THIS
+// installation's config? An installation upgraded from v0.2.9 still has the
+// old spelling until the next `agents install`, and an uninstall that did not
+// recognize it would leave a hook running a binary that is gone; an entry
+// that names another installation's config runs a binary we share and is not
+// ours to touch (#73).
+func hookCommandIsOurs(command string, ref installationRef) bool {
+	return ref.commandIsOurs(command)
 }
 
 // sameJSONValue compares two decoded JSON values by their canonical
@@ -1023,7 +1024,7 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 		kept := make([]any, 0, len(list))
 		ours, current := 0, false
 		for _, e := range list {
-			if entryIsOurs(e, entry.command) {
+			if entryIsOurs(e, refFor(entry)) {
 				ours++
 				if sameJSONValue(e, spec.entries[ev]) {
 					current = true
@@ -1066,10 +1067,19 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 	return planWrite(ops, label, path, append(next, '\n'), mode, "hooks", p)
 }
 
-// planHooksRemove drops our entries and nothing else; an event left empty
-// is removed, a file left with only an empty hooks object keeps it (the
-// host may have created the file).
-func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root string) bool {
+// planHooksRemove drops this installation's entries and nothing else; an
+// event left empty is removed, and a file left holding nothing but what this
+// client put there is removed too.
+//
+// That last part is H4's leftover. Cursor is detected by ~/.cursor, and
+// uninstall used to leave hooks.json behind as `{"hooks":{},"version":1}` —
+// bytes only this client ever writes — so a machine that never had Cursor
+// detected as Cursor forever after a `setup -with cursor` it did not mean.
+// The rule is the same one ownership follows everywhere here: remove what we
+// put there, leave everything else. A file still holding a foreign hook, a
+// foreign allow rule or any other key is kept and rewritten, because then the
+// host or the participant owns it too.
+func planHooksRemove(ops agentOps, label, path string, p *agentPlan, entry binEntry, root string) bool {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil || existing == nil {
 		return false
@@ -1079,12 +1089,13 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 		p.refused = append(p.refused, fmt.Sprintf("%s: %s is not plain JSON (%v); remove the hooks by hand", label, path, err))
 		return false
 	}
+	ref := refFor(entry)
 	changed := false
 	if perms, ok := m["permissions"].(map[string]any); ok {
 		if list, ok := perms["allow"].([]any); ok {
 			kept := make([]any, 0, len(list))
 			for _, e := range list {
-				if ruleIsOurs(e, bin) {
+				if ruleIsOurs(e, ref) {
 					changed = true
 					continue
 				}
@@ -1095,6 +1106,9 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 			} else {
 				perms["allow"] = kept
 			}
+		}
+		if len(perms) == 0 {
+			delete(m, "permissions")
 		}
 	}
 	hooks, ok := m[root].(map[string]any)
@@ -1108,7 +1122,7 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 		}
 		kept := make([]any, 0, len(list))
 		for _, e := range list {
-			if entryIsOurs(e, bin) {
+			if entryIsOurs(e, ref) {
 				changed = true
 				continue
 			}
@@ -1123,8 +1137,36 @@ func planHooksRemove(ops agentOps, label, path string, p *agentPlan, bin, root s
 	if !changed {
 		return false
 	}
+	if hooksFileIsNowOnlyOurs(m, root) {
+		planRemove(p, label, path)
+		return true
+	}
 	next, _ := json.MarshalIndent(m, "", "  ")
 	return planWrite(ops, label, path, append(next, '\n'), mode, "remove hooks", p)
+}
+
+// hooksFileIsNowOnlyOurs: after the removal, does this object hold anything
+// the host or the participant would miss? An empty hooks object and the
+// `version` key are both ours — planHooksMerge writes the version when the
+// file has none, and creates the file when there is none — so an object with
+// nothing else left in it is one this client is wholly responsible for.
+//
+// Deliberately conservative: any other key, or a hooks object still holding
+// an event, keeps the file. It is better to leave a file that could have gone
+// than to delete one somebody else was using.
+func hooksFileIsNowOnlyOurs(m map[string]any, root string) bool {
+	for k, v := range m {
+		switch k {
+		case root:
+			if hooks, ok := v.(map[string]any); !ok || len(hooks) > 0 {
+				return false
+			}
+		case "version":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ── uninstall / status ──────────────────────────────────────────────────
@@ -1308,6 +1350,21 @@ func codexSandboxBlock(roots []string) []byte {
 
 // removeMarkedBlock strips the block between our markers (inclusive) and
 // reports whether it removed anything, leaving surrounding content intact.
+// markedBlock is the text between our two markers, for a caller that has to
+// read what the block says rather than only take it out.
+func markedBlock(b []byte) (string, bool) {
+	s := string(b)
+	i := strings.Index(s, agentsMarkerBegin)
+	if i < 0 {
+		return "", false
+	}
+	j := strings.Index(s[i:], agentsMarkerEnd)
+	if j < 0 {
+		return "", false
+	}
+	return s[i+len(agentsMarkerBegin) : i+j], true
+}
+
 func removeMarkedBlock(b []byte) ([]byte, bool) {
 	s := string(b)
 	i := strings.Index(s, agentsMarkerBegin)
@@ -1383,7 +1440,14 @@ func printPlan(p *agentPlan, home string, w io.Writer) {
 	// every write and then every removal put one host's files under another
 	// host's heading whenever the plan held more than one (#88, item 1): a
 	// host with only files to delete, like opencode, had no heading of its
-	// own at all. Order is first appearance, which is the registry's order.
+	// own at all.
+	//
+	// Order is first appearance. That matches the registry's order today only
+	// because the writes loop fills `order` first and every remove-only host
+	// happens to sit after every writing host — so a remove-only surface
+	// always sorts after every surface with a write. It is not a guarantee
+	// this function makes, and a future host that only deletes would print
+	// out of registry order without anything here going wrong.
 	var order []string
 	writes := map[string][]agentWrite{}
 	removes := map[string][]agentRemove{}
