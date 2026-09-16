@@ -738,8 +738,15 @@ func walletSend(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		if *memo != "" {
 			fmt.Fprintf(stdout, "  memo:  %s (public, on chain forever)\n", *memo)
 		}
-		fmt.Fprint(stdout, "\nThis cannot be undone. Type yes to send: ")
-		line, _ := br.ReadString('\n')
+		line, err := promptBufio(stdout, "\nThis cannot be undone. Type yes to send: ", br)
+		if err != nil {
+			// Nothing is signed or sent either way; the exit code is the
+			// difference. A caller that typed something other than "yes"
+			// declined and gets 0; one whose stdin ended never answered,
+			// and a script must not read that as a decline (prompt.go).
+			fmt.Fprintf(stderr, "dropin-miner wallet send: %s; nothing was signed or sent\n", promptAbortedReason)
+			return exitUsage
+		}
 		if strings.TrimSpace(line) != "yes" {
 			fmt.Fprintln(stdout, "canceled; nothing was signed or sent")
 			return exitOK

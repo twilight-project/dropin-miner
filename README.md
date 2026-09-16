@@ -96,6 +96,14 @@ the command for each. A set-aside installation is reused only when a person
 says yes at a terminal, `-yes` or not, and the mining question is always
 connect's.
 `setup -dry-run` prints what it would write or move and changes nothing.
+
+Every question here counts only an answer you typed. Interrupt one, or close
+its input, and the run stops there and says so, with a non-zero exit and
+nothing recorded — an unanswered **Enable mining rewards?** leaves no mining
+decision and registers nothing, rather than taking the interrupt for the "no"
+the bare-Enter default would have been. `-yes` answers the questions it
+already answered; it never turns an interrupt into an answer.
+
 Search itself works before you ever visit the claim link — the claim only
 gates the reward, once you say yes to mining. The key never goes into a
 command line or an agent's config; `TOKENDROP_API_KEY` in the environment

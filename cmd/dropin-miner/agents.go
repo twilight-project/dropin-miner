@@ -432,8 +432,15 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 			fmt.Fprintln(stderr, "dropin-miner agents: not a terminal, and -yes was not given; nothing was changed")
 			return exitUsage
 		}
-		fmt.Fprint(stdout, "\nProceed? [Y/n]: ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
+		// The opposite default to the mining question, and so the worse
+		// half of #81's shape: an empty line here means yes, which made
+		// an interrupt at this prompt write every agent file. Only a
+		// typed line decides now.
+		line, err := promptBufio(stdout, "\nProceed? [Y/n]: ", bufio.NewReader(stdin))
+		if err != nil {
+			fmt.Fprintf(stderr, "\ndropin-miner agents: %s; nothing was changed\n", promptAbortedReason)
+			return exitUsage
+		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "", "y", "yes":
 		default:

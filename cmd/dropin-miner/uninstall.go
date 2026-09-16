@@ -271,7 +271,12 @@ func (r *uninstallRun) run(homeFlag string) int {
 			return code
 		}
 	default:
-		if !r.ask("Remove what is listed above?") {
+		remove, err := r.ask("Remove what is listed above?")
+		if err != nil {
+			fmt.Fprintf(d.stderr, "\ndropin-miner uninstall: %s; %s\n", promptAbortedReason, noParticipantChange)
+			return exitUsage
+		}
+		if !remove {
 			r.say(noParticipantChange)
 			return exitOK
 		}
@@ -985,21 +990,26 @@ func (r *uninstallRun) revocationDecision() (reason string, try bool) {
 
 // ── confirmation ────────────────────────────────────────────────────────
 
-func (r *uninstallRun) ask(question string) bool {
+// ask is uninstall's [Y/n], answered yes by -yes. Its error is
+// errPromptAborted and nothing else: a read that ended without a line is
+// not the "no" this used to return. Both answers leave the installation
+// alone here, so the difference a participant sees is the exit code and
+// the sentence — an operation that was never answered did not decline,
+// and a script must be able to tell those apart (prompt.go).
+func (r *uninstallRun) ask(question string) (bool, error) {
 	if r.yes {
 		r.printf("\n%s [Y/n]: yes (-yes)\n", question)
-		return true
+		return true, nil
 	}
-	r.printf("\n%s [Y/n]: ", question)
-	line, err := readSetupLine(r.d.stdin)
-	if err != nil && line == "" {
-		return false
+	line, err := promptSetup(r.d.stdout, "\n"+question+" [Y/n]: ", r.d.stdin)
+	if err != nil {
+		return false, err
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "", "y", "yes":
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 // purgeConfirmation is what the participant must type: the wallet's address
@@ -1019,12 +1029,16 @@ func purgeConfirmation(home string) (token, what string) {
 // nothing has been changed or sent when it refuses.
 func (r *uninstallRun) confirmPurge() (code int, ok bool) {
 	token, what := purgeConfirmation(r.home)
-	r.printf("\nThis destroys the participant state listed above. If the wallet holds funds and you\n"+
-		"have not kept its 24 words, they are lost. This confirmation guards against accidents;\n"+
-		"it cannot tell a person from a program typing at this terminal.\n"+
-		"Type %s to permanently remove this participant state:\n  %s\n> ", what, token)
-	line, err := readSetupLine(r.d.stdin)
-	if err != nil && line == "" {
+	line, err := promptSetup(r.d.stdout, fmt.Sprintf(
+		"\nThis destroys the participant state listed above. If the wallet holds funds and you\n"+
+			"have not kept its 24 words, they are lost. This confirmation guards against accidents;\n"+
+			"it cannot tell a person from a program typing at this terminal.\n"+
+			"Type %s to permanently remove this participant state:\n  %s\n> ", what, token), r.d.stdin)
+	if err != nil {
+		// Already the rule prompt.go now states, and the reason it is
+		// stated as one: this prompt was the only one in the binary that
+		// had it. It stays here so a reader sees the same shape in all
+		// of them, and so the guard below cannot be lost by accident.
 		r.say("No confirmation was typed. " + noParticipantChange)
 		return exitUsage, false
 	}

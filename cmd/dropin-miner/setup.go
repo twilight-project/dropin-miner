@@ -166,21 +166,32 @@ func (r *setupRun) say(msg string)                    { fmt.Fprintf(r.d.stdout, 
 // an automated caller may pass it (the installers never add it: a person
 // running one answers at the terminal); adopting a set-aside installation is never
 // asked without a terminal, -yes or not.
-func (r *setupRun) ask(question string) bool {
+//
+// The error is errPromptAborted and nothing else: a read that ended
+// without a line is not the "no" this used to return (prompt.go). Every
+// caller propagates it as an exit code rather than carrying on, which is
+// why the steps that ask return one.
+func (r *setupRun) ask(question string) (bool, error) {
 	if r.yes {
 		r.printf("\n%s [Y/n]: yes (-yes)\n", question)
-		return true
+		return true, nil
 	}
-	r.printf("\n%s [Y/n]: ", question)
-	line, err := readSetupLine(r.lineIn)
-	if err != nil && line == "" {
-		return false
+	line, err := promptSetup(r.d.stdout, "\n"+question+" [Y/n]: ", r.lineIn)
+	if err != nil {
+		return false, err
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "", "y", "yes":
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
+}
+
+// abort renders the one abort message. what names, in the step's own
+// words, the thing that was therefore not done.
+func (r *setupRun) abort(what string) int {
+	fmt.Fprintf(r.d.stderr, "\ndropin-miner setup: %s; %s\n", promptAbortedReason, what)
+	return exitUsage
 }
 
 // readSetupLine reads one line a byte at a time. connect reads the same
@@ -314,7 +325,9 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	}
 
 	// ── 2. a previous installation ──
-	r.previousInstallation()
+	if code := r.previousInstallation(); code != exitOK {
+		return code
+	}
 
 	// ── 3. directories, owner-only before any secret moves; then adoption ──
 	if code := r.directories(); code != exitOK {
@@ -368,10 +381,14 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	}
 
 	// ── 6. environment ──
-	r.environmentStep()
+	if code := r.environmentStep(); code != exitOK {
+		return code
+	}
 
 	// ── 7. coding agents ──
-	r.agentsStep()
+	if code := r.agentsStep(); code != exitOK {
+		return code
+	}
 
 	// ── 8. closing ──
 	r.closing()
@@ -416,16 +433,16 @@ func (r *setupRun) admit() (release func(), code int) {
 	return func() { _ = unlockFile(lock) }, exitOK
 }
 
-func (r *setupRun) previousInstallation() {
+func (r *setupRun) previousInstallation() int {
 	if hasInstallation(r.home) {
 		r.foundInPlace = true
 		r.say(fmt.Sprintf("Previous installation found in %s: %s", r.home, describeInstallation(r.home)))
 		r.printf("Its wallet, registration and key are used as they are; only what is missing is set up.\n")
-		return
+		return exitOK
 	}
 	found := setAsideInstallation(r.home)
 	if found == "" {
-		return
+		return exitOK
 	}
 	r.say("A previous installation is set aside at " + found)
 	r.printf("It holds: %s\n", describeInstallation(found))
@@ -440,11 +457,21 @@ func (r *setupRun) previousInstallation() {
 		}
 	case !r.d.interactive:
 		r.printf("Not an interactive shell — not touching it. Move it to %s yourself to reuse it.\n", r.home)
-	case r.ask("Use it?"):
-		r.adoptFrom = found
 	default:
-		r.printf("Left it alone. A fresh wallet and registration follow.\n")
+		use, err := r.ask("Use it?")
+		if err != nil {
+			// Nothing has been created in home yet at this point —
+			// directories() runs after this step — so an abort here really
+			// does leave both installations exactly as they were found.
+			return r.abort("the set-aside installation was left where it is and nothing was set up")
+		}
+		if use {
+			r.adoptFrom = found
+		} else {
+			r.printf("Left it alone. A fresh wallet and registration follow.\n")
+		}
 	}
+	return exitOK
 }
 
 // printAdoptionError renders adoption's typed results. Every other error is

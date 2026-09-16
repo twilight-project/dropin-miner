@@ -128,6 +128,16 @@ Setup asks, in order:
 | **Add them to ~/.zshrc? [Y/n]** | (or `~/.bashrc`, whichever your shell reads). Puts the binary on PATH and sets `TOKENDROP_CONFIG`, in one marked block. Saying no just means longer commands. On Windows the question is **Set them for your user? [Y/n]**: the same two, in your user environment. |
 | **Set up the coding agents found on this machine now? [Y/n]** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
 
+Each of these counts only an answer you typed. If you interrupt one, or its
+input closes, setup stops at that question rather than guessing: nothing is
+recorded, nothing further is written, and it exits non-zero saying so. That
+matters most at **Enable mining rewards?**, where a bare Enter means no — an
+interrupt is not a bare Enter, and leaves no decision on file, so the next run
+asks again instead of reusing one you never made. The same rule holds for
+`dropin-miner agents install`'s **Proceed?**, for uninstall's confirmations and
+for `wallet send`'s: a typed refusal declines and exits 0, an unanswered
+question aborts and exits non-zero, and the two are never the same thing.
+
 `dropin-miner setup -yes` answers yes to **Add them to ~/.zshrc?** (on Windows,
 **Set them for your user?**) and **Set up the coding agents found on this
 machine now?**, whether or not there is a terminal, so a script or CI job that

@@ -48,7 +48,7 @@ func profileCandidate(userHome string, getenv func(string) string) string {
 	return ""
 }
 
-func (r *setupRun) environmentStep() {
+func (r *setupRun) environmentStep() int {
 	binDir := filepath.Dir(r.exe)
 	walletDir := ""
 	if lexists(filepath.Join(r.home, "wallet", walletKeyFile)) {
@@ -67,48 +67,53 @@ func (r *setupRun) environmentStep() {
 	candidate := profileCandidate(r.d.userHome, r.d.getenv)
 	if candidate == "" {
 		r.printf("No ~/.bashrc or ~/.zshrc to add them to.\n")
-		return
+		return exitOK
 	}
 	if r.noProfile {
 		r.printf("Left your shell profile alone (-no-profile).\n")
-		return
+		return exitOK
 	}
 	target, existing, mode, err := profileTarget(candidate)
 	if err != nil {
 		r.printf("Not touching %s: %v. Add the lines above by hand.\n", candidate, err)
-		return
+		return exitOK
 	}
 	next, err := rewriteProfile(existing, profileBlock(lines))
 	if errors.Is(err, errProfileMalformed) {
 		r.printf("Not touching %s: %v. Add the lines above to it by hand, between one start and one end marker:\n    %s\n    %s\n",
 			candidate, err, profileMarkerStart, profileMarkerEnd)
-		return
+		return exitOK
 	}
 	if bytes.Equal(next, existing) {
 		r.shortCommands = true
 		r.printf("%s already has them.\n", candidate)
-		return
+		return exitOK
 	}
 	if r.dry {
 		r.printf("(dry run) would write a dropin-miner block to %s\n", candidate)
-		return
+		return exitOK
 	}
 	if !r.d.interactive && !r.yes {
 		r.printf("Not an interactive shell — not touching %s (pass -yes to add them).\n", candidate)
-		return
+		return exitOK
 	}
-	if !r.ask("Add them to " + tilde(r.d.userHome, candidate) + "?") {
+	add, err := r.ask("Add them to " + tilde(r.d.userHome, candidate) + "?")
+	if err != nil {
+		return r.abort("your shell profile was not touched and the coding agents were not set up")
+	}
+	if !add {
 		r.say("Left your shell profile alone")
-		return
+		return exitOK
 	}
 	if err := fsx.WriteFileAtomic(filepath.Dir(target), filepath.Base(target), next, mode); err != nil {
 		r.printf("Could not write %s: %v. Add the lines above by hand.\n", candidate, err)
-		return
+		return exitOK
 	}
 	r.changed = true
 	r.shortCommands = true
 	r.say("Added a dropin-miner block to " + candidate)
 	r.printf("  open a new shell, or: source %s\n", shellQuote(candidate))
+	return exitOK
 }
 
 // profileEnvLines are the lines setup.sh put in the profile, quoted. The

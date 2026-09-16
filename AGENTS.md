@@ -160,6 +160,19 @@ govulncheck.
     `uninstall -purge-state` after an interactive typed confirmation, the wallet address or the
     installation path, that `-yes` cannot supply and a non-terminal cannot reach: protection against
     accidents and non-interactive automation, not against a program driving a terminal.
+18. **A prompt answers only to a line the participant typed.** A read that ends without one — an
+    interrupt, a closed stdin, a console read the terminal aborted — is not the visual default and
+    not the opposite of it; it is the absence of an answer, and the operation stops there, records
+    nothing, writes nothing, sends nothing, and exits non-zero. `-yes` answers what it already
+    answers and never turns an interrupt into an answer. `prompt.go` owns the rule and the two
+    readers that apply it (`promptBufio` over the shared `bufio.Reader` a command's prompts take
+    turns on, `promptSetup` over `readSetupLine`); a bare `line, _ := br.ReadString('\n')` at a
+    question is the defect, not a shortcut. #81 is the cost: at `Enable mining rewards? [y/N]` the
+    discarded read error made an interrupt an empty line, an empty line is not `y`, and invariant
+    10's runtime authority was written with a decision nobody made — then `connect` registered.
+    A typed refusal and an unanswered question are different outcomes and must stay
+    distinguishable by exit code, which is why the ones that change nothing either way
+    (`agents install`'s `Proceed?`, `wallet send`'s confirmation) still differ there.
 
 ## Subsystems and where their rules live
 A subsystem's authority is one file, and a subsystem nobody has watched fail is a hypothesis — so
@@ -201,6 +214,11 @@ each line names the file that owns the rule and the test that proves it.
   no-flag replacement of a positively-verified expired identity) and
   `TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential` (the refusal that
   `-force` exists to override).
+- **The prompt rule** — `cmd/dropin-miner/prompt.go` owns what counts as an answer and the two
+  readers that ask; every prompt in the binary goes through one of them.
+  `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
+  read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
+  uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
 - **Wallet custody and the send journal** — `wallet_store.go` owns the creation lock and the
   wallet directory's layout; `wallet_journal.go` owns `pending_tx.json` and its resolution;
   `wallet_tx.go` hand-encodes the signed bytes. `wallet_lock_test.go` proves creation is exclusive
