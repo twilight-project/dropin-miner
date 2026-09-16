@@ -133,6 +133,10 @@ refused
 -- the rendered search plus a second statement
 refused
 
+== opencode: the shell its installed adapter is rendered for
+-- HOST_SHELL
+const HOST_SHELL = "posix"
+
 == opencode: bridge prefix its lineage adapter writes
 -- skill search block (posix)
 TOKENDROP_TRACE_BRIDGE=<BRIDGE> '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' --stdin <<'JSON'
@@ -150,6 +154,10 @@ JSON
 '/home/u/.tokendrop/bin/dropin-miner' agents prefer -config '/home/u/.tokendrop/tokendrop.toml' <argument>
 -- fence bash
 '/home/u/.tokendrop/bin/dropin-miner' search -config '/home/u/.tokendrop/tokendrop.toml' -format model "<query>"
+
+== pi: the shell its installed adapter is rendered for
+-- HOST_SHELL
+const HOST_SHELL = "posix"
 
 == pi: bridge prefix its lineage adapter writes
 -- skill search block (posix)

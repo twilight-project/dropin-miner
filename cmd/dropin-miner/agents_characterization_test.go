@@ -177,7 +177,57 @@ func capturePlanForGolden(id string, ops agentOps, entry binEntry, plan agentPla
 			got = replaceInGoldenPlan(got, hermesYAMLSingleQuoted(cmd), "<HERMES_HOOK_COMMAND>")
 		}
 	}
-	return withSkillPlaceholder(got)
+	return withSkillPlaceholder(withRenderedPerOSStrings(got, entry))
+}
+
+// withRenderedPerOSStrings takes the two things H3 made per-OS out of the
+// plan: how a path is QUOTED inside a rendered command, and which shell the
+// installer writes into a JavaScript host's adapter.
+//
+// A hook command is now quoted for the runner its host's cell declares —
+// single quotes under POSIX, double quotes under cmd, and Cursor's Windows
+// cell renders the cmd form — so the same plan produces different bytes on
+// different runners, and this golden is one file compared on four. Only the
+// quoted path leaves: the event names, the PreToolUse matcher, the JSON
+// shape and the order all still compare, which is what this golden is for.
+// The spellings themselves have a stronger guard in
+// testdata/hosts/<goos>.golden, which pins all three OSes on every runner
+// instead of whichever one the runner happens to be.
+//
+// Both the bare spelling and the JSON-escaped one are replaced, because a
+// hook file carries its command inside a JSON string: on Windows the bytes
+// on disk read \"C:\… \" and on macOS '/home/…'.
+func withRenderedPerOSStrings(g goldenPlan, e binEntry) goldenPlan {
+	// Scoped to a HOOK command — the quoted path followed by ` hook` — and
+	// deliberately not to every quoted path in the plan. Claude Code's three
+	// permission rules spell the same path three ways ON PURPOSE, because a
+	// rule has to match whichever spelling the skill taught; collapsing them
+	// here would leave a golden that cannot tell three rules from one.
+	quotings := func(s string) []string {
+		return []string{posixQuoteArg(s), "& " + powerShellQuoteArg(s), `"` + s + `"`, strconv.Quote(s)}
+	}
+	binQ, cfgQ := quotings(e.command), quotings(e.cfg)
+	for i, bq := range binQ {
+		for _, form := range []struct{ from, to string }{
+			{bq + " hook -config " + cfgQ[i], "<BIN> hook -config <CFG>"},
+			{bq + " hook", "<BIN> hook"},
+		} {
+			if e.cfg == "" && strings.Contains(form.from, "-config") {
+				continue
+			}
+			g = replaceInGoldenPlan(g, strings.ReplaceAll(form.from, `"`, `\"`), form.to)
+			g = replaceInGoldenPlan(g, form.from, form.to)
+		}
+	}
+	// The one line renderAgentScript writes into opencode's plugin and Pi's
+	// extension. The whole script still compares — only the declared shell
+	// is per-OS, and the declaration has its own table test.
+	for _, sh := range []shellKind{shellPOSIX, shellPowerShell, shellCmd, shellArgv} {
+		g = replaceInGoldenPlan(g,
+			`HOST_SHELL = "`+string(sh)+`"`,
+			`HOST_SHELL = "<declared for this OS>"`)
+	}
+	return g
 }
 
 // withSkillPlaceholder replaces a skill's rendered bytes with a placeholder.
@@ -245,6 +295,36 @@ func TestPlanGoldenCaptureDropsWhatDiffersByOS(t *testing.T) {
 	}
 	if !strings.Contains(got.Writes[0].Content, "see testdata/hosts") {
 		t.Errorf("the skill kept its per-OS bytes: %q", got.Writes[0].Content)
+	}
+
+	// H3's two additions to the same rule. Every quoting a declared runner
+	// can produce has to reach the same placeholder, or the golden is only
+	// ever right on the OS that produced it — which is how both Windows jobs
+	// failed on 4dcf156.
+	e := binEntry{command: "/h/bin/dropin-miner", cfg: "/h/tokendrop.toml"}
+	for _, spelling := range []string{
+		`'/h/bin/dropin-miner' hook -config '/h/tokendrop.toml' cursor stop`,     // POSIX
+		`& '/h/bin/dropin-miner' hook -config '/h/tokendrop.toml' cursor stop`,   // PowerShell, call operator and all
+		`"/h/bin/dropin-miner" hook -config "/h/tokendrop.toml" cursor stop`,     // cmd, and v0.2.9's %q
+		`\"/h/bin/dropin-miner\" hook -config \"/h/tokendrop.toml\" cursor stop`, // the same, inside a JSON hook file
+	} {
+		out := withRenderedPerOSStrings(goldenPlan{
+			Writes: []goldenWrite{{Path: "/h/.cursor/hooks.json", Content: spelling}},
+		}, e)
+		if strings.Contains(out.Writes[0].Content, "/h/bin/dropin-miner") ||
+			strings.Contains(out.Writes[0].Content, "/h/tokendrop.toml") {
+			t.Errorf("a per-OS quoting survived into the golden: %q -> %q", spelling, out.Writes[0].Content)
+		}
+	}
+
+	// And the one line the installer writes into a JavaScript adapter.
+	for _, sh := range []shellKind{shellPOSIX, shellPowerShell} {
+		out := withRenderedPerOSStrings(goldenPlan{
+			Writes: []goldenWrite{{Path: "/h/plugins/dropin-miner.js", Content: `const HOST_SHELL = "` + string(sh) + `"`}},
+		}, e)
+		if !strings.Contains(out.Writes[0].Content, `HOST_SHELL = "<declared for this OS>"`) {
+			t.Errorf("the adapter kept the shell declared for %s: %q", runtime.GOOS, out.Writes[0].Content)
+		}
 	}
 }
 

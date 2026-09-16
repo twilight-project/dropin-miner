@@ -764,6 +764,47 @@ func hostShellsOnThisOS(t *testing.T, host string, ch shellChannel) []execShell 
 	return out
 }
 
+// hookRunnerItIsRenderedFor answers, for a host's hook cell on this OS,
+// which runner the installed command is actually written for, and the note
+// the install plan prints when the cell names more runners than that one.
+//
+// Cursor on Windows is the case: the cell is ruled {cmd, powershell}, and
+// NO single string runs under cmd, Windows PowerShell 5.1 and pwsh across
+// the paths a participant may have — six candidate forms were measured on a
+// Windows runner against four paths, and the best of them (cmd /c call
+// "<exe>") stops at a path containing a $ or a %. So the command is the one
+// form proven under cmd, and the plan says so.
+//
+// The tests below assert BOTH halves of that ruling: the command runs under
+// the runner it is rendered for, and it does not run under the others. The
+// second half is what the note describes; skipping it would let the note go
+// stale, and asserting the first half alone would have the suite claim a
+// coverage the ruling says does not exist.
+func hookRunnerItIsRenderedFor(t *testing.T, host string, e binEntry) (shellKind, string) {
+	t.Helper()
+	tg, ok := targetByID(installTargets, host)
+	if !ok {
+		t.Fatalf("no target %q", host)
+	}
+	kinds, err := declaredShells(tg, runtime.GOOS, channelHook)
+	if err != nil {
+		candidates, known := unknownCellCandidates[host+" "+runtime.GOOS+" hook"]
+		if !known {
+			t.Fatalf("%v, and no characterization candidates are named for it", err)
+		}
+		kinds = candidates
+	}
+	_, note, err := e.hookCommandForRunners(kinds, "probe")
+	if err != nil {
+		t.Fatalf("rendering %s's hook command for %v: %v", host, kinds, err)
+	}
+	if note != "" {
+		// hookCommandForRunners renders a multi-runner cell under cmd.
+		return shellCmd, note
+	}
+	return kinds[0], ""
+}
+
 // unknownCellCandidates are the shells an unknown cell is characterized
 // under: the ones its evidence points at without establishing. Codex on
 // Windows defaults to PowerShell in its source; Cursor's Linux hook runner is
@@ -1024,6 +1065,18 @@ func TestInstalledHookCommandsRunInTheirRunner(t *testing.T) {
 					}
 					payload, _ := json.Marshal(hc.payload(in))
 					out := runInShell(t, sh, command, payload, in.env)
+					if rendered, note := hookRunnerItIsRenderedFor(t, host, in.entry); sh.kind != rendered {
+						// A runner the cell names that no single form serves.
+						// Assert the measured failure, so the day some form does
+						// serve all of them this goes red and the plan's note,
+						// the ruling and this branch are revisited together.
+						if out.exit == 0 || hc.proof(t, in, out) {
+							t.Fatalf("the %s hook now runs under %s as well; the install plan's note and the ruling behind it are stale\ncommand: %s\n%s",
+								hc.event, sh.name, command, out)
+						}
+						t.Logf("as ruled, not served under %s: %s", sh.name, note)
+						return
+					}
 					if !hc.proof(t, in, out) {
 						t.Fatalf("the installed %s hook did not run under %s\ncommand: %s\n%s", hc.event, sh.name, command, out)
 					}
@@ -1060,6 +1113,17 @@ func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 			payload, _ := json.Marshal(map[string]any{"conversation_id": "exec-conversation", "generation_id": "exec-generation",
 				"workspace_roots": []string{in.root}, "command": search})
 			out := runInShell(t, sh, command, payload, in.env)
+			if rendered, note := hookRunnerItIsRenderedFor(t, "cursor", in.entry); sh.kind != rendered {
+				// The same ruling as TestInstalledHookCommandsRunInTheirRunner:
+				// this hook command is rendered for one runner and the cell
+				// names more. Where it cannot run there is no recognizer to
+				// exercise, and saying so is the honest assertion.
+				if out.exit == 0 {
+					t.Fatalf("Cursor's hook now runs under %s as well; the ruling that kept v0.2.9's form is stale\ncommand: %s\n%s", sh.name, command, out)
+				}
+				t.Logf("as ruled, not served under %s: %s", sh.name, note)
+				return
+			}
 			if out.exit != 0 || strings.TrimSpace(out.stdout) != `{"permission":"allow"}` {
 				t.Fatalf("the skill's own search was not auto-allowed:\n%s", out)
 			}

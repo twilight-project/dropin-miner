@@ -152,6 +152,10 @@ refused
 -- the rendered search plus a second statement
 refused
 
+== opencode: the shell its installed adapter is rendered for
+-- HOST_SHELL
+const HOST_SHELL = "powershell"
+
 == opencode: bridge prefix its lineage adapter writes
 -- skill search block (powershell)
 $env:TOKENDROP_TRACE_BRIDGE = 'eyJ2IjoxLCJoYXJuZXNzIjoib3BlbmNvZGUiLCJzZXNzaW9uX2lkIjoiZTgzYmI5YzE5YmJjMmYwYTkzMWQ5OTlmMTA4NmY5MmUiLCJ3aW5kb3ciOiJub25lIiwiY2FsbF9pZCI6Ijk3NzlhNjI4MjEyODk1Yzc2M2NlMmM4MmFiNzNjYzEwIn0'; try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -172,6 +176,10 @@ JSON
 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' agents prefer -config 'C:\Users\u\.tokendrop\tokendrop.toml' <argument>
 -- fence bash
 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
+
+== pi: the shell its installed adapter is rendered for
+-- HOST_SHELL
+const HOST_SHELL = "posix"
 
 == pi: bridge prefix its lineage adapter writes
 -- skill search block (posix)

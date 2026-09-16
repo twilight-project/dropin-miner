@@ -152,3 +152,49 @@ func TestDeclaredShellsRefusesWhatIsNotEstablished(t *testing.T) {
 		}
 	})
 }
+
+// TestAMultiRunnerHookCellKeepsTheFormItCanProve states H3's first ruling as
+// a test, so it holds on every runner and not only where it can be executed.
+//
+// Cursor's Windows hook cell names two runners and no single string serves
+// both: six candidate forms were measured against four paths on a Windows
+// runner, and the best of them stops at a path containing a $ or a %. So the
+// command is the one form proven under cmd — v0.2.9's, the only runner ever
+// observed to run a Cursor hook — and the install plan says why. Rendering a
+// form proven nowhere would be worse than the status quo; declaring the cell
+// unknown would install no hooks at all, because a hook command has no
+// fallback: written for the wrong runner it fails silently, which is #69.
+//
+// The execution side of the same ruling is asserted on a Windows runner by
+// TestInstalledHookCommandsRunInTheirRunner, which requires the command to
+// run under cmd and to fail under the others.
+func TestAMultiRunnerHookCellKeepsTheFormItCanProve(t *testing.T) {
+	cursor, _ := targetByID(installTargets, "cursor")
+	shells, err := declaredShells(cursor, "windows", channelHook)
+	if err != nil || len(shells) < 2 {
+		t.Fatalf("cursor windows hook declares %v (%v); this test exists for a cell naming more than one runner", shells, err)
+	}
+	e := binEntry{command: `C:\Program Files\tokendrop\dropin-miner.exe`, cfg: `C:\Users\u\tokendrop.toml`}
+	cmd, note, err := e.hookCommandForRunners(shells, "cursor", "stop")
+	if err != nil {
+		t.Fatalf("rendering for %v: %v", shells, err)
+	}
+	wantCmd, err := e.hookCommandForShell(shellCmd, "cursor", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != wantCmd {
+		t.Errorf("multi-runner cell rendered %q, want the form proven under cmd %q", cmd, wantCmd)
+	}
+	if note == "" {
+		t.Error("no plan note says the runner is not established; a participant would see nothing")
+	}
+	// A single-runner cell renders for that runner and says nothing extra.
+	one, note, err := e.hookCommandForRunners([]shellKind{shellPOSIX}, "cursor", "stop")
+	if err != nil || note != "" {
+		t.Fatalf("single-runner cell: %q, note %q, err %v", one, note, err)
+	}
+	if want, _ := e.hookCommandForShell(shellPOSIX, "cursor", "stop"); one != want {
+		t.Errorf("single-runner cell rendered %q, want %q", one, want)
+	}
+}

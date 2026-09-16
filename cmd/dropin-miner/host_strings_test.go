@@ -462,6 +462,24 @@ func renderedHostStrings(t *testing.T, goos string) string {
 			value("yaml line", "    - command: "+hermesYAMLSingleQuoted(cmd))
 		}
 		switch id {
+		case "opencode", "pi":
+			// The one line renderAgentScript writes into the installed
+			// adapter. It is per-OS by design, so it cannot live in the
+			// install-plan golden (one file, four runners); it is pinned
+			// here, where every OS is rendered on every runner.
+			section(id + ": the shell its installed adapter is rendered for")
+			tg, _ := targetByID(installTargets, id)
+			shells, err := declaredShells(tg, goos, channelTool)
+			switch {
+			case err != nil:
+				value("HOST_SHELL", "refused: "+err.Error())
+			case len(shells) != 1:
+				value("HOST_SHELL", fmt.Sprintf("refused: %d tool shells declared", len(shells)))
+			default:
+				value("HOST_SHELL", `const HOST_SHELL = "`+string(shells[0])+`"`)
+			}
+		}
+		switch id {
 		case "claude", "hermes", "opencode", "pi":
 			section(id + ": bridge prefix its lineage adapter writes")
 			tg, _ := targetByID(installTargets, id)
