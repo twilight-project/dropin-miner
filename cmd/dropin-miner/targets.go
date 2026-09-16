@@ -437,10 +437,11 @@ func (codexTarget) Label() string    { return "Codex" }
 func (codexTarget) Kind() targetKind { return targetHost }
 
 // Codex runs a command through the user's default shell on macOS and Linux.
-// On Windows its source defaults to PowerShell, but the soak's Codex ran
-// `bash` (the WSL launcher) because our fence said bash, and no live run has
-// shown what it does with a PowerShell-fenced skill: unknown until one does.
-// Codex has no hooks.
+// On Windows it runs Windows PowerShell 5.1: the soak's Codex ran `bash` —
+// the WSL launcher, which fails — only because our fence said bash, and the
+// follow-up run settled it by fencing the other way. That is the cell's
+// whole content: what the host does with the block we actually render, not
+// what its source defaults to. Codex has no hooks.
 func (codexTarget) Shells(goos string) hostShells {
 	switch goos {
 	case "darwin", "linux":
@@ -449,7 +450,10 @@ func (codexTarget) Shells(goos string) hostShells {
 			hook: cellNoChannel,
 		}
 	case "windows":
-		return hostShells{tool: cellUnknown, hook: cellNoChannel}
+		return hostShells{
+			tool: established("live: Windows soak follow-up 2026-09-16, codex-cli 0.154.0, both codex exec and the TUI", shellPowerShell),
+			hook: cellNoChannel,
+		}
 	}
 	return hostShells{tool: cellUnknown, hook: cellNoChannel}
 }

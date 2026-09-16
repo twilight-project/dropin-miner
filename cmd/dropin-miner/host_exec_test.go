@@ -806,12 +806,14 @@ func hookRunnerItIsRenderedFor(t *testing.T, host string, e binEntry) (shellKind
 }
 
 // unknownCellCandidates are the shells an unknown cell is characterized
-// under: the ones its evidence points at without establishing. Codex on
-// Windows defaults to PowerShell in its source; Cursor's Linux hook runner is
-// unnamed, and macOS ran the POSIX form.
+// under: the ones its evidence points at without establishing. Cursor's
+// Linux hook runner is unnamed, and macOS ran the POSIX form.
+//
+// Codex on Windows was here until a live run established it as powershell;
+// its row now comes from the declaration like every other established cell,
+// which is the point of the map being small.
 var unknownCellCandidates = map[string][]shellKind{
-	"codex windows tool": {shellPowerShell},
-	"cursor linux hook":  {shellPOSIX},
+	"cursor linux hook": {shellPOSIX},
 }
 
 func requireOneRequest(t *testing.T, in *execInstallation, out execOutcome, query string) execRouterRequest {
@@ -821,16 +823,6 @@ func requireOneRequest(t *testing.T, in *execInstallation, out execOutcome, quer
 		t.Fatalf("the router received %d request(s) %v, want exactly one with query %q\n%s", len(got), got, query, out)
 	}
 	return got[0]
-}
-
-func requireNoRequest(t *testing.T, in *execInstallation, out execOutcome) {
-	t.Helper()
-	if got := in.router.received(); len(got) != 0 {
-		t.Fatalf("the router received %d request(s), want none (v0.2.9 does not run here)\n%s", len(got), out)
-	}
-	if out.exit == 0 {
-		t.Fatalf("the shell exited 0 without the binary reaching the router\n%s", out)
-	}
 }
 
 // TestSkillCommandsRunInTheShellTheyAreRenderedFor runs the three commands
@@ -890,30 +882,40 @@ func renderedShellsOnThisOS(t *testing.T, host string) []execShell {
 	return out
 }
 
-// TestUnknownToolCellKeepsTheBashForm is H-R5's fallback, and the state it
-// leaves behind. Codex on Windows is the one unknown tool cell: nobody has
-// run it with a PowerShell-fenced skill, so the skill keeps v0.2.9's Bash
-// form, the install plan says the shell is not established, and a search in
-// the shell Codex's source names still does not run. Refusing to render
-// would have taken the host away entirely, which is the regression H-R5
-// forbids; this records what the participant actually has until a live run
-// establishes the cell.
+// TestUnknownToolCellKeepsTheBashForm is H-R5's fallback: a host × OS nobody
+// has established keeps v0.2.9's Bash form and the install plan says which
+// host and OS that applies to. Refusing to render would take the host away
+// entirely, which is the regression H-R5 forbids.
+//
+// Its subject is a fixture, not a real host. It used to be Codex on Windows,
+// the one declared cell still unknown, and that cell is now established — so
+// the rule would have lost its only guard exactly when the last unknown cell
+// was filled in, which is when a rule like this stops being exercised and
+// starts being folklore. A fixture keeps it asserted whatever the real
+// declaration says.
+type unestablishedToolHost struct{ powerShellDeclaringHost }
+
+func (unestablishedToolHost) ID() string    { return "fake-unestablished-host" }
+func (unestablishedToolHost) Label() string { return "Fake Unestablished Host" }
+func (unestablishedToolHost) Shells(string) hostShells {
+	return hostShells{tool: cellUnknown, hook: cellNoChannel}
+}
+
 func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
-	codex, _ := targetByID(installTargets, "codex")
-	kinds, note := toolShellsForSkill(codex, "windows")
+	kinds, note := toolShellsForSkill(unestablishedToolHost{}, "windows")
 	if len(kinds) != 1 || kinds[0] != shellPOSIX {
-		t.Fatalf("Codex on Windows renders for %v, want the POSIX fallback", kinds)
+		t.Fatalf("an unknown cell renders for %v, want the POSIX fallback", kinds)
 	}
-	if !strings.Contains(note, "not established") || !strings.Contains(note, "Codex") {
+	if !strings.Contains(note, "not established") || !strings.Contains(note, "Fake Unestablished Host") {
 		t.Fatalf("the install plan says %q, which does not name the host and the reason", note)
 	}
-	if runtime.GOOS != "windows" {
-		return
+	// And the rule is not vacuous: an established cell renders for what it
+	// declares and prints no note at all.
+	codex, _ := targetByID(installTargets, "codex")
+	kinds, note = toolShellsForSkill(codex, "windows")
+	if len(kinds) != 1 || kinds[0] != shellPowerShell || note != "" {
+		t.Fatalf("Codex on Windows renders for %v with note %q, want powershell and no note", kinds, note)
 	}
-	in := newExecInstallation(t)
-	block := skillBlockFor(t, in.renderedSkill("codex"), shellPOSIX, "search")
-	out := runInShell(t, shellWinPS, block.body, nil, in.env)
-	requireNoRequest(t, in, out)
 }
 
 // TestRulesLineCommandRunsInOpencodesShell runs the command opencode's

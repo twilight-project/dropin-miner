@@ -8,7 +8,7 @@ config: C:\Users\u\.tokendrop\tokendrop.toml
 == declaration
 claude    tool established posix+powershell
 claude    hook established posix
-codex     tool unknown
+codex     tool established powershell
 codex     hook none
 cursor    tool established powershell
 cursor    hook ruled       cmd+powershell
@@ -101,14 +101,15 @@ $env:TOKENDROP_TRACE_BRIDGE = '<BRIDGE>'; try { & 'C:\Users\u\.tokendrop\bin\dro
 } finally { Remove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue }
 
 == codex: skill command blocks
--- fence bash
-'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
+-- fence powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
 {"version":1,"query":"exact query text"}
-JSON
--- fence bash
-'C:\Users\u\.tokendrop\bin\dropin-miner.exe' agents prefer -config 'C:\Users\u\.tokendrop\tokendrop.toml' <argument>
--- fence bash
-'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
+'@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+-- fence powershell
+& 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' agents prefer -config 'C:\Users\u\.tokendrop\tokendrop.toml' <argument>
+-- fence powershell
+& 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
 
 == cursor: skill command blocks
 -- fence powershell

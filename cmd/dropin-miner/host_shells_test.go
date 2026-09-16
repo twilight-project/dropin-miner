@@ -36,7 +36,7 @@ var declaredShellTable = []declaredRow{
 	{"claude", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX, shellPowerShell}, []shellKind{shellPOSIX}},
 	{"codex", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
 	{"codex", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"codex", "windows", evidenceUnknown, evidenceNone, nil, nil},
+	{"codex", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPowerShell}, nil},
 	{"cursor", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
 	{"cursor", "linux", evidenceEstablished, evidenceRuled, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
 	{"cursor", "windows", evidenceEstablished, evidenceRuled, []shellKind{shellPowerShell}, []shellKind{shellCmd, shellPowerShell}},
@@ -131,7 +131,14 @@ func TestDeclaredShellsRefusesWhatIsNotEstablished(t *testing.T) {
 	cursor, _ := targetByID(installTargets, "cursor")
 	claude, _ := targetByID(installTargets, "claude")
 
-	t.Run("unknown tool cell", func(t *testing.T) { refused(t, codex, "windows", channelTool) })
+	// A fixture, because no real host has a declared-OS tool cell left
+	// unknown: Codex on Windows was the last one and a live run established
+	// it. The refusal is the rule, not a fact about whichever host happens
+	// still to be unmeasured, so it is asserted against a cell that cannot
+	// be filled in from under it.
+	t.Run("unknown tool cell", func(t *testing.T) {
+		refused(t, unestablishedToolHost{}, "windows", channelTool)
+	})
 	t.Run("unknown hook cell", func(t *testing.T) { refused(t, claude, "freebsd", channelHook) })
 	t.Run("an OS no host declares", func(t *testing.T) { refused(t, claude, "freebsd", channelTool) })
 	t.Run("a target that declares nothing", func(t *testing.T) {
