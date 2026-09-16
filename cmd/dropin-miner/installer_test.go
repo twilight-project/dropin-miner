@@ -60,6 +60,10 @@ type setupSandbox struct {
 	// case can make one of them fail.
 	move     func(from, to string) error
 	restrict func(path string, dir bool) error
+	// agentPlanObserver, when set, is threaded through to setupDeps: a case
+	// wanting the plan agentsStep actually built sets this before calling
+	// run.
+	agentPlanObserver func(agentPlan)
 }
 
 func newSetupSandbox(t *testing.T) *setupSandbox {
@@ -135,10 +139,11 @@ func (s *setupSandbox) deps(stdin io.Reader, stdout, stderr io.Writer, interacti
 			s.connectCalls++
 			return connectAdmitted(args, stdin, stdout, stderr, getenv)
 		},
-		userEnv:  s.userEnv,
-		now:      fixedSetupClock,
-		move:     s.move,
-		restrict: s.restrict,
+		userEnv:           s.userEnv,
+		now:               fixedSetupClock,
+		move:              s.move,
+		restrict:          s.restrict,
+		agentPlanObserver: s.agentPlanObserver,
 	}
 }
 
@@ -1492,6 +1497,328 @@ func TestSetupNoAgentsWithCodexInstallsExactlyCodex(t *testing.T) {
 		t.Fatalf("want exactly codex: codex=%v claude=%v cursor=%v", lexists(paths.codexSkill), lexists(paths.claudeSkill), lexists(paths.cursorSkill))
 	}
 	assertOwnership(t, before, snapshotTree(t, s.root), append([]string{s.home}, targetOwnedPaths(paths, "codex")...)...)
+}
+
+// ── D2 (#59): a dry run's agent plan matches the real run's ─────────────
+
+// configFixtureOutcome names which of the three outcomes planSetupConfig
+// can reach a test wants set up on disk before setup ever runs.
+type configFixtureOutcome int
+
+const (
+	fixtureConfigFresh configFixtureOutcome = iota
+	fixtureConfigLeft
+	fixtureConfigMigrated
+)
+
+// seedConfigFixture writes what outcome needs onto s's disk before setup
+// runs: nothing (fresh), a complete config with [miner] (left, untouched),
+// or a proxy-only config with [mining] but no [miner] (migrated — setup
+// adds the missing tables).
+func seedConfigFixture(t *testing.T, s *setupSandbox, outcome configFixtureOutcome) {
+	t.Helper()
+	if outcome == fixtureConfigFresh {
+		return
+	}
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var data []byte
+	switch outcome {
+	case fixtureConfigLeft:
+		v, err := resolveSetupValues(s.home, s.getenv, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err = renderFreshConfig(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+	case fixtureConfigMigrated:
+		data = []byte("[mining]\nas_url = " + mustTOML(t, s.as.srv.URL) + "\nchain_id = \"twilight-1\"\nslot_id = 7\nstate_dir = " +
+			mustTOML(t, filepath.Join(s.home, "state")) + "\n")
+	}
+	if err := os.WriteFile(s.cfgPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// agentPlanWriteLines drives setup -with id, with or without -dry-run and
+// against one of the three config outcomes already seeded on disk, and
+// returns the set of paths printPlan listed under "write": the exact text
+// both a dry run and the real run print for the plan, before the real run
+// goes on to commit it. Comparing this set between the two, for a fresh
+// installation, an existing one, and one being migrated, is the literal
+// test D.2 (#59) asks for.
+func agentPlanWriteLines(t *testing.T, id string, dry bool, outcome configFixtureOutcome) map[string]bool {
+	t.Helper()
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	seedConfigFixture(t, s, outcome)
+	args := []string{"-with", id}
+	if dry {
+		args = append(args, "-dry-run")
+	}
+	code, out, errOut := s.run(nil, false, args...)
+	if code != exitOK {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v): exit %d\n%s%s", id, dry, outcome, code, out, errOut)
+	}
+	const prefix = "    write  "
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := line[len(prefix):]
+		i := strings.Index(rest, "  (")
+		if i < 0 {
+			t.Fatalf("write line has no trailing (why): %q", line)
+		}
+		set[rest[:i]] = true
+	}
+	if len(set) == 0 {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) planned no writes:\n%s", id, dry, outcome, out)
+	}
+	return set
+}
+
+func assertSameStringSet(t *testing.T, label string, dry, real map[string]bool) {
+	t.Helper()
+	for p := range dry {
+		if !real[p] {
+			t.Errorf("%s: dry run listed %s, the real run never wrote it", label, p)
+		}
+	}
+	for p := range real {
+		if !dry[p] {
+			t.Errorf("%s: the real run wrote %s, the dry run never listed it", label, p)
+		}
+	}
+}
+
+// TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts guards D.2 (#59):
+// on a fresh installation or one being migrated, the Codex plan a dry run
+// prints used to list only the skill plus an advisory note (fresh) or the
+// pre-migration roots (migrated), because codexSandboxRoots read the
+// config from disk and the real run's config either did not exist yet or
+// had not gained its [miner] table yet — the dry run never publishes it
+// (validateConfigSyntax's own invariant: nothing is written anywhere to
+// load it through pkg/config). setup's dry run now plans every agent step
+// from the config it would write or add, parsed by the config package
+// itself (config.LoadBytes) from those exact bytes, so its listing equals
+// the real run's writes for both outcomes. The existing-config ("left")
+// case is already correct — both a dry run and the real run read the same
+// bytes off disk, unmodified — and is pinned here so it cannot regress
+// alongside the other two.
+func TestDryRunAgentPlanPathsMatchTheRealRunAcrossAllHosts(t *testing.T) {
+	requireGoldenSequence(t)
+	cases := []struct {
+		name    string
+		outcome configFixtureOutcome
+	}{
+		{"fresh", fixtureConfigFresh},
+		{"existing", fixtureConfigLeft},
+		{"migrated", fixtureConfigMigrated},
+	}
+	for _, id := range goldenHostIDs {
+		for _, tc := range cases {
+			t.Run(tc.name+"/"+id, func(t *testing.T) {
+				dry := agentPlanWriteLines(t, id, true, tc.outcome)
+				real := agentPlanWriteLines(t, id, false, tc.outcome)
+				assertSameStringSet(t, id, dry, real)
+			})
+		}
+	}
+}
+
+// assertSameWriteContent is the content parity test's literal assertion:
+// the set of paths written and the bytes written to each must be identical
+// between the two plans.
+func assertSameWriteContent(t *testing.T, label string, dry, real agentPlan) {
+	t.Helper()
+	dryContents := map[string][]byte{}
+	for _, w := range dry.writes {
+		dryContents[w.path] = w.contents
+	}
+	realContents := map[string][]byte{}
+	for _, w := range real.writes {
+		realContents[w.path] = w.contents
+	}
+	for p, c := range dryContents {
+		rc, ok := realContents[p]
+		if !ok {
+			t.Errorf("%s: dry run plans a write to %s the real run's plan does not", label, p)
+			continue
+		}
+		if !bytes.Equal(c, rc) {
+			t.Errorf("%s: content for %s differs:\n--- dry ---\n%s\n--- real ---\n%s", label, p, c, rc)
+		}
+	}
+	for p := range realContents {
+		if _, ok := dryContents[p]; !ok {
+			t.Errorf("%s: the real run plans a write to %s the dry run's plan does not", label, p)
+		}
+	}
+}
+
+// normalizeAgentPlanRoots replaces every occurrence of root — a sandbox's
+// own temp-directory root, embedded in every path a plan names and in
+// every rendered command line a skill or a Codex sandbox block carries —
+// with one fixed placeholder. Two plans captured from two different
+// sandboxes never share the same root, so without this every path and
+// every rendered command would differ for a reason that has nothing to do
+// with behavior.
+func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
+	// A path a plan names is the raw root; a path a plan RENDERS is not
+	// always escaped just once. TOML, Go %q and JSON each double a
+	// backslash, and an escaping layer can nest: a Claude/Cursor allow
+	// rule or hook command is built with %q (one doubling) and that whole
+	// command string is then a JSON string value in settings.json/
+	// hooks.json (a second doubling on top), so the SAME root's
+	// backslashes appear doubled in a Codex sandbox block or a bare
+	// (unquoted) command segment, but quadrupled inside a quoted command
+	// segment embedded in JSON. On Windows the raw root's own backslashes
+	// then never occur as a contiguous run inside that quadrupled text at
+	// all (TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath
+	// is this same defect, guarded on the production side). Try the most
+	// escaped form first, so its already-doubled backslashes are not
+	// partly consumed by a shorter form's replacement first. A no-op on
+	// every other OS, where root has no backslash to double at any depth.
+	forms := []string{root}
+	for i := 0; i < 2; i++ {
+		forms = append(forms, strings.ReplaceAll(forms[len(forms)-1], `\`, `\\`))
+	}
+	repl := func(s string) string {
+		for i := len(forms) - 1; i >= 0; i-- {
+			s = strings.ReplaceAll(s, forms[i], "<ROOT>")
+		}
+		return s
+	}
+	replBytes := func(b []byte) []byte { return []byte(repl(string(b))) }
+	out := agentPlan{skipped: p.skipped, refused: p.refused}
+	for _, w := range p.writes {
+		out.writes = append(out.writes, agentWrite{
+			surface:  w.surface,
+			path:     repl(w.path),
+			contents: replBytes(w.contents),
+			mode:     w.mode,
+			why:      w.why,
+		})
+	}
+	for _, r := range p.removes {
+		out.removes = append(out.removes, repl(r))
+	}
+	for _, n := range p.notes {
+		out.notes = append(out.notes, repl(n))
+	}
+	return out
+}
+
+// TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping guards
+// normalizeAgentPlanRoots against the exact defect
+// TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath guards
+// elsewhere: a root's backslashes never occur as a contiguous run inside
+// content that quoted it (Go %q, TOML, JSON all double a backslash), so a
+// replacement that only tries the raw root leaves rendered content
+// untouched on Windows — a synthetic Windows-style root here, not an
+// actual Windows path, so this runs on every OS the test matrix does.
+func TestNormalizeAgentPlanRootsHandlesWindowsStyleEscaping(t *testing.T) {
+	root := `C:\Users\runner\AppData\Local\Temp\TestName123`
+	once := strings.ReplaceAll(root, `\`, `\\`)
+	twice := strings.ReplaceAll(once, `\`, `\\`)
+	plan := agentPlan{writes: []agentWrite{{
+		surface: "Claude Code",
+		path:    root + `\user\.claude\settings.json`,
+		// The shapes actually seen in a real settings.json: a raw
+		// (unquoted) command segment escaped once by JSON alone, and a
+		// %q-quoted command segment escaped once for the quoting and
+		// again for JSON — the case the first version of this fix missed.
+		contents: []byte(`{"allow":["Bash(` + once + `\\bin\\dropin-miner search:*)",` +
+			`"Bash(\"` + twice + `\\\\bin\\\\dropin-miner\" search -config \"` + twice + `\\\\user\\\\.tokendrop\\\\tokendrop.toml\":*)"]}`),
+	}}}
+	got := normalizeAgentPlanRoots(plan, root)
+	w := got.writes[0]
+	if strings.Contains(w.path, root) {
+		t.Errorf("path still carries the raw root: %s", w.path)
+	}
+	content := string(w.contents)
+	if strings.Contains(content, root) || strings.Contains(content, once) || strings.Contains(content, twice) {
+		t.Errorf("content still carries the root, raw or escaped at some depth:\n%s", content)
+	}
+	if !strings.Contains(w.path, "<ROOT>") || strings.Count(content, "<ROOT>") != 3 {
+		t.Errorf("expected one <ROOT> in the path and three in the content:\npath: %s\ncontent: %s", w.path, content)
+	}
+}
+
+// agentObservedPlan drives setup -with id (optionally -dry-run) against a
+// fresh sandbox seeded for outcome, and returns the plan agentsStep itself
+// built — captured through setupDeps' agentPlanObserver seam, not a plan
+// the test computed on its own — along with the sandbox that produced it
+// (its root is what normalizeAgentPlanRoots needs).
+func agentObservedPlan(t *testing.T, id string, dry bool, outcome configFixtureOutcome) (agentPlan, *setupSandbox) {
+	t.Helper()
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	seedConfigFixture(t, s, outcome)
+	var captured agentPlan
+	observed := false
+	s.agentPlanObserver = func(p agentPlan) { captured = p; observed = true }
+	args := []string{"-with", id}
+	if dry {
+		args = append(args, "-dry-run")
+	}
+	code, out, errOut := s.run(nil, false, args...)
+	if code != exitOK {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v): exit %d\n%s%s", id, dry, outcome, code, out, errOut)
+	}
+	if !observed {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) never reached agentsStep's plan", id, dry, outcome)
+	}
+	if len(captured.writes) == 0 {
+		t.Fatalf("setup -with %s (dry=%v outcome=%v) observed a plan with no writes", id, dry, outcome)
+	}
+	return captured, s
+}
+
+// TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes is
+// D.2 (#59)'s content half: the path-set test above can agree on WHICH
+// paths a dry run and the real run write while still disagreeing on WHAT
+// they write there — a fresh or migrated config that renders with the
+// wrong number of Codex sandbox roots (Miner.Enabled reads false until
+// [miner] actually lands, even though finishMiner already derives
+// intake_dir/sessions_dir from the state dir before checking it) changes
+// the Codex config.toml content, not its existence. For every host and all
+// three outcomes, this drives the setup CLI itself — once with -dry-run,
+// once without — against two independent sandboxes, capturing each run's
+// actual agentsStep plan through the observer seam (setupDeps.
+// agentPlanObserver), and asserts every planned write's bytes are
+// identical once both sandboxes' own temp-directory roots are normalized
+// to the same placeholder. Driving the CLI, not buildInstallPlan directly,
+// is the point: a version of this test that built its own entry and called
+// buildInstallPlan itself passed even when agentsStep's own wiring of
+// entry.rendered was mutated away, because it never exercised that wiring
+// at all.
+func TestDryRunAgentPlanContentMatchesTheRealRunAcrossAllHostsAndOutcomes(t *testing.T) {
+	requireGoldenSequence(t)
+	cases := []struct {
+		name    string
+		outcome configFixtureOutcome
+	}{
+		{"fresh", fixtureConfigFresh},
+		{"existing", fixtureConfigLeft},
+		{"migrated", fixtureConfigMigrated},
+	}
+	for _, id := range goldenHostIDs {
+		for _, tc := range cases {
+			t.Run(tc.name+"/"+id, func(t *testing.T) {
+				dryPlan, dryS := agentObservedPlan(t, id, true, tc.outcome)
+				realPlan, realS := agentObservedPlan(t, id, false, tc.outcome)
+				assertSameWriteContent(t, id,
+					normalizeAgentPlanRoots(dryPlan, dryS.root),
+					normalizeAgentPlanRoots(realPlan, realS.root))
+			})
+		}
+	}
 }
 
 // The npm launch marker: an exec cache and a project-local install are

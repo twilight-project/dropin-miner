@@ -81,6 +81,13 @@ type setupDeps struct {
 	// fsx.MoveFileDurable and restrictToOwner. Tests inject failures here.
 	move     func(from, to string) error
 	restrict func(path string, dir bool) error
+	// agentPlanObserver, when non-nil, is called with the plan agentsStep
+	// builds — after buildInstallPlan, before anything is printed or
+	// committed — so a test can inspect exactly what production code
+	// planned, for a dry run and a real run alike, without buildInstallPlan
+	// ever needing to be called a second time by the test itself. nil in
+	// production; production behavior is unchanged either way.
+	agentPlanObserver func(agentPlan)
 }
 
 func (d setupDeps) restrictFn() func(string, bool) error {
@@ -137,6 +144,15 @@ type setupRun struct {
 	foundInPlace  bool   // an installation was already in home when setup started
 	changed       bool   // setup wrote or moved something it owns
 	shortCommands bool   // the profile or user environment carries PATH and TOKENDROP_CONFIG
+
+	// configPlanData is set by config() to the bytes it is about to publish
+	// (configFresh or configMigrated; nil for configLeft, which changes
+	// nothing) — agentsStep() needs it: on a dry run, config() prints what
+	// it would write but never calls publishSetupConfig, so nothing is on
+	// disk yet for the agents step's own config read to find. It is set
+	// whether or not the run is dry, but only a dry run's agentsStep reads
+	// it — the real run has already published it to r.cfgPath by then.
+	configPlanData []byte
 
 	lineIn io.Reader
 }
@@ -566,6 +582,9 @@ func (r *setupRun) config() int {
 	if err != nil {
 		fmt.Fprintf(r.d.stderr, "\ndropin-miner setup: %v\nNothing was changed in it. Fix or move the file aside, then run setup again.\n", err)
 		return exitTransport
+	}
+	if plan.data != nil {
+		r.configPlanData = plan.data
 	}
 	switch plan.outcome {
 	case configLeft:

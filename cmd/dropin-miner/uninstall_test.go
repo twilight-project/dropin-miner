@@ -1069,6 +1069,251 @@ func TestPurgeDryRunNeitherAsksNorContactsNorChanges(t *testing.T) {
 	}
 }
 
+// TestPurgeDryRunListsTheFlushLockARealRunsOwnLockingWouldCreate guards
+// D.2's uninstall half (#59 comment, soak S20, macOS arm64): a real
+// -purge-state run always takes the flush lock as part of its lifecycle
+// exclusion (excludeLifecycle, lifecycle.go) before this plan is ever
+// computed, and that lock is opened with O_CREATE (tryLockFile), so an
+// installation where flush.lock does not yet exist gets it created as a
+// side effect of the real run alone. A dry run must not create the file
+// itself — that would be an undisclosed write — but its listing must still
+// predict it, so a dry run's "Participant state" section and the real
+// run's actual removal agree on this file exactly as they do on every
+// other one.
+func TestPurgeDryRunListsTheFlushLockARealRunsOwnLockingWouldCreate(t *testing.T) {
+	setupWithoutAFlushLock := func(t *testing.T) *setupSandbox {
+		t.Helper()
+		s := installed(t)
+		lock := filepath.Join(s.home, "flush.lock")
+		if !lexists(lock) {
+			t.Fatal("fixture assumption broken: setup no longer creates flush.lock; this test needs an installation where it is absent")
+		}
+		if err := os.Remove(lock); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	dry := setupWithoutAFlushLock(t)
+	lockPath := filepath.Join(dry.home, "flush.lock")
+	code, out, errOut := dry.uninstall(t, strings.NewReader(""), false, nil, "-purge-state", "-dry-run")
+	if code != exitOK {
+		t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "remove "+lockPath) {
+		t.Fatalf("dry run must list the flush lock a real run's own locking would create:\n%s", out)
+	}
+	if lexists(lockPath) {
+		t.Error("a dry run must not create the flush lock while predicting it")
+	}
+
+	real := setupWithoutAFlushLock(t)
+	realLockPath := filepath.Join(real.home, "flush.lock")
+	code, out, errOut = real.uninstall(t, tty(walletFixtureAddress(t)), true, nil, "-purge-state")
+	if code != exitOK {
+		t.Fatalf("real run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "remove "+realLockPath) {
+		t.Fatalf("the real run must also list the flush lock its own locking created:\n%s", out)
+	}
+	if lexists(realLockPath) {
+		t.Error("the real run must remove the flush lock it created")
+	}
+}
+
+// TestPurgeDoesNotInventAFlushLockWhenTheConfigNamesNoStateDir guards a
+// narrower defect ruled on during D2's review: a config that loads but
+// resolves no mining.state_dir at all (no [mining] block, and no user
+// config directory to default one from — every source os.UserConfigDir()
+// would read is blanked here) makes finishMiner derive no
+// miner.intake_dir either, so operationLockPaths reports no flush lock to
+// take at all — the real exclusion takes none. An earlier version of
+// predictedFlushLockPath treated a loaded config with no intake dir the
+// same as no config at all, and wrongly predicted home/flush.lock anyway
+// (falling back to r.cfg == nil's own default rather than asking
+// operationLockPaths, the function that actually decides what the real
+// exclusion locks). Neither the dry run nor the real run may list or
+// create a flush lock the real exclusion never touches.
+func TestPurgeDoesNotInventAFlushLockWhenTheConfigNamesNoStateDir(t *testing.T) {
+	s := newSetupSandbox(t)
+	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "AppData", "LOCALAPPDATA"} {
+		t.Setenv(k, "")
+	}
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A bare proxy config: no [mining], no [miner] — nothing for
+	// finishMining to default a state dir from (its own os.UserConfigDir
+	// fallback fails, since every source it reads was just blanked above)
+	// and nothing for finishMiner to derive an intake dir from either.
+	proxy := "[[provider]]\nname = \"search-router\"\nupstream = \"https://router.example.invalid\"\n"
+	if err := os.WriteFile(s.cfgPath(), []byte(proxy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := loadConfig(s.cfgPath(), s.getenv)
+	if err != nil {
+		t.Fatalf("fixture config does not load: %v", err)
+	}
+	if cfg.Mining.StateDir != "" || cfg.Miner.IntakeDir != "" {
+		t.Fatalf("fixture assumption broken: state_dir=%q intake_dir=%q, want both empty", cfg.Mining.StateDir, cfg.Miner.IntakeDir)
+	}
+	lockPath := filepath.Join(s.home, "flush.lock")
+
+	code, out, errOut := s.uninstall(t, strings.NewReader(""), false, nil, "-purge-state", "-dry-run")
+	if code != exitOK {
+		t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if strings.Contains(out, "remove "+lockPath) {
+		t.Errorf("dry run must not list a flush lock the real run's own locking would never take:\n%s", out)
+	}
+
+	code, out, errOut = s.uninstall(t, tty(s.home), true, nil, "-purge-state")
+	if code != exitOK {
+		t.Fatalf("real run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if lexists(lockPath) {
+		t.Error("the real run must not create a flush lock the config names no state for")
+	}
+}
+
+// installedOwningItsBinary is installed(t) plus a binary of its own at
+// home/bin, the way TestUninstallBinaryRemovesOnlyTheInstallationsOwnCopy
+// sets one up: the running executable IS that copy, so checkBinaryOwnership
+// admits -binary. Everything else matches installed(t) exactly, so the same
+// fixture can drive all three uninstall modes in one table test.
+func installedOwningItsBinary(t *testing.T) *setupSandbox {
+	t.Helper()
+	s := newSetupSandbox(t)
+	name := "dropin-miner"
+	if runtime.GOOS == "windows" {
+		name = "dropin-miner.exe"
+	}
+	s.exe = filepath.Join(s.home, "bin", name)
+	writeFileT(t, s.exe, "the binary")
+	s.platform.claim("credits")
+	s.onPath["claude"] = true
+	s.onPath["codex"] = true
+	if code, out, errOut := s.run(nil, false, "-yes", "-with", "claude", "-with", "codex", "-with", "pi"); code != exitOK {
+		t.Fatalf("setup exited %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	writeWalletFixture(t, filepath.Join(s.home, "wallet"))
+	store, err := auth.OpenStore(filepath.Join(s.home, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshToken("rt-installed"); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{
+		filepath.Join("spool", "unsent-1.json"):             `{"v":1}`,
+		filepath.Join("intake", "req-1.json"):               `{"v":1}`,
+		filepath.Join("sessions", "s-1.json"):               `{}`,
+		preferFile:                                          "builtin\n",
+		filepath.Join("state.unenrolled-20260101", "x.key"): "half",
+		filepath.Join("wallet.incomplete-20260101", "junk"): "partial",
+	} {
+		writeFileT(t, filepath.Join(s.home, rel), body)
+	}
+	s.onPath = map[string]bool{} // uninstall must not depend on detection
+	return s
+}
+
+// TestUninstallDryRunRemoveListingMatchesTheRealRunForEveryMode is D.2's
+// literal test for uninstall: "dry-run removal list equals the real run's
+// removals for plain, -binary and -purge-state." Both a dry run and the
+// real run plan from the same purgeSet/uninstallTargets/binarySet code, so
+// this is what would have caught the flush-lock gap directly, without
+// knowing in advance which file it was. dry and real are separate sandboxes
+// (each with its own temp-directory root), so every "remove " line is
+// normalized to a path relative to that sandbox's own root before the two
+// listings are compared — the absolute paths themselves never match
+// between two different temp directories, but the installation's own
+// internal layout does.
+func TestUninstallDryRunRemoveListingMatchesTheRealRunForEveryMode(t *testing.T) {
+	removeLines := func(root, out string) map[string]bool {
+		set := map[string]bool{}
+		for _, line := range strings.Split(out, "\n") {
+			trimmed := strings.TrimLeft(line, " ")
+			indent := len(line) - len(trimmed)
+			if indent == 0 || !strings.HasPrefix(trimmed, "remove ") {
+				continue
+			}
+			// plan()'s one narrative exception: it names the update lock's
+			// path only to say when it goes, not as a removal target of its
+			// own (that is "removed <path>", printed only once the binary
+			// has actually left).
+			if strings.Contains(trimmed, "'s update lock once the binary has left") {
+				continue
+			}
+			p := strings.TrimPrefix(trimmed, "remove ")
+			if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
+				p = rel
+			}
+			set[p] = true
+		}
+		return set
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"plain", nil},
+		{"binary", []string{"-binary"}},
+		{"purge-state", []string{"-purge-state"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dry := installedOwningItsBinary(t)
+			if err := os.Remove(filepath.Join(dry.home, "flush.lock")); err != nil {
+				t.Fatal(err)
+			}
+			dryArgs := append(append([]string{}, tc.args...), "-dry-run")
+			code, dryOut, errOut := dry.uninstall(t, strings.NewReader(""), false, nil, dryArgs...)
+			if code != exitOK {
+				t.Fatalf("dry run: exit %d\n%s\n%s", code, dryOut, errOut)
+			}
+			dryRemoves := removeLines(dry.root, dryOut)
+			if len(dryRemoves) == 0 {
+				t.Fatalf("dry run %v listed nothing to remove:\n%s", tc.args, dryOut)
+			}
+
+			real := installedOwningItsBinary(t)
+			if err := os.Remove(filepath.Join(real.home, "flush.lock")); err != nil {
+				t.Fatal(err)
+			}
+			var stdin io.Reader = strings.NewReader("")
+			interactive := false
+			realArgs := tc.args
+			if tc.name == "purge-state" {
+				stdin, interactive = tty(walletFixtureAddress(t)), true
+			} else {
+				// Neither -dry-run nor -purge-state: the plain/-binary ask
+				// needs an answer, which -yes gives without a terminal
+				// (-purge-state's own confirmation refuses -yes outright,
+				// so it is never added there).
+				realArgs = append(append([]string{}, tc.args...), "-yes")
+			}
+			code, realOut, errOut := real.uninstall(t, stdin, interactive, nil, realArgs...)
+			if code != exitOK {
+				t.Fatalf("real run: exit %d\n%s\n%s", code, realOut, errOut)
+			}
+			realRemoves := removeLines(real.root, realOut)
+
+			for p := range dryRemoves {
+				if !realRemoves[p] {
+					t.Errorf("dry run listed %s, the real run's plan never did", p)
+				}
+			}
+			for p := range realRemoves {
+				if !dryRemoves[p] {
+					t.Errorf("the real run removed %s, the dry run never listed it", p)
+				}
+			}
+		})
+	}
+}
+
 func TestPurgeCompletesWhenRevocationFails(t *testing.T) {
 	s := installed(t)
 	rr := &revokeRecorder{err: errors.New("AS unreachable")}

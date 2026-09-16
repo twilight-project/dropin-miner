@@ -443,6 +443,12 @@ func recordSearchForMining(ops searchOps, cfg *config.Config, out searchOutcome,
 		return finish()
 	}
 	snap.Recorded = true
+	// Best-effort, for doctor's own recording check only: the target epoch
+	// F's flush stamp holds right now, read-only (F owns that stamp).
+	// Never on the path above, which runs only when the search itself, or
+	// its own intake write, has already failed — this never turns a
+	// successful search into anything the participant sees fail.
+	recordSearchEpoch(cfg.Miner.IntakeDir, loadFlushStamp(flushStampPath(cfg.Mining), legacyFlushStampPath(cfg.Miner)).TargetEpoch)
 	if mstore != nil {
 		_ = mstore.ClearHealth(auth.HealthCapture)
 	}
@@ -478,8 +484,14 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	// router legitimately redirecting within its own origin must not break
 	// every search. Timeout stays 0: the deadline is ctx's, so it covers
 	// the body read too, which a client Timeout would also do but could
-	// not share across the two attempts.
-	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects, Transport: searchTransport}
+	// not share across the two attempts. Transport: searchTransport's own
+	// test override takes priority; production leaves it nil and falls
+	// back to searchDefaultTransport.
+	transport := searchTransport
+	if transport == nil {
+		transport = searchDefaultTransport
+	}
+	client := &http.Client{Timeout: 0, CheckRedirect: auth.SameOriginRedirects, Transport: transport}
 
 	out.Started = now()
 	attempt, err := postSearch(ctx, client, call, body)
