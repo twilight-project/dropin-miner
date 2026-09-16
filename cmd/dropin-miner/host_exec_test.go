@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -420,11 +421,21 @@ func knownGoodSearch(sh execShell, in *execInstallation) (script string, stdin [
 }
 
 // TestExecHarnessRunsAKnownGoodSearchInEveryShell is what keeps every
-// "does not run here" row above from being vacuous. Each v0.2.9 failure is
+// "does not run here" row below from being vacuous. Each v0.2.9 failure is
 // asserted as nothing arriving and a non-zero exit — which a runner that
 // never starts its shell, or starts it with the wrong input, would also
 // produce. So every real shell this runner offers must first carry a search
-// written by hand in its own grammar all the way to the router.
+// written by hand in its own grammar to the binary.
+//
+// Windows PowerShell 5.1 is the one shell where the control stops short of
+// the router, and deliberately: a request piped from a literal inside the
+// script arrives there with a byte-order mark in front of it, which
+// `search --stdin` refuses (TestV029PowerShellLiteralRequestIsRefused
+// records that, and TestV029StdinBytesEachShellDelivers the bytes). What
+// this control proves for 5.1 is everything up to that: the shell parsed the
+// string, started the binary, and the binary read its stdin and answered.
+// Its own standard input, inherited from the host, does arrive exact — so
+// the shortfall is 5.1's literal pipe, not the runner.
 func TestExecHarnessRunsAKnownGoodSearchInEveryShell(t *testing.T) {
 	shells := []execShell{shellBash, shellSh, shellHermesArgv}
 	if runtime.GOOS == "windows" {
@@ -435,9 +446,123 @@ func TestExecHarnessRunsAKnownGoodSearchInEveryShell(t *testing.T) {
 			in := newExecInstallation(t)
 			script, stdin := knownGoodSearch(sh, in)
 			out := runInShell(t, sh, script, stdin, in.env)
+			if sh == shellWinPS {
+				requireBinaryAnswered(t, in, out)
+				return
+			}
 			requireOneRequest(t, in, out, "exact query text")
 		})
 	}
+}
+
+// requireBinaryAnswered is the weaker control: the shell ran the binary and
+// the binary read stdin and printed its machine envelope, whatever it made
+// of the request.
+func requireBinaryAnswered(t *testing.T, in *execInstallation, out execOutcome) {
+	t.Helper()
+	var env struct {
+		Version int    `json:"version"`
+		Command string `json:"command"`
+		Code    string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.stdout)), &env); err != nil || env.Version != machineVersion || env.Command != "search" {
+		t.Fatalf("the binary did not answer with a search envelope (%v)\n%s", err, out)
+	}
+	if len(in.router.received()) == 0 && env.Code == "ok" {
+		t.Fatalf("an ok envelope with nothing at the router\n%s", out)
+	}
+}
+
+// ── the bytes a shell delivers ───────────────────────────────────────────
+
+const (
+	hexDumpHelperEnv = "DROPIN_MINER_TEST_HEXDUMP_STDIN"
+	hexDumpMarker    = "STDINHEX:"
+)
+
+// TestHexDumpStdinHelperProcess is not a test: it is the program the
+// byte-delivery characterization runs inside each shell. It writes its own
+// stdin back as hex, so what a shell delivers to a native program is
+// evidence rather than inference. Inert unless its variable is set.
+func TestHexDumpStdinHelperProcess(t *testing.T) {
+	if os.Getenv(hexDumpHelperEnv) != "1" {
+		t.Skip("the stdin hex-dump helper runs only when the byte-delivery characterization starts it")
+	}
+	b, _ := io.ReadAll(os.Stdin)
+	fmt.Printf("%s%x\n", hexDumpMarker, b)
+}
+
+// hexDumpCommand renders, in sh's own grammar, the command that runs this
+// test binary's hex-dump helper. Every argument is quoted: PowerShell
+// handed an unquoted -test.count=1 to the helper as "-test".
+func hexDumpCommand(t *testing.T, sh execShell) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"-test.run=^TestHexDumpStdinHelperProcess$", "-test.count=1"}
+	switch sh.kind {
+	case shellCmd:
+		out := `"` + self + `"`
+		for _, a := range args {
+			out += ` "` + a + `"`
+		}
+		return out
+	case shellPowerShell:
+		out := "& '" + strings.ReplaceAll(self, "'", "''") + "'"
+		for _, a := range args {
+			out += " '" + strings.ReplaceAll(a, "'", "''") + "'"
+		}
+		return out
+	default:
+		out := "'" + strings.ReplaceAll(self, "'", `'\''`) + "'"
+		for _, a := range args {
+			out += " '" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		}
+		return out
+	}
+}
+
+// stdinDelivery is how the request reaches the program: as the shell
+// process's own standard input, or piped from a literal written inside the
+// script, which is how a PowerShell host's command has to carry a request
+// body (a heredoc's POSIX equivalent).
+type stdinDelivery string
+
+const (
+	deliveryInherited stdinDelivery = "inherited"
+	deliveryLiteral   stdinDelivery = "literal"
+)
+
+// stdinBytesDelivered runs the hex-dump helper through sh and returns the
+// bytes that actually arrived on its standard input.
+func stdinBytesDelivered(t *testing.T, sh execShell, delivery stdinDelivery, request string) []byte {
+	t.Helper()
+	script := hexDumpCommand(t, sh)
+	var stdin []byte
+	switch delivery {
+	case deliveryInherited:
+		stdin = []byte(request)
+	case deliveryLiteral:
+		if sh.kind != shellPowerShell {
+			t.Fatalf("a literal-piped request is only rendered for PowerShell, not %s", sh.name)
+		}
+		script = "'" + strings.ReplaceAll(request, "'", "''") + "' | " + script
+	}
+	out := runInShell(t, sh, script, stdin, append(execEnv(), hexDumpHelperEnv+"=1"))
+	for _, line := range strings.Split(out.stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, hexDumpMarker); ok {
+			got, err := hex.DecodeString(after)
+			if err != nil {
+				t.Fatalf("%s %s: the helper's dump does not decode: %v", sh.name, delivery, err)
+			}
+			return got
+		}
+	}
+	t.Fatalf("%s %s: the hex-dump helper did not run\n%s", sh.name, delivery, out)
+	return nil
 }
 
 // ── v0.2.9, characterized ────────────────────────────────────────────────
@@ -454,6 +579,116 @@ func v029RunsIn(sh execShell, cmdAccepts bool) bool {
 		return cmdAccepts
 	}
 	return false
+}
+
+// v029DeliveredBytes is what each shell delivered to a native program's
+// stdin when this was characterized, as hex-dumped on the CI runners.
+//
+// Everything delivers the request byte for byte, whatever the payload,
+// except one case: Windows PowerShell 5.1 piping a literal written inside
+// the script. There the bytes arrive with a UTF-8 byte-order mark in front,
+// CRLF behind, and every UTF-16 unit outside ASCII replaced by "?" — an
+// astral character, being two units, arrives as two. (5.1 reports
+// $OutputEncoding us-ascii with an empty preamble, so the mark is recorded
+// as observed, not explained.) pwsh delivers the request exactly, with CRLF
+// behind it.
+//
+// This matters because a PowerShell host has no heredoc: a literal piped
+// inside the one command string is how a request body reaches the binary
+// there. H2 owns the fix — a form that carries arbitrary query text byte
+// for byte — and flips these rows.
+func v029DeliveredBytes(sh execShell, delivery stdinDelivery, request string) []byte {
+	if delivery == deliveryInherited {
+		return []byte(request)
+	}
+	if sh == shellWinPS {
+		out := []byte{0xef, 0xbb, 0xbf}
+		for _, unit := range utf16.Encode([]rune(request)) {
+			if unit > 0x7f {
+				out = append(out, '?')
+				continue
+			}
+			out = append(out, byte(unit))
+		}
+		return append(out, '\r', '\n')
+	}
+	return append([]byte(request), '\r', '\n')
+}
+
+// TestV029StdinBytesEachShellDelivers dumps, for four payload kinds, the
+// exact bytes each real shell hands a native program's standard input.
+// H2 chooses the PowerShell form from this evidence and flips the rows it
+// changes.
+func TestV029StdinBytesEachShellDelivers(t *testing.T) {
+	payloads := map[string]string{
+		"ascii":  "exact query text",
+		"latin1": "café naïve Ärger",
+		"cjk":    "東京の天気",
+		"emoji":  "weather 😀 today",
+	}
+	type run struct {
+		sh       execShell
+		delivery stdinDelivery
+	}
+	runs := []run{{shellBash, deliveryInherited}, {shellSh, deliveryInherited}, {shellHermesArgv, deliveryInherited}}
+	if runtime.GOOS == "windows" {
+		runs = []run{
+			{shellWinPS, deliveryInherited}, {shellWinPS, deliveryLiteral},
+			{shellPwsh, deliveryInherited}, {shellPwsh, deliveryLiteral},
+			{shellCmdExe, deliveryInherited}, {shellGitBash, deliveryInherited}, {shellHermesArgv, deliveryInherited},
+		}
+	}
+	for name, query := range payloads {
+		request := `{"version":1,"query":"` + query + `"}`
+		for _, r := range runs {
+			t.Run(name+"/"+r.sh.name+"/"+string(r.delivery), func(t *testing.T) {
+				got := stdinBytesDelivered(t, r.sh, r.delivery, request)
+				if want := v029DeliveredBytes(r.sh, r.delivery, request); !bytes.Equal(got, want) {
+					t.Fatalf("%s delivered\n got %x\nwant %x", r.sh.name, got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestV029PowerShellLiteralRequestIsRefused is the search that follows from
+// those bytes: on Windows PowerShell 5.1 a request piped from a literal —
+// the only way a PowerShell command carries a body — reaches the binary and
+// is refused, because of the byte-order mark in front of it. pwsh, whose
+// pipe delivers the request exactly, is served.
+//
+// v0.2.9 has no PowerShell form of its own; this is the form the soak team
+// proved reaches the binary (#67), failing for a second reason. H2 renders a
+// PowerShell search that carries arbitrary query text and flips this.
+func TestV029PowerShellLiteralRequestIsRefused(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell is the Windows runner's shell")
+	}
+	for _, sh := range []execShell{shellWinPS, shellPwsh} {
+		t.Run(sh.name, func(t *testing.T) {
+			in := newExecInstallation(t)
+			script, _ := knownGoodSearch(sh, in)
+			out := runInShell(t, sh, script, nil, in.env)
+			var env struct {
+				OK   bool   `json:"ok"`
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(out.stdout)), &env); err != nil {
+				t.Fatalf("no machine envelope from the binary (%v)\n%s", err, out)
+			}
+			if sh == shellPwsh {
+				if !env.OK {
+					t.Fatalf("pwsh's pipe was refused: %s\n%s", env.Code, out)
+				}
+				requireOneRequest(t, in, out, "exact query text")
+				return
+			}
+			if env.OK || env.Code != "invalid_json" {
+				t.Fatalf("Windows PowerShell 5.1: ok=%v code=%q, want a refusal with invalid_json\n%s", env.OK, env.Code, out)
+			}
+			requireNoRequest(t, in, out)
+		})
+	}
 }
 
 // hostShellsOnThisOS are the real shells a host's cell names on this runner,
