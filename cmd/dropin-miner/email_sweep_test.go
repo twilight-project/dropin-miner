@@ -32,7 +32,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -128,13 +127,13 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 
-	// selfPath is this very file: the one place the banned-substring check
-	// below must not run, since the denylist necessarily names what it
-	// denies.
-	_, selfPath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller could not resolve this test's own file")
-	}
+	// selfBase is this very file's name: the one place the banned-substring
+	// check below must not run, since the denylist necessarily names what
+	// it denies. A basename compare, not a full-path compare against
+	// runtime.Caller(0): that path is recorded at compile time and is not
+	// guaranteed to use the same separator convention filepath.Abs
+	// produces at run time on every OS (this broke on Windows CI).
+	const selfBase = "email_sweep_test.go"
 
 	report := func(t *testing.T, path, email string) {
 		t.Helper()
@@ -192,7 +191,7 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 	bannedSubstrings := []string{"protonmail.com", "quasarai"}
 	checkNoBannedSubstring := func(t *testing.T, path string) {
 		t.Helper()
-		if abs, err := filepath.Abs(path); err == nil && abs == selfPath {
+		if filepath.Base(path) == selfBase {
 			return
 		}
 		data, err := os.ReadFile(path) // #nosec G304 -- test-owned repo file under moduleRoot
