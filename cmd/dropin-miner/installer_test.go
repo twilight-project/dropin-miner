@@ -406,7 +406,11 @@ func TestSetupFreshNonInteractiveWritesNoEnabledAndEndsStopped(t *testing.T) {
 	if strings.Contains(out, "already in place") {
 		t.Errorf("closing message claims everything was already in place when the profile and agents were skipped:\n%s", out)
 	}
-	if !strings.Contains(out, "shell profile") || !strings.Contains(out, "coding agents") {
+	profileStep := "shell profile"
+	if runtime.GOOS == "windows" {
+		profileStep = "user environment"
+	}
+	if !strings.Contains(out, profileStep) || !strings.Contains(out, "coding agents") {
 		t.Errorf("closing message does not name the skipped steps:\n%s", out)
 	}
 	if !strings.Contains(out, "setup -config") || !strings.Contains(out, "-yes") {

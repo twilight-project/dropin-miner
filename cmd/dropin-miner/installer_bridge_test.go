@@ -337,7 +337,7 @@ func TestInstallPs1HandsOffToSetupAndSkipsTheLegacyBlocks(t *testing.T) {
 			t.Errorf("the legacy block ran on the setup path (%q):\n%s", legacy, out)
 		}
 	}
-	if !strings.Contains(out, "Setup complete.") {
+	if !strings.Contains(out, "Setup complete") {
 		t.Errorf("setup did not run:\n%s", out)
 	}
 	if reg, _, _ := platform.counts(); reg != 1 {
