@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 )
 
@@ -42,11 +43,31 @@ const exitHumanDecisionRequired = -1
 // exitHumanDecisionRequired it is out of range so a leak would be obvious.
 const exitLifecycleBusy = -2
 
+// exitConfigNotFound is connectRun's internal signal, in machine mode only,
+// that resolution (describeConfigSource, ruling D-R1) found no config file
+// at all. Like the other two sentinels, connectCommand's JSON wrapper
+// translates it before anything reaches main(); the text path never
+// produces it (machine is false there), so it is out of the exit-code
+// range for the same reason as the other two.
+const exitConfigNotFound = -3
+
 func orDefaults(cfgSource string) string {
 	if cfgSource == "" {
 		return "defaults/env, no config file found"
 	}
 	return cfgSource
+}
+
+// printConfigSource names, in every text report that resolves one, exactly
+// which config file it read (or that none was found and built-in defaults
+// are in use) and which state directory that resolution led to — ruling
+// D-R1's naming requirement. status and doctor both call this before
+// anything else, so a participant whose terminal resolved a different
+// installation than they expected sees why at the top of the report rather
+// than having to infer it from what follows.
+func printConfigSource(w io.Writer, cfgSource, stateDir string) {
+	fmt.Fprintf(w, "%-8s %s\n", "config:", orDefaults(cfgSource))
+	fmt.Fprintf(w, "%-8s %s\n", "state:", stateDir)
 }
 
 // newFlagSet builds a FlagSet whose usage output goes to the command's own

@@ -80,6 +80,13 @@ var (
 	resumeCooldown = 5 * time.Second
 )
 
+// errConnectNoConfig is ruling D-R1's connect refusal: resolution
+// (describeConfigSource) found no config file at all, not even the
+// installation's own, so there is nothing here connect may register
+// against.
+var errConnectNoConfig = errors.New("no config file found — looked at -config, TOKENDROP_CONFIG, " +
+	"./tokendrop.toml and the installation's own config; run `dropin-miner setup` first")
+
 func connectLockPath(stateDir string) string { return filepath.Join(stateDir, "connect.lock") }
 func resumeStampPath(stateDir string) string { return filepath.Join(stateDir, "connect_resume.json") }
 
@@ -284,6 +291,23 @@ func connectCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, ge
 	// decision manufactured by a flag about formatting. Where that would
 	// happen, stop before Register and say so structurally instead.
 	//
+	// Ruling D-R1, ahead of the human-decision pre-check below: with no
+	// config file resolved at all, loadConfig still succeeds (it falls
+	// back to built-in defaults, which is exactly the state connect must
+	// refuse to register against), so connectNeedsHumanDecision would
+	// otherwise evaluate the mining question against a config nobody
+	// wrote and, on a bare machine, misreport this as
+	// human_decision_required rather than the narrower "no installation"
+	// refusal it actually is. describeConfigSource is the same pure,
+	// side-effect-free resolution connectRun itself uses, so this and
+	// connectRun's own mid-run check can never disagree.
+	if parseErr == nil && describeConfigSource(cfgPath, getenv) == "" {
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", exitTransport, "config_not_found", false, actionFixInput),
+			Error:         clientMessage(errConnectNoConfig),
+		})
+		return exitTransport
+	}
 	// Only when the command itself parsed. An invalid command is not a
 	// lifecycle state: with a parse failure there is no -config to speak
 	// of, so the gate would answer about the DEFAULT config and state
@@ -314,6 +338,20 @@ func connectCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, ge
 			machineHeader: newMachineHeader("connect", exitTransport, "lifecycle_busy", true, actionRetry),
 			RetryAfterMS:  &retryAfter,
 			Error:         clientMessage(errLifecycleBusy),
+		})
+		return exitTransport
+	}
+	if code == exitConfigNotFound {
+		// Structural, like the two sentinels above: resolution ran and
+		// found nothing, before anything of an installation was opened or
+		// written. Not retryable — running it again with the same
+		// environment resolves nothing new — and not human_decision_required,
+		// since there is no registration state to decide about yet; fix_input
+		// is what applies to an environment/config problem a participant
+		// must correct before this command can do anything.
+		emitMachine(stdout, commandEnvelope{
+			machineHeader: newMachineHeader("connect", exitTransport, "config_not_found", false, actionFixInput),
+			Error:         clientMessage(errConnectNoConfig),
 		})
 		return exitTransport
 	}
@@ -502,6 +540,29 @@ func connectRun(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	cfg, cfgSource, err := loadConfig(*cfgPath, getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "dropin-miner: config (%s): %v\n", orDefaults(cfgSource), err)
+		return exitTransport
+	}
+	if cfgSource == "" {
+		// Ruling D-R1: resolution exhausted every source, including the
+		// installation's own config, and found none — connect must not
+		// register against built-in-default state (which no participant
+		// asked for and no other command's -config would ever land on).
+		// Returning here, before OpenStore, means nothing is written: no
+		// state directory, no lock, no credential.
+		//
+		// In JSON mode this is normally caught earlier, by connectCommand's
+		// own pre-check (same describeConfigSource call, same cfgPath and
+		// getenv, so the two can never disagree) — before the lifecycle
+		// gate above is even taken. This is the text-mode refusal and the
+		// structural safety net for machine mode: the sentinel exists so
+		// that a bug that let this branch run without going through the
+		// pre-check still classifies correctly rather than falling into
+		// the generic retryable "connect_failed" every other exitTransport
+		// gets.
+		fmt.Fprintln(stderr, "dropin-miner connect:", errConnectNoConfig)
+		if machine {
+			return exitConfigNotFound
+		}
 		return exitTransport
 	}
 	store, err := auth.OpenStore(cfg.Mining.StateDir)

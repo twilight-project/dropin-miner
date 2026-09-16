@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 	"github.com/twilight-project/dropin-miner/pkg/auth"
 )
 
@@ -63,6 +64,26 @@ const (
 // the same answer (§5.2), one no oracle.
 var ErrAgentNotFound = errors.New("platform: agent not found")
 
+// platformDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses, named here rather than left inside a closure so a test can read
+// its Timeout/KeepAlive directly.
+var platformDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// platformTransport is a clone of http.DefaultTransport — the search
+// platform is reached over the participant's ordinary network path, the
+// same as a browser visiting the claim URL would be, and every field
+// DefaultTransport itself tunes (ForceAttemptHTTP2, TLSHandshakeTimeout,
+// IdleConnTimeout, MaxIdleConns, ExpectContinueTimeout, its own Proxy)
+// carries over unchanged from what leaving Transport nil gave every
+// request before this — only DialContext is replaced, by
+// netdial.For(platformDialer). Package-level and constructed once: every
+// Client this package builds shares one connection pool.
+var platformTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = netdial.For(platformDialer)
+	return t
+}()
+
 // newPlatformClient is the only kind of http.Client this package may
 // construct, mirroring pkg/auth/credentialclient.go's
 // newCredentialClient in shape: bounded, same-origin redirects via
@@ -76,6 +97,7 @@ func newPlatformClient() *http.Client {
 	return &http.Client{
 		Timeout:       clientTimeout,
 		CheckRedirect: auth.SameOriginRedirects,
+		Transport:     platformTransport,
 	}
 }
 

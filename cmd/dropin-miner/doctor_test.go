@@ -96,14 +96,16 @@ func healthyFacts() doctorFacts {
 		// let both new checks answer "not configured", which is OK for the
 		// wrong reason and would keep the all-OK test green however the
 		// checks behaved.
-		MinerEnabled:    true,
-		IntakeDir:       "/fictional/tokendrop/intake",
-		LocalStateKnown: true,
-		MiningDecision:  auth.MiningDecision{State: auth.MiningEnabled, Present: true},
-		IntakeProbe:     intakeProbeResult{Ran: true, Dir: "/fictional/tokendrop/intake"},
-		Now:             healthyNow,
-		Stamp:           flushStamp{V: 1, LastFlush: healthyNow.Add(-time.Hour)},
-		StampPresent:    true,
+		MinerEnabled:       true,
+		IntakeDir:          "/fictional/tokendrop/intake",
+		LocalStateKnown:    true,
+		MiningDecision:     auth.MiningDecision{State: auth.MiningEnabled, Present: true},
+		IntakeProbe:        intakeProbeResult{Ran: true, Dir: "/fictional/tokendrop/intake"},
+		Now:                healthyNow,
+		Stamp:              flushStamp{V: 1, LastFlush: healthyNow.Add(-time.Hour), TargetEpoch: 1042},
+		StampPresent:       true,
+		SearchEpoch:        1042,
+		SearchEpochPresent: true,
 	}
 }
 
@@ -420,6 +422,48 @@ func TestThePayoutStandingIsAskedEvenWithNoOpenTarget(t *testing.T) {
 	}
 	if got := verdictOf(assembleDoctor(f), "payout address"); got.Verdict != verdictOK {
 		t.Fatalf("payout address = %s (%s), want OK", got.Verdict, got.Detail)
+	}
+}
+
+// TestAHeldPayoutBindingIsNotOK is #57's Windows-comment finding: connect
+// declined to declare because the AS already has a different address
+// active for this participant (store.LoadPayoutBindingHeld), the same
+// local note status already prints as "payout: HELD (...)". Before this,
+// doctor's own payout check read only PayoutStanding, so an Active address
+// being genuinely in force at the AS made it report OK — technically true
+// of the AS's own state, but not of what THIS installation would declare,
+// which is the participant's actual question.
+func TestAHeldPayoutBindingIsNotOK(t *testing.T) {
+	stateDir := doctorStateDir(t)
+	store, err := auth.OpenStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePayoutBindingHeld("twilight1local", "twilight1active", auth.HeldReplacesActive); err != nil {
+		t.Fatal(err)
+	}
+	as := &stubAS{
+		doc:      &wire.DiscoveryDocument{ChainID: "twilight-1", SlotID: "7"},
+		target:   nil,
+		standing: &auth.PayoutStanding{Active: &auth.PayoutDeclaration{Address: "twilight1active", Effective: true}},
+	}
+	f := gatherDoctorFacts(context.Background(), as, config.Mining{
+		ASBaseURL: "https://as.example.com", StateDir: stateDir, SpoolDir: t.TempDir(),
+	})
+	if !f.HasPayoutHeld {
+		t.Fatal("the held-binding note was not read from the store")
+	}
+	got := verdictOf(assembleDoctor(f), "payout address")
+	if got.Verdict != verdictNo {
+		t.Fatalf("payout address = %s (%s), want NO — a held binding is not what status calls OK", got.Verdict, got.Detail)
+	}
+	for _, want := range []string{"HELD", "twilight1active", "twilight1local"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail %q is missing %q", got.Detail, want)
+		}
+	}
+	if got.Fix == "" {
+		t.Error("a held binding names no next step")
 	}
 }
 

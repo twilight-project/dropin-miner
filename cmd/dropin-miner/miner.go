@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,19 +56,25 @@ const (
 	lineageWalkUp = 8
 )
 
-// loadConfig is resolveListen's whole-config sibling: the same resolution
-// order (flag, TOKENDROP_CONFIG, ./tokendrop.toml, defaults) returning the
-// full config so the miner can read [miner] and [mining].
+// loadConfig resolves the config exactly as describeConfigSource does
+// (ruling D-R1: -config, TOKENDROP_CONFIG, ./tokendrop.toml, the
+// installation's own config, then defaults) and returns the full config so
+// the miner can read [miner] and [mining]. pkg/config is not changed: the
+// resolved path, once found, is handed to config.Load as an explicit
+// -config, which is exactly what makes it required to exist — a guarantee
+// this function has already checked for the two soft-discovered steps
+// before choosing them.
 func loadConfig(cfgPath string, getenv func(string) string) (*config.Config, string, error) {
+	src := describeConfigSource(cfgPath, getenv)
 	args := []string{}
-	if cfgPath != "" {
-		args = []string{"-config", cfgPath}
+	if src != "" {
+		args = []string{"-config", src}
 	}
 	cfg, _, err := config.Load(args, getenv)
 	if err != nil {
-		return nil, describeConfigSource(cfgPath, getenv), err
+		return nil, src, err
 	}
-	return cfg, describeConfigSource(cfgPath, getenv), nil
+	return cfg, src, nil
 }
 
 // ── intake ──────────────────────────────────────────────────────────────
@@ -369,6 +376,50 @@ func writeFlushStamp(path string, st flushStamp) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ── recorded-search epoch (D's own evidence, not F's stamp) ─────────────
+//
+// doctor's recording check needs to tell a search that ran in the epoch
+// the AS reports as current from a hook flush that touched nothing: F's
+// flush stamp updates on either, so it cannot make that distinction alone.
+// This is D's own file, beside the intake records a search writes but
+// never counted as one: recordedEpochFile has no .json suffix, so neither
+// readIntake's promotion scan nor countIntakeJSON's doctor count ever see
+// it. It names the target epoch F's flush stamp held the moment a search
+// was last recorded — read-only, since F owns the stamp itself — not the
+// epoch a fresh AS call would report right now, so it can lag the real
+// target between flushes. That lag can only ever make doctor conclude "no
+// recent activity" where "activity, unresolved" was warranted, never the
+// reverse, which is the direction a check that never says NO may err in.
+const recordedEpochFile = "recorded_epoch"
+
+// recordSearchEpoch is best-effort and silent: a failure here diagnoses
+// nothing about the search that just ran, promotes nothing and blocks
+// nothing, so it is not worth a health record or a line to the user —
+// only a future `doctor` run losing one input it would rather have had.
+func recordSearchEpoch(dir string, epoch uint64) {
+	_ = fsx.WriteFileAtomic(dir, recordedEpochFile, []byte(strconv.FormatUint(epoch, 10)), 0o600)
+}
+
+// readSearchEpoch reads back what recordSearchEpoch wrote. Absent — no
+// search has ever been recorded here, or its marker predates this
+// feature — is not an error; present, ok=false means the file exists but
+// could not be parsed, fed to the same undetermined path doctor's other
+// unreadable inputs use, rather than silently read as "nothing happened."
+func readSearchEpoch(dir string) (epoch uint64, present bool, err error) {
+	data, rerr := os.ReadFile(filepath.Join(dir, recordedEpochFile)) // #nosec G304 -- this installation's own intake dir
+	if errors.Is(rerr, fs.ErrNotExist) {
+		return 0, false, nil
+	}
+	if rerr != nil {
+		return 0, false, rerr
+	}
+	n, perr := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if perr != nil {
+		return 0, false, fmt.Errorf("recorded_epoch: %w", perr)
+	}
+	return n, true, nil
 }
 
 // ── detached flush ──────────────────────────────────────────────────────

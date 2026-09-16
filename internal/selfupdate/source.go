@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/twilight-project/dropin-miner/internal/netdial"
 )
 
 // The one release origin, compiled in. No environment variable, flag or
@@ -66,14 +68,34 @@ func NewHTTPSource(client *http.Client) *HTTPSource {
 	return &HTTPSource{client: client, apiBase: githubAPIBase, downloadBase: githubDownloadBase}
 }
 
-// NewHTTPClient is the updater's only client: the default transport (so the
-// participant's proxy settings and TLS defaults apply), a per-request timeout,
-// and a redirect policy that follows only HTTPS, at most five hops, to
-// releaseHosts. It sends no credential.
+// selfupdateDialer is exactly the *net.Dialer http.DefaultTransport itself
+// uses, named here rather than left inside a closure so a test can read
+// its Timeout/KeepAlive directly.
+var selfupdateDialer = &net.Dialer{Timeout: netdial.DefaultTimeout, KeepAlive: netdial.DefaultKeepAlive}
+
+// selfupdateTransport is a clone of http.DefaultTransport, so the
+// participant's proxy settings and every other DefaultTransport tuning
+// (ForceAttemptHTTP2, TLSHandshakeTimeout, IdleConnTimeout, MaxIdleConns,
+// ExpectContinueTimeout) still apply exactly as they did before this named
+// the dial function explicitly — only DialContext is replaced, by
+// netdial.For(selfupdateDialer). Package-level and constructed once: every
+// client this package builds shares one connection pool.
+var selfupdateTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = netdial.For(selfupdateDialer)
+	return t
+}()
+
+// NewHTTPClient is the updater's only client: the shared dial seam (so the
+// participant's proxy settings and TLS defaults apply, same as
+// http.DefaultTransport), a per-request timeout, and a redirect policy that
+// follows only HTTPS, at most five hops, to releaseHosts. It sends no
+// credential.
 func NewHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout:       RequestTimeout,
 		CheckRedirect: checkReleaseRedirect,
+		Transport:     selfupdateTransport,
 	}
 }
 
