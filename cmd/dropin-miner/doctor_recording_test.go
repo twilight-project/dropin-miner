@@ -396,16 +396,23 @@ func TestAnUnwritableIntakeDirectoryReportsTheSandboxFix(t *testing.T) {
 
 var recordingNow = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 
-// suspiciousFacts is the exact state the advice is for: mining on, a flush
-// within the window, a probe that worked, nothing in intake, nothing in
-// the spool or its quarantine, no capture health, and an AS reporting
-// nothing at all for the epoch.
+// recordingEpoch is the epoch the AS reports as current throughout this
+// file's fixtures, and the one the search-epoch marker names when a
+// search is meant to have been recorded in the current epoch.
+const recordingEpoch = 900
+
+// suspiciousFacts is the exact state the advice is for: mining on, a
+// search recorded in the epoch the AS reports as current, a probe that
+// worked, nothing in intake, nothing in the spool or its quarantine, no
+// capture health, and an AS reporting nothing at all for the epoch.
 func suspiciousFacts() doctorFacts {
 	f := minerFacts("/fictional/tokendrop/intake")
 	f.Now = recordingNow
 	f.IntakeProbe = intakeProbeResult{Ran: true, Dir: f.IntakeDir}
-	f.Stamp = flushStamp{V: 1, LastFlush: recordingNow.Add(-time.Hour)}
+	f.Stamp = flushStamp{V: 1, LastFlush: recordingNow.Add(-time.Hour), TargetEpoch: recordingEpoch}
 	f.StampPresent = true
+	f.Epoch, f.EpochKnown = recordingEpoch, true
+	f.SearchEpoch, f.SearchEpochPresent = recordingEpoch, true
 	f.Activity = &auth.EpochActivity{}
 	return f
 }
@@ -446,18 +453,29 @@ func TestEachConditionAloneChangesTheRecordingVerdict(t *testing.T) {
 		undetermined bool
 	}{
 		{
-			name:         "stamp absent",
-			mutate:       func(f *doctorFacts) { f.StampPresent, f.Stamp = false, flushStamp{} },
+			name:         "no search ever recorded",
+			mutate:       func(f *doctorFacts) { f.SearchEpochPresent, f.SearchEpoch = false, 0 },
 			wantVerdict:  verdictOK,
 			wantContains: "no recent activity",
 		},
 		{
-			name: "stamp 24h+1s old",
-			mutate: func(f *doctorFacts) {
-				f.Stamp.LastFlush = recordingNow.Add(-recordingWindow - time.Second)
-			},
+			name:         "search recorded in a previous epoch",
+			mutate:       func(f *doctorFacts) { f.SearchEpoch = recordingEpoch - 1 },
 			wantVerdict:  verdictOK,
 			wantContains: "no recent activity",
+		},
+		{
+			name:         "current epoch unknown",
+			mutate:       func(f *doctorFacts) { f.EpochKnown = false },
+			wantVerdict:  verdictOK,
+			wantContains: "no recent activity",
+		},
+		{
+			name:         "unreadable search-epoch marker",
+			mutate:       func(f *doctorFacts) { f.SearchEpochErr = errors.New("permission denied") },
+			wantVerdict:  verdictUnknown,
+			wantContains: "the recorded-search marker could not be read",
+			undetermined: true,
 		},
 		{
 			name:         "stamp in the future",
@@ -597,30 +615,60 @@ func TestEachConditionAloneChangesTheRecordingVerdict(t *testing.T) {
 	}
 }
 
-// The window is inclusive at both ends and measured against f.Now, never
-// against the wall clock.
-func TestTheRecordingWindowIsMeasuredAgainstTheGatheredTime(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		offset time.Duration
-		recent bool
-	}{
-		{"just now", 0, true},
-		{"one second inside", -recordingWindow + time.Second, true},
-		{"exactly 24h", -recordingWindow, true},
-		{"one second outside", -recordingWindow - time.Second, false},
-		{"a week ago", -7 * 24 * time.Hour, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := suspiciousFacts()
-			f.Stamp.LastFlush = recordingNow.Add(tc.offset)
-			c := doctorRecordingCheck(f)
-			gotRecent := strings.Contains(c.Detail, "recent miner activity")
-			if gotRecent != tc.recent {
-				t.Errorf("recent=%v, want %v (detail %q)", gotRecent, tc.recent, c.Detail)
-			}
-		})
+// TestRecordingDistinguishesASearchInTheCurrentEpochFromAHookFlush is #63's
+// literal test list: bounding "recent" by the epoch the AS reports as
+// current, not a fixed span of wall-clock time, and by a search — never a
+// bare hook flush, which updates F's flush stamp identically — having
+// actually been recorded there.
+func TestRecordingDistinguishesASearchInTheCurrentEpochFromAHookFlush(t *testing.T) {
+	base := func() doctorFacts {
+		f := minerFacts("/fictional/tokendrop/intake")
+		f.Now = recordingNow
+		f.IntakeProbe = intakeProbeResult{Ran: true, Dir: f.IntakeDir}
+		f.Epoch, f.EpochKnown = recordingEpoch, true
+		return f
 	}
+
+	t.Run("flush-only window: a hook flush ran, no search", func(t *testing.T) {
+		f := base()
+		f.Stamp = flushStamp{V: 1, LastFlush: recordingNow.Add(-time.Minute), TargetEpoch: recordingEpoch}
+		f.StampPresent = true
+		// SearchEpochPresent stays false: a hook flush updates the flush
+		// stamp, never search.go's own recorded_epoch marker.
+		c := doctorRecordingCheck(f)
+		if c.Verdict != verdictOK || c.Detail != "no recent activity" {
+			t.Errorf("verdict %s / %q, want OK / \"no recent activity\"", c.Verdict, c.Detail)
+		}
+	})
+
+	t.Run("a search recorded this epoch, delivered and verified", func(t *testing.T) {
+		f := base()
+		f.SearchEpoch, f.SearchEpochPresent = recordingEpoch, true
+		f.Activity = &auth.EpochActivity{VerifiedObservationCount: 1}
+		c := doctorRecordingCheck(f)
+		if c.Verdict != verdictOK {
+			t.Errorf("verdict %s, want OK (%q)", c.Verdict, c.Detail)
+		}
+	})
+
+	t.Run("a search recorded this epoch, nothing queued, nothing verified", func(t *testing.T) {
+		f := base()
+		f.SearchEpoch, f.SearchEpochPresent = recordingEpoch, true
+		f.Activity = &auth.EpochActivity{}
+		c := doctorRecordingCheck(f)
+		if c.Verdict != verdictUnknown {
+			t.Errorf("verdict %s, want UNKNOWN (%q)", c.Verdict, c.Detail)
+		}
+	})
+
+	t.Run("a search in the previous epoch only", func(t *testing.T) {
+		f := base()
+		f.SearchEpoch, f.SearchEpochPresent = recordingEpoch-1, true
+		c := doctorRecordingCheck(f)
+		if c.Verdict != verdictOK || c.Detail != "no recent activity" {
+			t.Errorf("verdict %s / %q, want OK / \"no recent activity\"", c.Verdict, c.Detail)
+		}
+	})
 }
 
 // ── the gatherer wires the real readers to the real state ───────────────

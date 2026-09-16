@@ -443,6 +443,12 @@ func recordSearchForMining(ops searchOps, cfg *config.Config, out searchOutcome,
 		return finish()
 	}
 	snap.Recorded = true
+	// Best-effort, for doctor's own recording check only: the target epoch
+	// F's flush stamp holds right now, read-only (F owns that stamp).
+	// Never on the path above, which runs only when the search itself, or
+	// its own intake write, has already failed — this never turns a
+	// successful search into anything the participant sees fail.
+	recordSearchEpoch(cfg.Miner.IntakeDir, loadFlushStamp(flushStampPath(cfg.Mining), legacyFlushStampPath(cfg.Miner)).TargetEpoch)
 	if mstore != nil {
 		_ = mstore.ClearHealth(auth.HealthCapture)
 	}

@@ -145,6 +145,15 @@ type doctorFacts struct {
 	HasRegistration  bool
 	RegistrationSlot string
 	RegistrationAt   string
+	// PayoutHeld/HasPayoutHeld are connect's own read-before-declare note
+	// (store.LoadPayoutBindingHeld) — the same local fact status already
+	// reports (enroll.go's "payout: HELD ..." line). A read failure is
+	// treated as "no note on file", the same tolerance status itself uses:
+	// this is corroborating, not authoritative, evidence, so its absence
+	// or unreadability defers to whatever PayoutStanding itself says
+	// rather than becoming a check of its own.
+	PayoutHeld    auth.PayoutBindingHeld
+	HasPayoutHeld bool
 
 	MiningDecision    auth.MiningDecision
 	LocalStateKnown   bool
@@ -171,6 +180,15 @@ type doctorFacts struct {
 	SpoolCount      int
 	QuarantineCount int
 	SpoolErr        error
+	// SearchEpoch/SearchEpochPresent/SearchEpochErr are D's own evidence
+	// (search.go's recordSearchEpoch, read back by readSearchEpoch): the
+	// target epoch F's flush stamp held the moment a search — never a bare
+	// hook flush — was last recorded. Compared against Epoch, this is what
+	// tells recording a search in the current epoch from one that ran
+	// earlier, or from no search at all.
+	SearchEpoch        uint64
+	SearchEpochPresent bool
+	SearchEpochErr     error
 
 	// Wallet is who can read the installation's wallet, where the platform
 	// has access lists to ask (wallet_acl.go); elsewhere it is not checked and
@@ -338,6 +356,25 @@ func doctorEpochOrigin(f doctorFacts) string {
 
 func doctorPayoutCheck(f doctorFacts) doctorCheck {
 	c := doctorCheck{Name: "payout address"}
+	if f.HasPayoutHeld {
+		// The same local fact status already reports (enroll.go): connect
+		// declined to declare because the AS already has a different
+		// address active. Reporting it here does not need PayoutStanding
+		// to have answered this run at all — the hold is known locally,
+		// and an AS-reported Active in force this run would otherwise read
+		// as "your rewards go where you expect", which is exactly the
+		// claim a held binding makes false.
+		reason := f.PayoutHeld.HeldFor
+		if reason == "" {
+			reason = "REPLACES_ACTIVE" // this client's own read-before-declare pre-check, not an AS-returned reason
+		}
+		c.Verdict = verdictNo
+		c.Detail = fmt.Sprintf("HELD (%s) — the AS has %s active for this participant; this installation "+
+			"would declare %s. Changing the active binding is an operator-activated change.",
+			reason, f.PayoutHeld.Active, f.PayoutHeld.Local)
+		c.Fix = "a Slot operator must activate the change; no command here can"
+		return c
+	}
 	switch {
 	case f.DocErr != nil:
 		c.Verdict = verdictUnknown
@@ -626,6 +663,9 @@ func gatherDoctorFactsFor(ctx context.Context, as asClient, m config.Mining, min
 			f.HasRegistration, f.RegistrationSlot, f.RegistrationAt = true, reg.LastEnrollmentSlot, reg.LastEnrollmentAt
 		}
 		f.Health, f.HealthErr = store.HealthRecords()
+		if held, ok, err := store.LoadPayoutBindingHeld(); err == nil && ok {
+			f.PayoutHeld, f.HasPayoutHeld = held, true
+		}
 	}
 
 	// The miner half. The probe is the one write doctor performs, and it
@@ -636,6 +676,7 @@ func gatherDoctorFactsFor(ctx context.Context, as asClient, m config.Mining, min
 		f.IntakeCount, f.IntakeErr = countIntakeJSON(miner.IntakeDir)
 		f.Stamp, f.StampPresent, f.StampErr = doctorFlushStamp(flushStampPath(m), legacyFlushStampPath(miner))
 		f.SpoolCount, f.QuarantineCount, f.SpoolErr = countSpool(m.SpoolDir)
+		f.SearchEpoch, f.SearchEpochPresent, f.SearchEpochErr = readSearchEpoch(miner.IntakeDir)
 	}
 
 	f.Doc, f.DocErr = as.ServiceDocument(ctx)
@@ -1042,9 +1083,6 @@ func countIntakeJSON(dir string) (int, error) {
 	return n, nil
 }
 
-// recordingWindow is how far back a flush stamp still counts as recent.
-const recordingWindow = 24 * time.Hour
-
 // doctorRecordingCheck is a heuristic and says so in its own wording.
 //
 // It never returns NO. Every input it reads is circumstantial — a flush
@@ -1053,6 +1091,15 @@ const recordingWindow = 24 * time.Hour
 // verdict of NO would assert a fault this evidence cannot establish. The
 // suspicious combination gets UNKNOWN with advice, which is the honest
 // shape: something here does not add up, here is the one thing to check.
+//
+// "Recent" is bounded by the epoch the AS reports as current (f.Epoch),
+// never by a fixed span of wall-clock time: a hook flush and a search both
+// touch F's flush stamp, so a window over LastFlush cannot tell them
+// apart, and it is not the flush stamp doctor keys "recent" on at all —
+// only D's own SearchEpoch marker (search.go), which only a successful
+// search ever writes. SearchEpoch can lag the true current target between
+// flushes; that only ever costs an OK where UNKNOWN was warranted, never
+// the reverse, the direction a check that never says NO may err in.
 //
 // Every input distinguishes absent from unreadable, and an unreadable one
 // produces "could not determine — <reason>" rather than being folded into
@@ -1085,9 +1132,11 @@ func doctorRecordingCheck(f doctorFacts) doctorCheck {
 		return undetermined(fmt.Sprintf("the intake directory could not be read: %v", redact.Error(f.IntakeErr)))
 	case f.SpoolErr != nil:
 		return undetermined(fmt.Sprintf("the spool could not be read: %v", redact.Error(f.SpoolErr)))
+	case f.SearchEpochErr != nil:
+		return undetermined(fmt.Sprintf("the recorded-search marker could not be read: %v", redact.Error(f.SearchEpochErr)))
 	case f.StampPresent && f.Stamp.LastFlush.After(f.Now):
-		// Never "recent": a clock that disagrees with the stamp makes
-		// every window comparison below meaningless.
+		// A clock that disagrees with the stamp makes anything else this
+		// check reads from local state suspect too.
 		return undetermined("the flush stamp is in the future")
 	case f.IntakeProbe.ParentMissing:
 		return undetermined("intake writability was not tested; see intake writable")
@@ -1118,15 +1167,19 @@ func doctorRecordingCheck(f doctorFacts) doctorCheck {
 		return c
 	}
 
-	// With nothing recorded, the question is whether anything ran.
-	if !f.StampPresent || f.Stamp.LastFlush.Before(f.Now.Add(-recordingWindow)) {
+	// With nothing recorded, the question is whether a search — not a
+	// hook flush — ran in the epoch that is current now. An epoch that
+	// cannot be compared (unknown, or SearchEpoch absent or naming a
+	// different one) is "no recent activity", the same OK a hook-flush-
+	// only window already got before this check existed.
+	if !f.SearchEpochPresent || !f.EpochKnown || f.SearchEpoch != f.Epoch {
 		c.Verdict = verdictOK
 		c.Detail = "no recent activity"
 		return c
 	}
 
-	// Something ran, and nothing local shows for it. The AS is the last
-	// place a recorded observation could be.
+	// A search recorded in the current epoch, and nothing local shows for
+	// it. The AS is the last place it could be.
 	if f.ActivityErr != nil || f.Activity == nil {
 		return undetermined("the AS did not report this epoch's activity")
 	}
