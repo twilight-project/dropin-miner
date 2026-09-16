@@ -195,6 +195,20 @@ func withSkillPlaceholder(g goldenPlan) goldenPlan {
 			g.Writes[i].Content = "<SKILL.md, rendered for this OS; see testdata/hosts/*.golden>"
 		}
 	}
+	// The same applies to the two notes that carry rendered text: opencode's
+	// AGENTS.md line is the search command for its shell, and the
+	// shell-not-established line exists only on the OS where a cell is
+	// unknown. Both are per-OS by design and both have their own guards —
+	// the host goldens for the first, TestUnknownToolCellKeepsTheBashForm
+	// for the second.
+	for i, n := range g.Notes {
+		switch {
+		case strings.Contains(n, "add to AGENTS.md"):
+			g.Notes[i] = "<AGENTS.md rules line, rendered for this OS>"
+		case strings.Contains(n, "is not established"):
+			g.Notes[i] = "<the shell is not established for this host on this OS>"
+		}
+	}
 	return g
 }
 

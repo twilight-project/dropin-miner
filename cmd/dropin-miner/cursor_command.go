@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -68,6 +69,9 @@ func recognizeCursorCommand(command string, executable func() (string, error), c
 			if !sameBinary(got.bin, executable) {
 				continue
 			}
+			if cfg != "" && !samePath(unquoteRendered(got.cfg, candidate.text), cfg) {
+				continue
+			}
 			if candidate.wantsBody {
 				if !isOneVersionOneRequest(got.body) {
 					continue
@@ -90,22 +94,38 @@ type renderedCommand struct {
 	wantsBody bool
 }
 
-// binPlaceholder marks the binary path inside a rendered form.
-const binPlaceholder = "\x00BINARY\x00"
+// binPlaceholder and cfgPlaceholder mark the two paths inside a rendered
+// form. Both are compared as paths; every other byte is compared as itself.
+const (
+	binPlaceholder = "\x00BINARY\x00"
+	cfgPlaceholder = "\x00CONFIG\x00"
+)
+
+// samePath reports whether two spellings name the same file, without asking
+// the filesystem: the separators are normalized, and on Windows the
+// comparison is case-insensitive as the platform itself is.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
 
 // renderedCursorCommands is every command Cursor may auto-allow, rendered
 // for one shell, with the binary path and request body as placeholders.
 //
-// The config path is cleaned first. The hook learns it from its own argv,
-// and the host's hook command may spell it differently from the skill's —
-// on Windows a `%q`-quoted hook command hands the process `C:\\Users\\…`,
-// doubled separators and all, which names the same file but is not the same
-// bytes. A path is compared as a path; everything else is compared exactly.
+// The config path stands as a placeholder, like the binary, and is compared
+// as a path rather than as bytes: the hook learns its config from its own
+// argv, and the host's hook command may spell it differently from the
+// skill's — on Windows a `%q`-quoted hook command hands the process
+// `C:\\Users\\…`, doubled separators and all, naming the same file in other
+// bytes. Everything outside the placeholders is still compared exactly.
 func renderedCursorCommands(cfg string, sh shellKind) []renderedCommand {
+	entry := binEntry{command: binPlaceholder}
 	if cfg != "" {
-		cfg = filepath.Clean(cfg)
+		entry.cfg = cfgPlaceholder
 	}
-	entry := binEntry{command: binPlaceholder, cfg: cfg}
 	var out []renderedCommand
 	if _, script, err := searchBlockForShell(sh, entry, bodyPlaceholder); err == nil {
 		out = append(out, renderedCommand{text: script, path: []string{"search"}, wantsBody: true})
@@ -122,6 +142,7 @@ func renderedCursorCommands(cfg string, sh shellKind) []renderedCommand {
 // names, and the body it carried.
 type matched struct {
 	bin  string
+	cfg  string
 	body string
 }
 
@@ -137,10 +158,13 @@ type formPart struct {
 func splitForm(text string) []formPart {
 	var parts []formPart
 	for text != "" {
-		bin, body := strings.Index(text, binPlaceholder), strings.Index(text, bodyPlaceholder)
-		next, marker, width := bin, binPlaceholder, len(binPlaceholder)
-		if bin < 0 || (body >= 0 && body < bin) {
-			next, marker, width = body, bodyPlaceholder, len(bodyPlaceholder)
+		next, marker, width := -1, "", 0
+		for _, candidate := range []string{binPlaceholder, cfgPlaceholder, bodyPlaceholder} {
+			at := strings.Index(text, candidate)
+			if at < 0 || (next >= 0 && at > next) {
+				continue
+			}
+			next, marker, width = at, candidate, len(candidate)
 		}
 		if next < 0 {
 			parts = append(parts, formPart{literal: text})
@@ -189,6 +213,8 @@ func matchRendered(command string, form renderedCommand) (matched, bool) {
 		switch part.marker {
 		case binPlaceholder:
 			got.bin = value
+		case cfgPlaceholder:
+			got.cfg = value
 		case bodyPlaceholder:
 			got.body = value
 		}
@@ -196,22 +222,19 @@ func matchRendered(command string, form renderedCommand) (matched, bool) {
 	if rest != "" || got.bin == "" {
 		return matched{}, false
 	}
-	bin, ok := unquotePathToken(got.bin, form.text)
-	if !ok {
-		return matched{}, false
-	}
-	got.bin = bin
+	got.bin = unquoteRendered(got.bin, form.text)
 	return got, true
 }
 
-// unquotePathToken reverses the quoting a renderer applied to a path. The
-// form's own text says which shell wrote it: a PowerShell command carries the
-// call operator, a POSIX one does not.
-func unquotePathToken(raw, form string) (string, bool) {
-	if strings.Contains(form, "'@ | & ") {
-		return strings.ReplaceAll(raw, "''", "'"), true
+// unquoteRendered reverses the quoting a renderer applied to a path. The
+// form's own text says which shell wrote it: a PowerShell command carries
+// the call operator, a POSIX one does not.
+func unquoteRendered(raw, form string) string {
+	if strings.Contains(form, "& "+cfgPlaceholder) || strings.Contains(form, "& "+binPlaceholder) ||
+		strings.Contains(form, "& '") {
+		return strings.ReplaceAll(raw, "''", "'")
 	}
-	return strings.ReplaceAll(raw, `'\''`, "'"), true
+	return strings.ReplaceAll(raw, `'\''`, "'")
 }
 
 // sameBinary is the identity check: the command's own path, resolved, is the
