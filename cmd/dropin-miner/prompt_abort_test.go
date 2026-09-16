@@ -408,6 +408,72 @@ func TestAnInterruptAtTheWalletSendConfirmationSignsNothing(t *testing.T) {
 	})
 }
 
+// ── a line without a newline is still a line ────────────────────────────
+
+// answerOrAbort aborts only when NO byte of an answer arrived. Bytes that
+// did arrive are an answer even with no newline behind them, because a
+// pipe — `printf y | dropin-miner agents install` — ends exactly that
+// way, and the alternative reading would turn every such caller's answer
+// into an abort. The clause is invisible in the interrupt cases above
+// (they deliver no bytes at all), so it is asserted here, on both
+// readers, in both directions.
+func TestAPipedAnswerWithoutATrailingNewlineIsStillAnAnswer(t *testing.T) {
+	t.Run("agents install proceeds on a bare y", func(t *testing.T) {
+		m, ops := newFakeMachine("claude")
+		m.terminal = true
+		before := len(m.files)
+		var out, errOut bytes.Buffer
+		code := agentsMain(ops, []string{"install", "-config", testCfg}, strings.NewReader("y"), &out, &errOut, envOf(nil))
+		if code != exitOK {
+			t.Fatalf("a bare y exited %d\n%s\n%s", code, out.String(), errOut.String())
+		}
+		if len(m.files) == before {
+			t.Fatalf("a bare y wrote nothing:\n%s", out.String())
+		}
+	})
+
+	t.Run("agents install declines on a bare n", func(t *testing.T) {
+		m, ops := newFakeMachine("claude")
+		m.terminal = true
+		before := len(m.files)
+		var out, errOut bytes.Buffer
+		code := agentsMain(ops, []string{"install", "-config", testCfg}, strings.NewReader("n"), &out, &errOut, envOf(nil))
+		if code != exitOK {
+			t.Fatalf("a bare n exited %d; a declined answer is not an aborted one\n%s\n%s", code, out.String(), errOut.String())
+		}
+		if len(m.files) != before {
+			t.Fatalf("a bare n wrote %d file(s)", len(m.files)-before)
+		}
+		if strings.Contains(errOut.String(), promptAbortedReason) {
+			t.Fatalf("a bare n was read as an unanswered question:\n%s", errOut.String())
+		}
+	})
+
+	t.Run("uninstall removes on a bare y", func(t *testing.T) {
+		s := installed(t)
+		code, out, errOut := s.uninstall(t, strings.NewReader("y"), true, nil)
+		if code != exitOK {
+			t.Fatalf("a bare y exited %d\n%s\n%s", code, out, errOut)
+		}
+		if lexists(s.paths().claudeSkill) {
+			t.Fatalf("a bare y removed nothing:\n%s", out)
+		}
+	})
+
+	t.Run("uninstall declines on a bare n", func(t *testing.T) {
+		s := installed(t)
+		before := snapshotTree(t, s.root)
+		code, out, errOut := s.uninstall(t, strings.NewReader("n"), true, nil)
+		if code != exitOK {
+			t.Fatalf("a bare n exited %d; a declined uninstall is not an aborted one\n%s\n%s", code, out, errOut)
+		}
+		if strings.Contains(errOut, promptAbortedReason) {
+			t.Fatalf("a bare n was read as an unanswered question:\n%s", errOut)
+		}
+		assertUnchanged(t, before, snapshotTree(t, s.root))
+	})
+}
+
 // ── -yes answers what it always answered, and nothing more ──────────────
 
 // -yes answers setup's own questions without reading stdin at all, so a
