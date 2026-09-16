@@ -60,11 +60,15 @@ below still applies first.
   search made through its PowerShell tool on Windows still prompts once:
   no permission rule is written for it yet.
 
-- **Claude Code: search history travels again.** A skill's own injected
-  text was mistaken for a new user turn, which floored the scan for the
-  assistant's sentence one step too late and left every search made
-  through the skill without the conversation text that led to it. That
-  text reaches the router again, as it did before.
+- **Claude Code: earlier assistant text reaches the router with a
+  search.** A skill's own injected text was mistaken for a new user turn,
+  which floored the scan for the assistant's sentence one step too late
+  and left every search made through the skill without it. The assistant
+  text from an earlier message in the same turn now reaches the router
+  with the search again. Text written in the same message as the search
+  itself still does not: Claude Code writes that message's own entry
+  after the hook runs, so there is nothing yet to read it from (#93,
+  0.2.11).
 
 - **Codex: the flush a search starts now runs inside the sandbox.** The
   flush lock stays at its one existing location for every binary, but a
@@ -119,7 +123,8 @@ below still applies first.
 - **Deferred to 0.2.11.** Documentation and status: #60, #62, #75. Cursor
   detection and the Claude Code PowerShell rule: #61, #77. Lifecycle
   defects from the Windows validation: #73, #81, #82, #83, #84, #85, #86,
-  #87, #88. The transient Windows upgrade sharing violation: #78.
+  #87, #88. The transient Windows upgrade sharing violation: #78. Trace
+  lineage defects found after this cut: #91, #93.
 
 - **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
   exercise of the replacement transaction, stated in v0.2.9, still has not
