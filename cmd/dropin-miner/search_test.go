@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 type fakeRouter struct {
@@ -167,6 +168,36 @@ func TestSearchPostsToTheRouterPrintsVerbatimAndRecordsIntake(t *testing.T) {
 	}
 	if len(h.flushes) != 1 || h.flushes[0] != cfg {
 		t.Errorf("a flush was not started after the search: %v", h.flushes)
+	}
+}
+
+// TestSearchRecordsTheEpochItsOwnFlushStampHeld guards D.3's own evidence
+// write: after a successful search, search.go's own best-effort marker
+// (recordSearchEpoch) names the target epoch F's flush stamp already
+// held — read-only, F owns that stamp — at the moment the search
+// recorded, so doctor's recording check can later tell this epoch from
+// the one the AS reports as current.
+func TestSearchRecordsTheEpochItsOwnFlushStampHeld(t *testing.T) {
+	_, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "01a03e86-fictional")
+		_, _ = w.Write([]byte(routerBody))
+	})
+	stateDir := filepath.Join(root, "state")
+	if err := writeFlushStamp(flushStampPath(config.Mining{StateDir: stateDir}), flushStamp{TargetEpoch: 900}); err != nil {
+		t.Fatal(err)
+	}
+	h := fixedSearchOps(root)
+	code, _, errOut := runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "sr-fictional"},
+		"-config", cfg, "how", "do", "ports", "work")
+	if code != exitOK {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	epoch, present, err := readSearchEpoch(filepath.Join(root, "intake"))
+	if err != nil || !present {
+		t.Fatalf("search epoch: present=%v err=%v", present, err)
+	}
+	if epoch != 900 {
+		t.Errorf("recorded epoch %d, want 900", epoch)
 	}
 }
 

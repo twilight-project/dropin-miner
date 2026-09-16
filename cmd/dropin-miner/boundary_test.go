@@ -192,6 +192,156 @@ func isHTTPClientLiteral(e ast.Expr) bool {
 	return ok && pkg.Name == "http" && sel.Sel.Name == "Client"
 }
 
+// EVERY http.Transport IN NON-TEST CODE DIALS THROUGH internal/netdial'S SHARED SEAM.
+//
+// internal/networkfence's Guard (called from every package's TestMain that
+// builds a network client) reassigns internal/netdial.Hook for the
+// duration of a test run. Every Transport this module builds reaches that
+// hook only by setting its own DialContext field to netdial.For(itsOwnDialer)
+// — one built with its own net.Dialer instead, or with DialContext left
+// unset, is invisible to it.
+//
+// A DialContext field is set two ways in this module: inline, inside an
+// &http.Transport{...} composite literal (pkg/auth's two, wallet_tx.go's),
+// or as a separate assignment after http.DefaultTransport.Clone() (the
+// login probe and the search client, via client.go's shared
+// cloneDefaultTransport; pkg/platform's client; internal/selfupdate's
+// source) — Clone() itself produces no composite literal to inspect, so
+// this sweep has to catch both an *ast.KeyValueExpr with key DialContext
+// and an *ast.AssignStmt whose left side is some value's .DialContext
+// field, and require the same thing of either: the value assigned is
+// exactly netdial.For(...), a call, never netdial.Hook (or any other name)
+// named directly.
+//
+// "Named directly" is not a hypothetical failure mode: D1c found that
+// naming a package variable directly in a Transport literal
+// (DialContext: someVar) copies whatever function value the variable held
+// at that Transport's construction time into the struct field permanently.
+// Every package-level Transport var in this module (constructed once, at
+// init, before any TestMain ever runs) was built that way for one commit
+// and was never actually reachable by the fence at all; it looked covered
+// only because of an unrelated proxy-environment masking bug producing the
+// same symptom for a different reason. internal/netdial's own
+// TestForObservesAHookInstalledAfterConstruction guards the mechanism this
+// sweep exists to make every call site use correctly.
+func TestEveryHTTPTransportDialsThroughTheSharedSeam(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	checked := 0
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "bin", "dist", "testdata", "node_modules":
+				return filepath.SkipDir
+			case "networkfence":
+				// internal/networkfence is test-only infrastructure (its
+				// own doc comment: "no production code anywhere in this
+				// module imports it") and its own DialContext field
+				// assignments are test comparison plumbing
+				// (AssertTransportFieldsMatch nils both sides' DialContext
+				// before comparing them), not a client this sweep needs to
+				// prove is fenced.
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, perr := parser.ParseFile(fset, path, nil, 0)
+		if perr != nil {
+			return fmt.Errorf("parse %s: %w", path, perr)
+		}
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		local := netdialLocalName(file)
+		fail := func(pos token.Pos) {
+			t.Errorf("%s:%d: DialContext is not set to netdial.For(...) — "+
+				"internal/networkfence's test fence cannot reach a client built from this.\n"+
+				"  Name the seam explicitly (netdial.For(itsOwnDialer)), the way every other "+
+				"Transport in the module does.",
+				rel, fset.Position(pos).Line)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.KeyValueExpr:
+				id, ok := node.Key.(*ast.Ident)
+				if !ok || id.Name != "DialContext" {
+					return true
+				}
+				checked++
+				if !isNetdialFor(node.Value, local) {
+					fail(node.Pos())
+				}
+			case *ast.AssignStmt:
+				for i, lhs := range node.Lhs {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "DialContext" {
+						continue
+					}
+					checked++
+					if i >= len(node.Rhs) || !isNetdialFor(node.Rhs[i], local) {
+						fail(node.Pos())
+					}
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked == 0 {
+		t.Fatal("no DialContext field was set anywhere in the module; this test is no longer looking at anything")
+	}
+	t.Logf("checked %d DialContext assignment(s) module-wide", checked)
+}
+
+// netdialImportPath is internal/netdial's import path, quoted exactly as
+// go/ast represents an ImportSpec's Path.Value.
+const netdialImportPath = `"github.com/twilight-project/dropin-miner/internal/netdial"`
+
+// netdialLocalName returns the identifier file uses to refer to
+// internal/netdial — its import alias if it has one, else the package's
+// own name "netdial" — or "" if the file does not import it at all.
+func netdialLocalName(file *ast.File) string {
+	for _, imp := range file.Imports {
+		if imp.Path.Value != netdialImportPath {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		return "netdial"
+	}
+	return ""
+}
+
+// isNetdialFor reports whether e is exactly netdialLocal.For(...) — a call,
+// on the file's own import of internal/netdial, to the function named For.
+// Anything else (a bare identifier, a different function, a call to
+// something else entirely) does not count.
+func isNetdialFor(e ast.Expr, netdialLocal string) bool {
+	if netdialLocal == "" {
+		return false
+	}
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "For" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == netdialLocal
+}
+
 // TestConnectAndMiningNeverImportOSExec is invariant 11 (agent
 // onboarding design §6): the client never launches a process from the
 // connect path — the claim URL is printed, never opened. Scoped to

@@ -160,8 +160,13 @@ spool_dir = "` + filepath.ToSlash(filepath.Join(root, "spool")) + `"
 	if afterJSON > afterText {
 		t.Errorf("the JSON report made %d AS calls, the text report made %d", afterJSON, afterText)
 	}
-	if !strings.HasPrefix(text.String(), "  mining") {
+	// Ruling D-R1: doctor now names the config it resolved before anything
+	// else, so the report starts with that line, then the checks.
+	if !strings.HasPrefix(text.String(), "config:  "+cfgPath+"\n") {
 		t.Errorf("the text report changed shape: %q", text.String())
+	}
+	if !strings.Contains(text.String(), "\n  mining") {
+		t.Errorf("the text report is missing the mining line: %q", text.String())
 	}
 	decodeCommandEnvelope(t, jsonOut.String(), "doctor")
 }

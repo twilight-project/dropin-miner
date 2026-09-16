@@ -803,13 +803,42 @@ func (r *uninstallRun) purgeSet() (inside, outside []string) {
 			}
 		}
 	}
+	flushLock := r.predictedFlushLockPath()
 	for _, p := range append(first, last...) {
-		if lexists(p) {
+		if lexists(p) || (p == flushLock && flushLock != "" && lockableDir(flushLock)) {
 			inside = append(inside, p)
 		}
 	}
 	sort.Strings(outside)
 	return inside, outside
+}
+
+// predictedFlushLockPath is the flush lock a real -purge-state run's own
+// lifecycle exclusion (excludeLifecycle, lifecycle.go) tries to hold before
+// this plan is ever computed, resolved the same way excludeLifecycle
+// itself resolves it: through operationLockPaths, not a hand-rolled
+// re-reading of r.cfg. That matters beyond staying in sync with a single
+// source of truth — a config that loads but names no miner.intake_dir (no
+// [miner] block at all, or a bare proxy config) makes operationLockPaths
+// return "" for the flush lock, meaning the exclusion takes no lock at
+// all; treating a nil r.cfg and an r.cfg with no intake dir the same way,
+// as an earlier version of this function did, wrongly predicted
+// home/flush.lock for the latter too. Holding the resolved lock opens the
+// file with O_CREATE (tryLockFile, minerlock_*.go), so an absent lock the
+// exclusion can still take is created as a side effect of a real run, not
+// left for purgeSet to find. The exclusion is skipped on a dry run (its
+// own O_CREATE would itself be an undisclosed write), so this predicts the
+// same outcome instead of reading a file that a dry run never gave the
+// chance to appear. "" means operationLockPaths could not resolve one at
+// all (a config that exists but fails to load) — a purge refuses before
+// ever reaching this on that ground (see the case r.purge branch in run()),
+// so there is no real run's outcome left to predict.
+func (r *uninstallRun) predictedFlushLockPath() string {
+	_, flushLock, err := operationLockPaths(r.home, r.d.getenv)
+	if err != nil {
+		return ""
+	}
+	return flushLock
 }
 
 // configuredPath is one participant path the config names or derives.

@@ -13,6 +13,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/twilight-project/dropin-miner/pkg/config"
 )
 
 // setupTargets resolves the run's selection. explicit is true when -with
@@ -98,7 +100,21 @@ func (r *setupRun) agentsStep() {
 
 	r.printf("%s\n", agentsParagraph())
 	entry := binEntry{command: r.exe, cfg: r.cfgPath}
+	if r.dry && len(r.configPlanData) > 0 {
+		// config() printed what it would write (fresh) or add (migrated)
+		// but never published it, so there is nothing at r.cfgPath yet —
+		// or nothing with those additions yet — for codexSandboxRoots' own
+		// disk read to find. Parse the bytes it would have published
+		// instead, through the config package itself, so this sees exactly
+		// what the real run's own disk read would.
+		if rendered, err := config.LoadBytes(r.configPlanData, r.d.getenv); err == nil {
+			entry.rendered = rendered
+		}
+	}
 	plan := buildInstallPlan(ops, paths, selected, entry, r.d.getenv)
+	if r.d.agentPlanObserver != nil {
+		r.d.agentPlanObserver(plan)
+	}
 	if r.explicitTargets {
 		r.printf("Setting up (named with -with): %s\n", strings.Join(labels(selected), ", "))
 	} else {

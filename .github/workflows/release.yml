@@ -197,13 +197,19 @@ jobs:
     name: publish to npm
     needs: [preflight, verify-release]
     runs-on: ubuntu-latest
-    # The credential boundary. NPM_TOKEN lives in this environment and
-    # nowhere else, so it is handed only to a job that declares the
-    # environment and satisfies its protection rules — which is also what
-    # makes the boundary survive a workflow file that tried to drop the
-    # ancestry check, since such a file would not be given the token
-    # either. See docs/RELEASING.md.
+    # The credential boundary. Publishing authenticates through npm's
+    # OIDC trusted-publishing flow — id-token: write below is what lets
+    # this job mint that token, and there is no long-lived npm secret to
+    # scope. The environment and its protection rules are what still
+    # restrict which job can claim the id-token as this package's
+    # publisher — which is also what makes the boundary survive a
+    # workflow file that tried to drop the ancestry check, since such a
+    # file would not be given the environment either. See
+    # docs/RELEASING.md.
     environment: release
+    permissions:
+      id-token: write
+      contents: read
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
     steps:
@@ -219,7 +225,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
 
       # npm versions are immutable, so a rerun must find out whether this
       # one is already there before trying. "Already there" is not by
@@ -266,22 +271,28 @@ jobs:
           rm -rf "$tmp"
           echo "The published ${VERSION} matches npm/ at this tag; publication is already done."
 
+      # trusted publishing and --provenance need >= 11.5.1;
+      # actions/setup-node's bundled npm can be older than that
+      # depending on the Node release, so it is upgraded explicitly
+      # rather than assumed.
+      - name: Ensure npm >= 11.5.1 for trusted publishing
+        if: steps.registry.outputs.published == 'false'
+        run: npm install -g npm@12.0.2
+
       # The version published is the one already committed at the tag.
       # Nothing here bumps a version, commits, or pushes: the release PR
       # put the number in the commit before the tag existed, and
       # preflight has already checked that it did.
       #
       # --ignore-scripts so publishing never executes a lifecycle script
-      # from the package while the credential is in the environment; the
+      # from the package while the OIDC-issued credential is live; the
       # package's own postinstall still ships and still runs for whoever
-      # installs it.
+      # installs it. --provenance attests the published package back to
+      # this workflow run and commit, using the id-token permission
+      # above instead of a stored NPM_TOKEN.
       - name: npm publish
         if: steps.registry.outputs.published == 'false'
-        env:
-          # Read by the .npmrc actions/setup-node wrote. The token is
-          # never an argument and is never echoed.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish ./npm --access public --ignore-scripts
+        run: npm publish ./npm --access public --ignore-scripts --provenance
 
   smoke-npm:
     name: clean install (${{ matrix.os }})
