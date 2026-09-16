@@ -354,6 +354,16 @@ each line names the file that owns the rule and the test that proves it.
   `Co-Authored-By` or `Claude-Session` trailers**, as of this file existing — a handful of commits from
   before it did (the earliest pkg/ resync work) still carry them under the attribution convention active
   at the time. Not rewritten retroactively; not a license to add more.
+- **An issue body has a shape**, the one every issue since #62 uses, because a defect is read by
+  whoever fixes it months later: provenance first (where it was seen — the soak and its condition,
+  the platform, the version or the CI run and head), then `**What happened.**` with the evidence in
+  a fenced block and the code named (`flushStampPath`, `miner.go`), `**Likely cause.**` where there
+  is one, `**Why it matters.**` in the participant's terms, and `**Expected.**`, which is what the
+  fixer implements against. It closes with `Severity:` — `cosmetic`, `minor` or `must-fix` — and the
+  path it is on, because that is what triage sorts by. The GitHub forms ask for the same things in
+  the same order for someone filing from a browser; `gh issue create` renders no form, so an issue
+  filed that way carries the shape by hand and passes `--label bug` or `--label enhancement`, which
+  the form would otherwise have applied. #64 is the worked example; #78 was rewritten into it.
 - The flow, as actually practised since #10: bug and feature work starts from an issue where one
   applies — release-only work and documentation maintenance need not invent one; branch from
   canonical `upstream/main` as it stands, never from an unmerged branch; open a PR with the

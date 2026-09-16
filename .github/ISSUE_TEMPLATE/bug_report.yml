@@ -1,16 +1,26 @@
 name: Bug report
 description: Report a defect in dropin-miner (not a security vulnerability)
-labels: ["bug", "triage"]
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
         **Do not report security vulnerabilities here** — contact the maintainer privately rather than filing a public issue.
+
+        These fields are the shape every issue in this tracker uses (#64 is a worked example), so a report filed here reads like the rest of them. "Likely cause", "Why it matters" and "Logs" are optional — a report without them is still worth filing.
+  - type: input
+    id: provenance
+    attributes:
+      label: Where it was seen (platform, version, run)
+      description: The machine and the build, so the report can be placed later. Include `dropin-miner version` or the commit, your OS, and the agent and its version where one is involved; for a CI failure, the run id and head.
+      placeholder: "macOS arm64, v0.2.9, Codex CLI 0.154.0, native install — or: main, run 35018806007 (test (windows-latest), head bc9534c)"
+    validations:
+      required: true
   - type: textarea
     id: what-happened
     attributes:
       label: What happened?
-      description: A clear description of the bug and its impact.
+      description: What you did and what the tool did instead, with the evidence. Name the command or the failing test; paste output under "Logs" below.
       placeholder: Describe the unexpected behavior.
     validations:
       required: true
@@ -18,7 +28,7 @@ body:
     id: repro
     attributes:
       label: Steps to reproduce
-      description: Commands, a config snippet, or a failing test that triggers it.
+      description: Commands, a config snippet, or a failing test that triggers it. If it happened once and you cannot reproduce it, say so and give the run.
       placeholder: |
         1. ...
         2. ...
@@ -28,15 +38,19 @@ body:
     id: expected
     attributes:
       label: Expected behavior
+      description: What should happen instead. This is what a fix is implemented against, so be as concrete as you can.
     validations:
       required: true
-  - type: input
-    id: version
+  - type: textarea
+    id: cause
     attributes:
-      label: Version / commit
-      description: Output of `dropin-miner version`, or the git commit/branch.
-    validations:
-      required: true
+      label: Likely cause
+      description: Optional. If you have read the code, name the file or function and say what you think it is doing. A guess marked as a guess is useful; a guess presented as a finding is not.
+  - type: textarea
+    id: why-it-matters
+    attributes:
+      label: Why it matters
+      description: Optional. What a participant loses when this happens — searches that earn nothing, a claim never picked up, a misleading report.
   - type: dropdown
     id: area
     attributes:
@@ -51,6 +65,18 @@ body:
         - uninstall / upgrade
         - agents (skill/hook install for coding agents)
         - doctor / status / earnings
+        - unsure
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How much it costs a participant. "Must-fix" means the main path — a participant on it earns nothing, loses custody of something, or is told something false about their own setup.
+      options:
+        - cosmetic — wrong or confusing wording, nothing behaves incorrectly
+        - minor — a real defect off the main path, or one with a workaround
+        - must-fix — the main path is broken, custody is at risk, or a report is false
         - unsure
     validations:
       required: true
