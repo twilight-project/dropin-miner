@@ -639,8 +639,7 @@ func attributeRemoved(ops agentOps, removes []string, ref installationRef, windo
 	sawAny := false
 	for _, path := range removes {
 		for _, content := range readRemoved(ops, path) {
-			bins := namedBinaries(content)
-			cfgs := namedConfigs(content)
+			bins, cfgs := namedInArtifact(content)
 			if len(bins) == 0 && len(cfgs) == 0 {
 				continue
 			}
@@ -661,6 +660,63 @@ func attributeRemoved(ops agentOps, removes []string, ref installationRef, windo
 		return attributionForeign, "another installation"
 	}
 	return attributionUnknown, ""
+}
+
+// namedInArtifact is the one place that decides HOW an installed artifact is
+// read: a JSON file is decoded and its strings are read as the rendered
+// commands they are; anything else — a skill, a JavaScript adapter, Hermes'
+// YAML — is scanned as the rendered text it is.
+//
+// The distinction belongs in one function because leaving it implicit has now
+// cost three defects of one shape. A hook file is JSON, so a command inside it
+// is escaped twice: the shell quoting first, then JSON's. On POSIX nothing in
+// a path needs escaping and a byte scan reads correctly by luck; on Windows a
+// cmd-rendered path is `"C:\Users\…"` and the file holds
+// `\"C:\\Users\\…\"`, which no reader of rendered text can make sense of.
+// Every one of those three read correctly on POSIX and wrongly on Windows,
+// and every one was found by the Windows runners rather than by us.
+//
+// Nothing here has to know which artifact it is looking at: a file that
+// decodes as a JSON object is decoded, and one that does not is scanned.
+func namedInArtifact(content string) (bins, cfgs []string) {
+	m, err := decodeJSONObject([]byte(content))
+	if err != nil {
+		return namedBinaries(content), namedConfigs(content)
+	}
+	for _, s := range jsonStringLeaves(m) {
+		bins = append(bins, namedBinaries(s)...)
+		cfgs = append(cfgs, namedConfigs(s)...)
+	}
+	return bins, cfgs
+}
+
+// jsonStringLeaves is every string in a decoded JSON value. A hook entry's
+// command may sit at any depth — Claude Code nests its under a matcher group,
+// Cursor's is a top-level field — and which is which is the host's business,
+// not this reader's.
+func jsonStringLeaves(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		var out []string
+		for _, e := range t {
+			out = append(out, jsonStringLeaves(e)...)
+		}
+		return out
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // stable order, so a report names the same thing twice running
+		var out []string
+		for _, k := range keys {
+			out = append(out, jsonStringLeaves(t[k])...)
+		}
+		return out
+	}
+	return nil
 }
 
 // namedBinaries and namedConfigs both read a rendered path back through

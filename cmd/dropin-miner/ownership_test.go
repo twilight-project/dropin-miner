@@ -13,6 +13,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -323,6 +324,54 @@ func TestARenderedPathIsReadBackWhicheverShellQuotedIt(t *testing.T) {
 	}
 }
 
+// TestAJSONArtifactIsDecodedNotScanned is the Windows failure itself, made
+// reproducible on any runner.
+//
+// A hook file is JSON, so a command inside it carries two layers of escaping:
+// the shell's, then JSON's. On Windows Cursor's hook command is cmd-rendered
+// — `"C:\Users\…"`, double quotes taken literally — and once JSON has escaped
+// it the file holds `\"C:\\Users\\…\"`. A reader of rendered TEXT cannot make
+// sense of that: it was read as a lone backslash, so the file named no
+// installation and uninstall judged it unattributable. On POSIX the same
+// reader was right, because nothing in those paths needs escaping — which is
+// why every occurrence of this mistake has been found by the Windows runners.
+func TestAJSONArtifactIsDecodedNotScanned(t *testing.T) {
+	const winBin = `C:\Users\u\.tokendrop\bin\dropin-miner.exe`
+	const winCfg = `C:\Users\u\.tokendrop\tokendrop.toml`
+	e := binEntry{command: winBin, cfg: winCfg}
+
+	command, err := e.hookCommandForShell(shellCmd, "cursor", "sessionStart")
+	if err != nil {
+		t.Fatalf("rendering the cmd form: %v", err)
+	}
+	// The file as planHooksMerge writes it.
+	body, err := json.MarshalIndent(map[string]any{
+		"version": 1,
+		"hooks":   map[string]any{"sessionStart": []any{map[string]any{"command": command}}},
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `\"C:\\Users`) {
+		t.Fatalf("this fixture is meant to carry both layers of escaping; it does not, so it proves nothing:\n%s", body)
+	}
+
+	bins, cfgs := namedInArtifact(string(body))
+	if !containsPath(cfgs, winCfg) {
+		t.Errorf("the config is unreadable in a JSON hook file:\n%s\n  configs -> %q", body, cfgs)
+	}
+	if !containsPath(bins, winBin) {
+		t.Errorf("the binary is unreadable in a JSON hook file:\n%s\n  binaries -> %q", body, bins)
+	}
+
+	// And a plain-text artifact still reads as text: the distinction is made
+	// per artifact, not abolished.
+	skill := "run " + posixQuoteArg(winBin) + " search -config " + posixQuoteArg(winCfg) + " --stdin\n"
+	if _, cfgs := namedInArtifact(skill); !containsPath(cfgs, winCfg) {
+		t.Errorf("a plain-text artifact stopped being scanned: %q", cfgs)
+	}
+}
+
 func containsPath(got []string, want string) bool {
 	for _, g := range got {
 		if samePath(g, want) {
@@ -364,7 +413,12 @@ func TestEveryArtifactNamesTheInstallationThatWroteIt(t *testing.T) {
 					// covers.
 					continue
 				}
-				named := namedConfigs(string(w.contents))
+				// Read the way production reads it: namedInArtifact decodes a
+				// JSON file and scans anything else. Scanning a hook file's
+				// bytes with a reader of rendered text is what made this guard
+				// red on the Windows runners — the command inside is escaped
+				// twice there, by the shell and then by JSON.
+				_, named := namedInArtifact(string(w.contents))
 				ours := false
 				for _, c := range named {
 					if samePath(c, entry.cfg) {
@@ -376,6 +430,84 @@ func TestEveryArtifactNamesTheInstallationThatWroteIt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ── the invariant that keeps a hook file out of the attribution ─────────
+
+// TestNoHookFileCanEnterTheAttributionPlan pins something subtle and
+// load-bearing: `attributeRemoved` reads raw file bytes, and it must never be
+// handed a hook file.
+//
+// It holds for a reason that is easy to break by accident. Attribution runs
+// against the AGNOSTIC plan, built with `uninstallProbeCommand` — a string
+// beginning with a NUL byte, which no rendered command starts with — so
+// `entryIsOurs` matches nothing, `planHooksRemove` never sets changed, and it
+// returns before reaching either the write or the removal it would otherwise
+// plan. Break either half and the failure is the #69 family again: a hook file
+// that IS ours, unreadable as bytes on Windows, judged unattributable and left
+// behind running a binary that has been deleted.
+//
+// So both halves are asserted, because either alone would pass while the
+// invariant was broken.
+func TestNoHookFileCanEnterTheAttributionPlan(t *testing.T) {
+	entry := goldenEntry()
+
+	// Half one: the probe prefix-matches no command this client renders.
+	probe := installationRef{bins: []string{uninstallProbeCommand}, cfg: entry.cfg}
+	rendered := 0
+	for _, id := range goldenHostIDs {
+		tg, ok := surfaceByID(id)
+		if !ok {
+			t.Fatalf("no target registered as %q", id)
+		}
+		for _, sh := range []shellKind{shellPOSIX, shellPowerShell, shellCmd} {
+			for _, sub := range [][]string{{"lineage"}, {"cursor", "sessionStart"}, {"window", "pre-compact"}} {
+				cmd, err := entry.hookCommandForShell(sh, sub...)
+				if err != nil {
+					continue
+				}
+				rendered++
+				if _, matched := probe.afterBinary(cmd); matched {
+					t.Errorf("the uninstall probe matches a rendered command, so a hook file could enter the attribution: %s", cmd)
+				}
+			}
+		}
+		_ = tg
+	}
+	if rendered == 0 {
+		t.Fatal("no command was rendered, so the probe was never actually tried against one")
+	}
+
+	// Half two: on a fully installed machine, no host's agnostic plan removes
+	// a hook file. This is the property attribution actually depends on, and
+	// it is asserted directly rather than inferred from half one.
+	_, ops := newFakeMachine()
+	paths := ops.paths(noEnv)
+	all := targetsByKind(targetHost)
+	installed := buildInstallPlan(ops, paths, all, entry, noEnv)
+	if failures := commitPlan(ops, &installed, io.Discard, io.Discard); failures != 0 {
+		t.Fatalf("installing every host: %d failures", failures)
+	}
+	for _, p := range []string{paths.claudeSettings, paths.cursorHooks} {
+		if _, err := ops.readFile(p); err != nil {
+			t.Fatalf("install wrote no %s, so this proves nothing about keeping it out", p)
+		}
+	}
+	hookFiles := map[string]bool{slash(paths.claudeSettings): true, slash(paths.cursorHooks): true}
+	for _, tg := range all {
+		var agnostic agentPlan
+		tg.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, &agnostic)
+		for _, rm := range agnostic.removes {
+			if hookFiles[slash(rm.path)] {
+				t.Errorf("%s's agnostic plan would remove the hook file %s, which attribution then reads as raw bytes", tg.Label(), rm.path)
+			}
+		}
+		for _, w := range agnostic.writes {
+			if hookFiles[slash(w.path)] {
+				t.Errorf("%s's agnostic plan would rewrite the hook file %s, so the probe matched something", tg.Label(), w.path)
+			}
+		}
 	}
 }
 

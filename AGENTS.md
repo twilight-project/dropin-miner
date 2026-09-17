@@ -329,6 +329,18 @@ each line names the file that owns the rule and the test that proves it.
   is the mistake `79ea5ba`, `f97df97` and `41faaac` each made once.
   `TestARenderedPathIsReadBackWhicheverShellQuotedIt` pins every renderer's spelling as a unit
   case, so that defect no longer needs a Windows runner to surface.
+  **`namedInArtifact` is the one place that decides HOW an artifact is read** — a file that
+  decodes as JSON is decoded, anything else is scanned as rendered text — and production and the
+  tests both go through it. Leaving that distinction implicit cost three defects of one shape:
+  a hook file escapes a command twice, by the shell and then by JSON, so on POSIX a byte scan is
+  right by luck and on Windows it reads `\"C:\\Users\\…\"` as a lone backslash. Never scan
+  encoded bytes for a structure that can be decoded.
+  `TestNoHookFileCanEnterTheAttributionPlan` pins the invariant that keeps `attributeRemoved`
+  away from a hook file: it runs against the agnostic plan, whose probe command begins with a NUL
+  byte and so prefix-matches no rendered command, so `planHooksRemove` never sets changed and
+  never reaches its removal. Both halves are asserted, because either alone passes while the
+  invariant is broken — and breaking it is the #69 family again, a hook file of ours left behind
+  running a binary that is gone.
 
 - **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
   a durable same-directory copy, the candidate renamed over the binary, the canonical path run and
