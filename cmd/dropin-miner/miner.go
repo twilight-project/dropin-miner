@@ -256,13 +256,26 @@ func updateLineage(ops hookOps, path string, now time.Time, apply func(*lineageF
 	return saveLineage(ops, path, sc, now)
 }
 
-// sameHarness compares two harness names. TOKENDROP_HARNESS is written by a
-// hook and may be set by a participant, so it is compared the way a name is
-// rather than the way bytes are. An empty name matches nothing: a sidecar
-// recording no harness cannot be shown to belong to anyone.
+// sameHarness reports whether two harness names are the same name, exactly.
+//
+// The vocabulary is closed and lowercase — claude-code, cursor, opencode, pi,
+// hermes, cli — and every value is written by this client's own hooks, so no
+// case or spacing variant arises from anything this client produces. One
+// could only come from a participant setting TOKENDROP_HARNESS by hand, and
+// that same value is what the search then sends to the router as its label:
+// treating "Cursor" as "cursor" here would adopt the session and relabel it,
+// putting one session under two harness spellings downstream. That is the
+// hazard #91 describes, not a tolerance worth having.
+//
+// samePath's case-insensitive branch is not a precedent for this one. It has
+// an authority behind it — on Windows the filesystem itself says two
+// spellings name one file — and nothing says the same about a harness name.
+// A loose comparison here would be a rule copied without its argument.
+//
+// An empty name matches nothing: a sidecar recording no harness cannot be
+// shown to belong to anyone.
 func sameHarness(a, b string) bool {
-	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
-	return a != "" && b != "" && strings.EqualFold(a, b)
+	return a != "" && a == b
 }
 
 // lineageForCwd finds the sidecar governing a directory: the directory

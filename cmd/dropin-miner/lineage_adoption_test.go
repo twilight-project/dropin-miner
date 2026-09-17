@@ -237,6 +237,42 @@ func TestASearchThatNamesNoHostReadsNoOtherSessionsFile(t *testing.T) {
 	}
 }
 
+// The harness names must match exactly, case included.
+//
+// The vocabulary is closed and lowercase and this client's hooks write both
+// sides of the comparison, so a case variant can only come from a participant
+// setting TOKENDROP_HARNESS by hand — and that same value is what the search
+// sends to the router as its label. Adopting the session and relabelling it
+// would put one session under two spellings downstream, which is #91's hazard
+// arriving by a third route. Refusing costs that participant a threaded
+// trace; accepting costs the router a split session.
+func TestHarnessNamesMustMatchExactly(t *testing.T) {
+	for _, declared := range []string{"Cursor", "CURSOR", "cursor "} {
+		t.Run(declared, func(t *testing.T) {
+			p := newLineageProbe(t, filepath.Join(adoptRoot, "src"), nil)
+			mine := p.write(t, adoptRoot, "cursor", "cursor-session")
+
+			env := p.trace(map[string]string{"TOKENDROP_HARNESS": declared})
+
+			if env == nil {
+				t.Fatal("no trace at all")
+			}
+			if env.SessionID == "cursor-session" {
+				t.Errorf("a search declaring %q adopted the session of a sidecar recording %q; the label it sends is %q, so the session would appear under two spellings", declared, "cursor", declared)
+			}
+			if got := p.seqOf(t, mine); got != 7 {
+				t.Errorf("its seq moved to %d", got)
+			}
+		})
+	}
+	// And the rule is not vacuous: the exact name is adopted.
+	p := newLineageProbe(t, filepath.Join(adoptRoot, "src"), nil)
+	p.write(t, adoptRoot, "cursor", "cursor-session")
+	if env := p.trace(map[string]string{"TOKENDROP_HARNESS": "cursor"}); env == nil || env.SessionID != "cursor-session" {
+		t.Fatalf("the exactly-matching name was not adopted: %+v", env)
+	}
+}
+
 // A sidecar recording no harness at all — one written by a version before
 // this rule — cannot be shown to belong to anyone, so it is not adopted by
 // the walk. It is still reachable by the host that names it outright.
