@@ -217,6 +217,14 @@ func hookLineage(ops hookOps, hc hookContext, payload []byte, stdout io.Writer) 
 	// (#77, H-R5). A tool this client does not know gets no rewrite — the
 	// syntax of its shell is exactly what is not known.
 	bridgeShell := shellPOSIX
+	// ours is true when the command is EXACTLY the search this installation's
+	// own skill renders for that tool's shell — the same question Cursor's
+	// hook asks, answered by rebuilding the string rather than by matching a
+	// pattern. It is what the allow decision below is taken from.
+	// isSearchCommand is a pattern and matches any spelling of any search, so
+	// it decides only whether to look at this command at all; it must never
+	// decide a permission answer.
+	ours := false
 	if isShell {
 		if !isSearchCommand(command) {
 			return
@@ -226,6 +234,9 @@ func hookLineage(ops hookOps, hc hookContext, payload []byte, stdout io.Writer) 
 			return
 		}
 		bridgeShell = sh
+		if f := recognizeRenderedForm(command, ops.executable, hc.cfgPath, []shellKind{bridgeShell}); f != nil {
+			ours = len(f.path) == 1 && f.path[0] == "search"
+		}
 	} else if _, exists := p.ToolInput["trace_bridge"]; exists {
 		return // never overwrite a bridge that is somehow already there
 	}
@@ -286,12 +297,32 @@ func hookLineage(ops hookOps, hc hookContext, payload []byte, stdout io.Writer) 
 	} else {
 		updated["trace_bridge"] = bridge
 	}
-	out, err := json.Marshal(map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName": "PreToolUse",
-			"updatedInput":  updated,
-		},
-	})
+	hso := map[string]any{
+		"hookEventName": "PreToolUse",
+		"updatedInput":  updated,
+	}
+	// The permission question this hook caused, answered by this hook (#98).
+	//
+	// `agents install` writes permissions.allow PREFIX rules naming the binary
+	// first. The rewrite above puts the bridge in front of it, so the command
+	// Claude Code evaluates no longer begins with the binary and no prefix
+	// rule can match it; the call falls through to the Bash safety
+	// heuristics, where the skill's own heredoc reads as
+	// "Contains brace with quote character (expansion obfuscation)" — a
+	// prompt interactively and a refusal in a headless session. Measured:
+	// under permissions.defaultMode "default" that heredoc is refused with
+	// exactly that message, and the same call with this answer runs.
+	//
+	// Only the exact rendered search is allowed, and only when this
+	// installation's own binary and config are the ones named. Everything
+	// else is rewritten as before and left to the permission system, which is
+	// what it was already doing. The three allow rules stay for hosts and
+	// versions that do not run this hook.
+	if ours {
+		hso["permissionDecision"] = "allow"
+		hso["permissionDecisionReason"] = "dropin-miner: this is the search command its own skill renders, and the trace bridge this hook just added is why the installed allow rule no longer matches it"
+	}
+	out, err := json.Marshal(map[string]any{"hookSpecificOutput": hso})
 	if err != nil {
 		return
 	}
@@ -618,7 +649,7 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		if err != nil {
 			return // nothing established: allow nothing, stamp nothing
 		}
-		recognized := recognizeCursorCommand(p.Command, ops.executable, hc.cfgPath, shells)
+		recognized := recognizeRenderedForm(p.Command, ops.executable, hc.cfgPath, shells)
 		if recognized == nil {
 			return
 		}

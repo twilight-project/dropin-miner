@@ -876,7 +876,7 @@ func renderedShellsOnThisOS(t *testing.T, host string) []execShell {
 	}
 	kinds, _ := toolShellsForSkill(tg, runtime.GOOS)
 	var out []execShell
-	for _, k := range kinds {
+	for _, k := range kinds.kinds {
 		out = append(out, execShellsFor(k, false)...)
 	}
 	return out
@@ -903,8 +903,8 @@ func (unestablishedToolHost) Shells(string) hostShells {
 
 func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
 	kinds, note := toolShellsForSkill(unestablishedToolHost{}, "windows")
-	if len(kinds) != 1 || kinds[0] != shellPOSIX {
-		t.Fatalf("an unknown cell renders for %v, want the POSIX fallback", kinds)
+	if len(kinds.kinds) != 1 || kinds.kinds[0] != shellPOSIX {
+		t.Fatalf("an unknown cell renders for %v, want the POSIX fallback", kinds.kinds)
 	}
 	if !strings.Contains(note, "not established") || !strings.Contains(note, "Fake Unestablished Host") {
 		t.Fatalf("the install plan says %q, which does not name the host and the reason", note)
@@ -913,8 +913,8 @@ func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
 	// declares and prints no note at all.
 	codex, _ := targetByID(installTargets, "codex")
 	kinds, note = toolShellsForSkill(codex, "windows")
-	if len(kinds) != 1 || kinds[0] != shellPowerShell || note != "" {
-		t.Fatalf("Codex on Windows renders for %v with note %q, want powershell and no note", kinds, note)
+	if len(kinds.kinds) != 1 || kinds.kinds[0] != shellPowerShell || note != "" {
+		t.Fatalf("Codex on Windows renders for %v with note %q, want powershell and no note", kinds.kinds, note)
 	}
 }
 
@@ -1096,43 +1096,51 @@ func TestInstalledHookCommandsRunInTheirRunner(t *testing.T) {
 // This is #66's guard, end to end through the real binary: v0.2.9 answered
 // nothing here, so every Cursor search waited for a human and none carried
 // per-call lineage.
+//
+// EVERY declared tool shell is fed through, not the first: Cursor on Windows
+// now teaches a form for each terminal the participant may have configured
+// (#96), and a form we teach and the hook then refuses is #66 again for that
+// terminal. Taking shells[0] alone would have left the Git Bash form
+// unexercised on the one runner that could catch it.
 func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
+	toolShells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+	if err != nil {
+		t.Skipf("Cursor declares no tool shell on %s", runtime.GOOS)
+	}
 	for _, sh := range hostShellsOnThisOS(t, "cursor", channelHook) {
-		t.Run(sh.name, func(t *testing.T) {
-			in := newExecInstallation(t)
-			spec := hookSpecFor(t, "cursor", in.entry)
-			command := ""
-			for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
-				if h.event == "beforeShellExecution" {
-					command = h.command
+		for _, toolShell := range toolShells {
+			t.Run(sh.name+"/"+string(toolShell), func(t *testing.T) {
+				in := newExecInstallation(t)
+				spec := hookSpecFor(t, "cursor", in.entry)
+				command := ""
+				for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
+					if h.event == "beforeShellExecution" {
+						command = h.command
+					}
 				}
-			}
-			shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
-			if err != nil {
-				t.Skipf("Cursor declares no tool shell on %s", runtime.GOOS)
-			}
-			search := skillBlockFor(t, in.renderedSkill("cursor"), shells[0], "search").body
-			payload, _ := json.Marshal(map[string]any{"conversation_id": "exec-conversation", "generation_id": "exec-generation",
-				"workspace_roots": []string{in.root}, "command": search})
-			out := runInShell(t, sh, command, payload, in.env)
-			if rendered, note := hookRunnerItIsRenderedFor(t, "cursor", in.entry); sh.kind != rendered {
-				// The same ruling as TestInstalledHookCommandsRunInTheirRunner:
-				// this hook command is rendered for one runner and the cell
-				// names more. Where it cannot run there is no recognizer to
-				// exercise, and saying so is the honest assertion.
-				if out.exit == 0 {
-					t.Fatalf("Cursor's hook now runs under %s as well; the ruling that kept v0.2.9's form is stale\ncommand: %s\n%s", sh.name, command, out)
+				search := skillBlockFor(t, in.renderedSkill("cursor"), toolShell, "search").body
+				payload, _ := json.Marshal(map[string]any{"conversation_id": "exec-conversation", "generation_id": "exec-generation",
+					"workspace_roots": []string{in.root}, "command": search})
+				out := runInShell(t, sh, command, payload, in.env)
+				if rendered, note := hookRunnerItIsRenderedFor(t, "cursor", in.entry); sh.kind != rendered {
+					// The same ruling as TestInstalledHookCommandsRunInTheirRunner:
+					// this hook command is rendered for one runner and the cell
+					// names more. Where it cannot run there is no recognizer to
+					// exercise, and saying so is the honest assertion.
+					if out.exit == 0 {
+						t.Fatalf("Cursor's hook now runs under %s as well; the ruling that kept v0.2.9's form is stale\ncommand: %s\n%s", sh.name, command, out)
+					}
+					t.Logf("as ruled, not served under %s: %s", sh.name, note)
+					return
 				}
-				t.Logf("as ruled, not served under %s: %s", sh.name, note)
-				return
-			}
-			if out.exit != 0 || strings.TrimSpace(out.stdout) != `{"permission":"allow"}` {
-				t.Fatalf("the skill's own search was not auto-allowed:\n%s", out)
-			}
-			if !lineageFileExists(in) {
-				t.Fatal("no lineage was stamped for the search Cursor was about to run")
-			}
-		})
+				if out.exit != 0 || strings.TrimSpace(out.stdout) != `{"permission":"allow"}` {
+					t.Fatalf("the %s search form the skill teaches was not auto-allowed:\n%s", toolShell, out)
+				}
+				if !lineageFileExists(in) {
+					t.Fatal("no lineage was stamped for the search Cursor was about to run")
+				}
+			})
+		}
 	}
 }
 
