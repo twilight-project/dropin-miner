@@ -17,6 +17,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -129,17 +130,16 @@ func TestSetupWithTheDefaultHomeNamedIsTheSameAsWithoutIt(t *testing.T) {
 		}
 		// Everything that differs between two sandboxes is their root and
 		// their stub servers' ports; with those named, the rest must match.
-		// The root is spelled three ways on Windows: as it is, with its
-		// backslashes doubled inside TOML and JSON strings (tokendrop.toml,
-		// setup-env.json, settings.json), and with forward slashes. The
-		// doubled form first, since the plain one is a substring of nothing
-		// but is a prefix-match hazard for it.
+		// On Windows the root is spelled at several escaping depths: as it
+		// is, doubled inside TOML and JSON strings, and doubled again where a
+		// quoted command sits inside a JSON string (settings.json). Chasing
+		// each depth found two and missed the third, so every run of
+		// backslashes is folded to one slash first — in the text and in the
+		// root alike — and only then is the root named.
+		slashes := regexp.MustCompile(`\\+`)
+		fold := func(x string) string { return slashes.ReplaceAllString(x, "/") }
 		norm := func(x string) string {
-			for _, spelled := range []string{strings.ReplaceAll(s.root, `\`, `\\`), s.root, filepath.ToSlash(s.root)} {
-				x = strings.ReplaceAll(x, spelled, "<root>")
-			}
-			x = strings.ReplaceAll(x, `\\`, `/`)
-			x = strings.ReplaceAll(x, `\`, `/`)
+			x = strings.ReplaceAll(fold(x), fold(s.root), "<root>")
 			x = strings.ReplaceAll(x, s.platform.srv.URL, "<platform>")
 			return strings.ReplaceAll(x, s.as.srv.URL, "<as>")
 		}
