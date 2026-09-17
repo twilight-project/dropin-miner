@@ -389,6 +389,15 @@ added a `timeout:` to, one with a comment between it and its heading, the
 same entry twice — it leaves where it is and tells you, because a hook left
 for you to delete is a smaller mistake than somebody else's hook deleted.
 
+Hermes rewrites `config.yaml` in its own style when it saves it: comments go,
+so dropin-miner's markers go with them, and the long command is folded over two
+lines. The hook still fires, and install and `agents status` still see it
+there. Uninstall will not edit that form — it removes lines only when they are
+exactly the ones it writes — so it tells you which lines hold the entry and
+asks you to remove them. If your file names the hook command somewhere
+uninstall cannot make sense of at all, it says so, with the line, rather than
+reporting that Hermes is not installed.
+
 `dropin-miner agents uninstall` removes exactly those files and entries.
 
 ## Four things worth knowing

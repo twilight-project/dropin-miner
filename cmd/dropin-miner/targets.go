@@ -1021,6 +1021,9 @@ func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 
 func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
+	// noted: something of this installation's was seen and left, and said so.
+	// "not installed" beside that sentence would be false (and was printed).
+	noted := false
 	if pathExists(ops, filepath.Dir(paths.hermesSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.hermesSkill))
 		removed = true
@@ -1038,11 +1041,17 @@ func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 			removed = true
 		} else if own.found {
 			p.notes = append(p.notes, fmt.Sprintf(
-				"%s: left this installation's pre_tool_call hook in %s because it %s; remove that entry by hand, or Hermes keeps running it",
-				t.Label(), paths.hermesConfig, own.why))
+				"%s: this installation's pre_tool_call hook is in %s at %s, and was left there because it %s; remove that entry by hand, or Hermes keeps running it",
+				t.Label(), paths.hermesConfig, own.where(), own.why))
+			noted = true
+		} else if own.mention > 0 {
+			p.notes = append(p.notes, fmt.Sprintf(
+				"%s: line %d of %s names this installation's pre_tool_call hook command, in a place or a form dropin-miner cannot read reliably, so nothing there was changed; if Hermes still runs it, remove it by hand",
+				t.Label(), own.mention, paths.hermesConfig))
+			noted = true
 		}
 	}
-	if !removed {
+	if !removed && !noted {
 		p.skipped = append(p.skipped, t.Label()+": not installed")
 	}
 }

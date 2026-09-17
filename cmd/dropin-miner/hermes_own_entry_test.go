@@ -182,49 +182,120 @@ var hermesLeftAlone = []hermesCase{
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n    - command: " + strconv.Quote(c) + "\n      matcher: \"terminal\"\n" + hermesAfter
 		},
+		note: "Hermes rewrites config.yaml in its own style",
 	},
 	{
 		name: "a trailing comment on the command line",
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n" + hermesHookLines(c)[2] + " # mine\n      matcher: \"terminal\"\n" + hermesAfter
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "under another event",
 		config: func(c string) string {
 			return "hooks:\n  post_tool_call:\n" + entryLines(c) + hermesAfter
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "nested one level deeper than the renderer puts it",
 		config: func(c string) string {
 			return "hooks:\n  group:\n    pre_tool_call:\n" + strings.ReplaceAll(entryLines(c), "    - ", "      - ") + hermesAfter
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "hooks spelled another way",
 		config: func(c string) string {
 			return "\"hooks\":\n  pre_tool_call:\n" + entryLines(c) + hermesAfter
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "two hooks: keys",
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "hooks:\n" + foreignPostTool
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "a second YAML document",
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "---\nother: 1\n"
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
 	{
 		name: "tabs in the indentation",
 		config: func(c string) string {
 			return "hooks:\n\tpre_tool_call:\n" + entryLines(c) + hermesAfter
 		},
+		note: "names this installation's pre_tool_call hook command",
 	},
+}
+
+// L3's review, F2 to F5: shapes a YAML parser and a line scan read
+// differently. Each was found by running 2,875 generated files through the
+// real uninstall and asking PyYAML — the parser Hermes uses — what each file
+// meant before and after (hermes_differential_test.go carries that on).
+func init() {
+	list := func(above string) func(string) string {
+		return func(c string) string { return "hooks:\n  pre_tool_call:\n" + above + entryLines(c) + hermesAfter }
+	}
+	const cannotRead = "which dropin-miner cannot read as a list entry"
+	const several = "one of several pre_tool_call: keys"
+	const mention = "names this installation's pre_tool_call hook command"
+	hermesLeftAlone = append(hermesLeftAlone,
+		// F2. Content at list depth that is not a list entry. Counted as a
+		// sibling, it made "only our two lines go" the plan; PyYAML then read
+		// a file that no longer parsed, a null, and an emptied block scalar.
+		hermesCase{name: "F2: a tag alone on the line under pre_tool_call:", config: list("    !!seq\n"), note: cannotRead},
+		hermesCase{name: "F2: an anchor alone on the line", config: list("    &a\n"), note: cannotRead},
+		hermesCase{name: "F2: a literal block scalar indicator", config: list("    |\n"), note: cannotRead},
+		hermesCase{name: "F2: a folded block scalar indicator", config: list("    >-\n"), note: cannotRead},
+		hermesCase{name: "F2: a line at depth three inside the list", config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "   odd: 1\n"
+		}, note: cannotRead},
+		// F3. YAML keeps the last of two identical keys. Taking ours out of
+		// the second un-shadows whatever sits under the first.
+		hermesCase{name: "F3: ours under the second of two pre_tool_call: keys", config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n" + foreignEntry + "  pre_tool_call:\n" + entryLines(c)
+		}, note: several},
+		hermesCase{name: "F3: ours under the first of two", config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "  pre_tool_call:\n" + foreignEntry
+		}, note: several},
+		hermesCase{name: "F3: the second one spelled in quotes", config: func(c string) string {
+			return "hooks:\n  \"pre_tool_call\":\n" + foreignEntry + "  pre_tool_call:\n" + entryLines(c)
+		}, note: several},
+		// F4. A YAML parser reads each of these as a live hook of ours. The
+		// structured find will not read them; the plan used to say "Hermes:
+		// not installed". A sentence now, never an edit.
+		hermesCase{name: "F4: hooks: with a trailing space", config: func(c string) string { return "hooks: \n  pre_tool_call:\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: hooks: with a trailing comment", config: func(c string) string { return "hooks: # mine\n  pre_tool_call:\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: hooks: with an anchor", config: func(c string) string { return "hooks: &h\n  pre_tool_call:\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: pre_tool_call: with a trailing space", config: func(c string) string { return "hooks:\n  pre_tool_call: \n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: pre_tool_call: with a trailing comment", config: func(c string) string { return "hooks:\n  pre_tool_call: # mine\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: pre_tool_call in quotes", config: func(c string) string { return "hooks:\n  \"pre_tool_call\":\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: the explicit key form", config: func(c string) string { return "hooks:\n  ? pre_tool_call\n  :\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: a closing document marker", config: func(c string) string { return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "...\n" }, note: mention},
+		hermesCase{name: "F4: HOOKS: beside hooks:", config: func(c string) string { return "HOOKS:\n  x: 1\nhooks:\n  pre_tool_call:\n" + entryLines(c) }, note: mention},
+		hermesCase{name: "F4: the command in a flow mapping", config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n    - {command: " + hermesYAMLSingleQuoted(c) + ", matcher: \"terminal\"}\n"
+		}, note: mention},
+		// F5a. Pins the scan's parent check. A two-line run carries no
+		// heading of its own, so with that check off only the net's walk up
+		// to `  pre_tool_call:` stands between this file and an edit — and
+		// then the sentence is the found-but-left one, not this one.
+		hermesCase{name: "F5a: ours under post_tool_call:, sharing the list with a foreign entry", config: func(c string) string {
+			return "hooks:\n  post_tool_call:\n" + foreignEntry + entryLines(c) + hermesAfter
+		}, note: mention},
+		// F5c. Pins the tab refusal: the tab is in a line that is none of
+		// ours, so no exact-text check on our own lines can catch it.
+		hermesCase{name: "F5c: a tab in the indentation of a sibling entry", config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "\t- command: 'theirs'\n"
+		}, note: mention},
+	)
 }
 
 func TestUninstallRemovesOurHermesEntryAndNothingElse(t *testing.T) {
@@ -274,6 +345,12 @@ func TestUninstallLeavesAHermesEntryItCannotProveIsExactlyOurs(t *testing.T) {
 			}
 			if tc.note != "" && !strings.Contains(out, tc.note) {
 				t.Errorf("ours was recognized and left, but the plan did not say why (%q):\n%s", tc.note, out)
+			}
+			// F6: no skill is present on this machine, so the plan used to
+			// add "Hermes: not installed" under the sentence saying our hook
+			// is there. One of the two is false.
+			if tc.note != "" && strings.Contains(out, "Hermes: not installed") {
+				t.Errorf("the plan says our hook is there and that Hermes is not installed:\n%s", out)
 			}
 		})
 	}
@@ -398,6 +475,111 @@ func TestInstallCountsAnEditedEntryOfOursAsSetUp(t *testing.T) {
 	}
 }
 
+// F5b. The round trip in hermesUnquoteSingle, which no fixture pinned
+// because no fixture command held a quote. A lone quote inside a
+// single-quoted scalar decodes, leniently, to the very same command — so
+// without the round trip this file would be edited on the strength of a
+// scalar no YAML parser reads that way.
+func TestALoneQuoteInsideTheScalarIsNotOurLine(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{`    - command: '/b hook hermes pre_tool_call'`, true},
+		{`    - command: '/O''Neil/b hook hermes pre_tool_call'`, true},
+		{`    - command: '/O'Neil/b hook hermes pre_tool_call'`, false},
+		{`    - command: '/b hook hermes pre_tool_call''`, false},
+		{`    - command: '/b hook hermes pre_tool_call`, false},
+		{`    - command: /b hook hermes pre_tool_call`, false},
+	} {
+		if _, ok := hermesDecodeCommandLine(tc.line); ok != tc.want {
+			t.Errorf("hermesDecodeCommandLine(%q) ok = %v, want %v", tc.line, ok, tc.want)
+		}
+	}
+}
+
+// The same through the real uninstall, with a binary whose path needs
+// quoting, so the rendered scalar is full of doubled quotes to get wrong.
+func TestABinaryPathThatNeedsQuotesIsRemovedCleanlyAndALoneQuoteIsNot(t *testing.T) {
+	const bin = "/Users/O'Neil/My Tools/dropin-miner"
+	m, ops := newFakeMachine("hermes")
+	ops.executable = func() (string, error) { return bin, nil }
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s%s", code, out, errOut)
+	}
+	var line string
+	for _, l := range strings.Split(string(m.files[hermesConfigPath]), "\n") {
+		if _, ok := hermesDecodeCommandLine(l); ok {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "''") {
+		t.Fatalf("this path was meant to put a doubled quote in the scalar:\n%s", line)
+	}
+	matcher := hermesHookLines("")[3]
+
+	good := "hooks:\n  pre_tool_call:\n" + foreignEntry + line + "\n" + matcher + "\n"
+	m.files[hermesConfigPath] = []byte(good)
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: %d\n%s%s", code, out, errOut)
+	}
+	if got, want := string(m.files[hermesConfigPath]), "hooks:\n  pre_tool_call:\n"+foreignEntry; got != want {
+		t.Errorf("a path that needs quotes was not removed cleanly:\n%q", got)
+	}
+
+	// One doubled quote collapsed to a lone one, after the opening quote.
+	i := strings.Index(line[len(hermesCommandPrefix)+1:], "''") + len(hermesCommandPrefix) + 1
+	broken := "hooks:\n  pre_tool_call:\n" + foreignEntry + line[:i] + line[i+1:] + "\n" + matcher + "\n"
+	m.files[hermesConfigPath] = []byte(broken)
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: %d\n%s%s", code, out, errOut)
+	}
+	if got := string(m.files[hermesConfigPath]); got != broken {
+		t.Errorf("a scalar holding a lone quote was edited:\n%q", got)
+	}
+}
+
+// Install's refusal, when the file names our command where this client
+// cannot vouch for it: still a refusal, but it says what it saw, so the
+// paste advice does not put a second copy beside a live one unannounced.
+func TestInstallsRefusalSaysWhenTheFileAlreadyNamesOurCommand(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	before := "hooks: # mine\n  pre_tool_call:\n" + entryLines(cmd)
+	m, ops := newFakeMachine("hermes")
+	m.files[hermesConfigPath] = []byte(before)
+	code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	if code != exitTransport {
+		t.Fatalf("exit %d, want the refusal exit\n%s", code, out)
+	}
+	for _, want := range []string{"already declares a top-level hooks: key", "line 3 of it already names this installation's pre_tool_call hook command", "check whether it is already set up"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal did not say %q:\n%s", want, out)
+		}
+	}
+	if got := string(m.files[hermesConfigPath]); got != before {
+		t.Errorf("the file was changed:\n%q", got)
+	}
+}
+
+// A command quoted in somebody's notes is not a hook: the mention tier may
+// produce a sentence, never "already set up".
+func TestACommandQuotedInABlockScalarIsNotAHook(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	before := "notes: |\n  to add the hook, paste:\n  " + strings.ReplaceAll(entryLines(cmd), "\n", "\n  ") + "\nmodel: x\n"
+	m, ops := newFakeMachine("hermes")
+	m.files[hermesConfigPath] = []byte(before)
+	if own := findHermesOwnEntry([]byte(before), refFor(binEntry{})); own.found {
+		t.Fatal("found with no installation to find it for")
+	}
+	code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	if code != exitOK || strings.Contains(out, "already set up") {
+		t.Fatalf("install took a quoted command for a hook: exit %d\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(string(m.files[hermesConfigPath]), agentsMarkerBegin) {
+		t.Errorf("install did not write its block:\n%s", m.files[hermesConfigPath])
+	}
+}
+
 // The net on its own, handed a run the scan would never produce: whatever
 // the scan concluded, lines that are not the renderer's do not go.
 func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
@@ -451,6 +633,35 @@ func TestTheHermesNetRefusesARunThatLeavesSomethingOfItsOwnBehind(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			lines := hermesLines([]byte(tc.file))
 			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, 2); got != tc.want {
+				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
+			}
+		})
+	}
+}
+
+// The third part of the net (F5a). A two-line run carries no heading of its
+// own, so every line in it can be the renderer's while it sits under somebody
+// else's event. The run must begin under what the renderer puts above it.
+func TestTheHermesNetRefusesARunThatIsNotUnderTheRenderersHeadings(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	ours := entryLines(cmd)
+	for _, tc := range []struct {
+		name       string
+		file       string
+		start, end int
+		at         int
+		want       bool
+	}{
+		{"under hooks: and pre_tool_call:", "hooks:\n  pre_tool_call:\n" + foreignEntry + ours, 4, 6, 4, true},
+		{"under post_tool_call:", "hooks:\n  post_tool_call:\n" + foreignEntry + ours, 4, 6, 4, false},
+		{"under pre_tool_call: under another top-level key", "plugins:\n  pre_tool_call:\n" + foreignEntry + ours, 4, 6, 4, false},
+		{"under a heading at depth three", "hooks:\n   pre_tool_call:\n" + foreignEntry + ours, 4, 6, 4, false},
+		{"with nothing above it at all", ours, 0, 2, 0, false},
+		{"pre_tool_call: and ours, under another top-level key", "plugins:\n  pre_tool_call:\n" + ours, 1, 4, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := hermesLines([]byte(tc.file))
+			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, tc.at); got != tc.want {
 				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
 			}
 		})

@@ -245,8 +245,17 @@ each line names the file that owns the rule and the test that proves it.
   the net, as in the Codex block — the lines about to go are byte for byte lines `hermesHookLines`
   produces. What goes is a contiguous suffix of the rendered mapping (two, three or four lines, so
   no key is left with a null where Hermes expects a list); every other line is copied as read.
+  Found, removable and mentioned are three different answers: a live hook of ours in a form this
+  client will not edit — above all the form **Hermes itself** writes, since `save_config` reloads
+  the file and dumps it through PyYAML, dropping our markers and folding the command — is counted
+  by install and status and named with its lines by uninstall; a command named somewhere the
+  structured find will not read earns a sentence and never an edit or an "already set up".
   `hermes_own_entry_test.go` pairs each removed shape with neighbors one step away that must come
-  back byte-identical, and takes its command from a real install rather than a typed string.
+  back byte-identical, and takes its command from a real install rather than a typed string;
+  `testdata/hermes/*.resaved.yaml` is the real output of Hermes' dumper (`resave.py`), never typed;
+  and `hermes_differential_test.go` runs 2,875 generated files through the real uninstall, with
+  `testdata/hermes/oracle.py` to ask PyYAML what each meant before and after — the only judge of
+  a by-line YAML edit that is not the code that made it.
 - **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
   renders `tokendrop.toml`, fresh and migrated; `agents.go`, `setup_env.go` and
   `hermes_install.go` render the blocks that go into a host's own config. Every byte any of them

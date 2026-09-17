@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -73,17 +74,30 @@ func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPl
 		return false
 	}
 	stripped, hadBlock := hermesRemoveBlock(existing)
-	if !hadBlock && findHermesOwnEntry(existing, refFor(entry)).found {
+	var own hermesOwnEntry
+	if !hadBlock {
+		own = findHermesOwnEntry(existing, refFor(entry))
+	}
+	if own.found {
 		// #83: a hooks: block this client did not write, already holding this
 		// installation's entry. That is not a refusal — the hook is there and
 		// will fire — and it is not something to rewrite into a marked block
 		// either, since the block around it is the participant's.
 		p.notes = append(p.notes, fmt.Sprintf(
-			"%s: already set up — the pre_tool_call hook is in %s, under a hooks: block dropin-miner did not write; left as it is",
-			label, path))
+			"%s: already set up — the pre_tool_call hook is in %s at %s, under a hooks: block dropin-miner did not write; left as it is",
+			label, path, own.where()))
 		return false
 	}
 	if reason := hermesConfigRefusal(stripped); reason != "" {
+		if own.mention > 0 {
+			// The paste advice would put a second copy beside one that may
+			// already be live. This client cannot vouch for where that line
+			// sits, so it still refuses — but it says what it saw.
+			p.refused = append(p.refused, fmt.Sprintf(
+				"%s: %s %s, and line %d of it already names this installation's pre_tool_call hook command in a place or a form dropin-miner cannot read reliably; check whether it is already set up before adding this entry by hand:\n%s",
+				label, path, reason, own.mention, indentBlock(body)))
+			return false
+		}
 		p.refused = append(p.refused, fmt.Sprintf(
 			"%s: %s %s; add this pre_tool_call entry by hand:\n%s",
 			label, path, reason, indentBlock(body)))
@@ -465,9 +479,23 @@ type hermesOwnEntry struct {
 	// when the entry was found but the edit cannot be expressed that way.
 	start, end int
 	why        string // why not, in a phrase that completes "… because it"
+	// first, last: the 1-based lines the entry occupies, so a note that
+	// asks a participant to remove it by hand can say where it is.
+	first, last int
+	// mention: nothing was found where a hook lives and in a form this
+	// client can vouch for, but this 1-based line names this installation's
+	// hook command. Grounds for a sentence, never for an edit.
+	mention int
 }
 
 func (e hermesOwnEntry) removable() bool { return e.found && e.end > e.start }
+
+func (e hermesOwnEntry) where() string {
+	if e.last <= e.first {
+		return fmt.Sprintf("line %d", e.first)
+	}
+	return fmt.Sprintf("lines %d-%d", e.first, e.last)
+}
 
 // hermesLine is one line of the file, with what the scan needs of it.
 type hermesLine struct {
@@ -498,8 +526,32 @@ func hermesLines(b []byte) []hermesLine {
 }
 
 // findHermesOwnEntry looks for this installation's pre_tool_call entry in a
-// config that carries no marked block of ours.
+// config that carries no marked block of ours. Three answers, in descending
+// order of what may be done about them:
+//
+//   - found and removable: the renderer's own form, provably. Uninstall takes
+//     the lines out.
+//   - found: a live hook of ours where a hook lives, in a form this client
+//     will not edit. Install and status count it; uninstall names its lines
+//     and leaves it. This is the form HERMES writes: save_config reloads
+//     config.yaml as data and dumps it with PyYAML, so after Hermes' first
+//     save our marker comments are gone and our entry is a plain or
+//     single-quoted scalar folded at 80 columns. Without this tier every
+//     symptom of #83 came straight back after one save: status "not
+//     installed", install refusing with a second copy to paste, uninstall
+//     leaving the hook without a word.
+//   - mention: the command is named somewhere this scan cannot vouch for.
+//     A sentence on uninstall and on install's refusal; never an edit, and
+//     never "already set up", because a command quoted in somebody's notes
+//     is not a hook.
 func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
+	if e := hermesFindStructured(b, ref); e.found {
+		return e
+	}
+	return hermesOwnEntry{mention: hermesMention(b, ref)}
+}
+
+func hermesFindStructured(b []byte, ref installationRef) hermesOwnEntry {
 	// The structure first, by the same scan install trusts: one document, a
 	// plain mapping at column zero, no partial block of ours. Exactly one
 	// hooks: key, because with two there is no saying which one Hermes reads.
@@ -508,6 +560,10 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 	}
 	lines := hermesLines(b)
 	for _, l := range lines {
+		// Not redundant with the exact-text checks below: a tab can sit in
+		// the indentation of a line that is none of ours — a sibling entry —
+		// and every depth comparison made about that line would then be
+		// about a number that means nothing.
 		if l.hasTabs {
 			return hermesOwnEntry{}
 		}
@@ -515,8 +571,9 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 	want := hermesHookLines("")
 
 	// The hooks: line, spelled exactly as the renderer spells it. `hooks :`,
-	// `"hooks":` or `hooks: {…}` are all a hooks key to the scan above, and
-	// none of them is a block this function knows how to read.
+	// `"hooks":`, `hooks: &h` or `hooks: # mine` are all a hooks key to the
+	// scan above, and none of them is a block this function knows how to
+	// read; they fall to the mention tier.
 	top := -1
 	for i, l := range lines {
 		if l.indent == 0 && l.text == want[0] {
@@ -537,29 +594,71 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 
 	var hits []int
 	for i := top + 1; i < blockEnd; i++ {
-		if hermesEntryIsOurs(lines, i, top, ref) {
+		if hermesEntryIsOurs(lines, i, top, blockEnd, ref) {
 			hits = append(hits, i)
 		}
 	}
-	switch len(hits) {
-	case 0:
+	if len(hits) == 0 {
 		return hermesOwnEntry{}
-	case 1:
-	default:
-		return hermesOwnEntry{found: true, why: "appears there more than once"}
 	}
 	at := hits[0]
 	parent := hermesParent(lines, at, top)
+	listEnd := hermesListEnd(lines, parent, blockEnd)
 
 	// Ours, and from here on the question is only whether it can be taken
-	// out. An entry somebody has edited still runs our binary on every
-	// terminal call, so it is reported and left rather than not seen at all:
-	// silence about a hook that outlives the installation is what #83 was.
+	// out. An entry that cannot be still runs our binary on every terminal
+	// call, so it is reported and left rather than not seen at all: silence
+	// about a hook that outlives the installation is what #83 was.
+	entry := hermesOwnEntry{found: true, first: at + 1, last: at + 1}
+	for k := at + 1; k < listEnd; k++ {
+		if lines[k].indent >= 0 && lines[k].indent <= 4 {
+			break
+		}
+		if lines[k].indent > 4 {
+			entry.last = k + 1
+		}
+	}
+	leave := func(why string) hermesOwnEntry { entry.why = why; return entry }
+
+	if len(hits) > 1 {
+		return leave("appears there more than once")
+	}
+	// Exactly one pre_tool_call: key, for the reason there must be exactly
+	// one hooks: key, one level down. YAML keeps the last of two, so taking
+	// ours out of the second would un-shadow whatever sits under the first.
+	events := 0
+	for k := top + 1; k < blockEnd; k++ {
+		if lines[k].indent != 2 {
+			continue
+		}
+		if key, ok := hermesTopLevelKey(lines[k].text[2:]); ok && strings.EqualFold(key, "pre_tool_call") {
+			events++
+		}
+	}
+	if events != 1 {
+		return leave("is under one of several pre_tool_call: keys, and YAML reads only the last of them")
+	}
+	// Everything at list depth must BE a list entry. A `|`, a `>-`, an
+	// anchor or a tag alone on the line under pre_tool_call: is content at
+	// the right depth that is not a sibling, and counting it as one took our
+	// two lines out from under a block scalar, a null and a file that then
+	// would not parse.
+	for k := parent + 1; k < listEnd; k++ {
+		if lines[k].indent < 0 || lines[k].indent > 4 {
+			continue
+		}
+		if item := lines[k].text[lines[k].indent:]; lines[k].indent != 4 || (item != "-" && !strings.HasPrefix(item, "- ")) {
+			return leave(fmt.Sprintf("shares its list with line %d, which dropin-miner cannot read as a list entry", k+1))
+		}
+	}
+	if _, ok := hermesDecodeCommandLine(lines[at].text); !ok {
+		return leave("is not written the way dropin-miner writes it — Hermes rewrites config.yaml in its own style when it saves it")
+	}
 	if at+1 >= len(lines) || lines[at+1].text != want[3] {
-		return hermesOwnEntry{found: true, why: "does not have the matcher line dropin-miner writes under it, so it has been edited"}
+		return leave("does not have the matcher line dropin-miner writes under it, so it has been edited")
 	}
 	if next := hermesNextContent(lines, at+2); next >= 0 && lines[next].indent > 4 {
-		return hermesOwnEntry{found: true, why: "has a further key inside it that dropin-miner did not write"}
+		return leave("has a further key inside it that dropin-miner did not write")
 	}
 
 	// How much goes. Our two lines when another entry shares the list; the
@@ -570,36 +669,39 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 	// a blank line in between belongs to the participant and cannot be
 	// stepped over.
 	start := at
-	if !hermesHasOther(lines, parent+1, hermesListEnd(lines, parent, blockEnd), at, at+2, 4) {
+	if !hermesHasOther(lines, parent+1, listEnd, at, at+2, 4) {
 		if parent != at-1 {
-			return hermesOwnEntry{found: true, why: "is the only pre_tool_call entry and is separated from its pre_tool_call: line, so removing it cleanly cannot be done by line"}
+			return leave("is the only pre_tool_call entry and is separated from its pre_tool_call: line, so removing it cleanly cannot be done by line")
 		}
 		start = parent
 		if !hermesHasOther(lines, top+1, blockEnd, parent, at+2, 2) {
 			if top != parent-1 {
-				return hermesOwnEntry{found: true, why: "is the only hook and is separated from its hooks: line, so removing it cleanly cannot be done by line"}
+				return leave("is the only hook and is separated from its hooks: line, so removing it cleanly cannot be done by line")
 			}
 			start = top
 		}
 	}
-	entry := hermesOwnEntry{found: true, start: start, end: at + 2}
+	entry.start, entry.end = start, at+2
 	if !hermesRunIsRendered(lines, entry, at) {
-		return hermesOwnEntry{found: true, why: "is not written exactly as dropin-miner writes it"}
+		entry.start, entry.end = 0, 0
+		return leave("is not written exactly as dropin-miner writes it")
 	}
 	return entry
 }
 
-// hermesEntryIsOurs: is the two-line item at i this installation's entry,
-// sitting where the renderer puts one?
-func hermesEntryIsOurs(lines []hermesLine, i, top int, ref installationRef) bool {
-	cmd, ok := hermesDecodeCommandLine(lines[i].text)
+// hermesEntryIsOurs: does a list entry begin at i whose command is this
+// installation's hook, sitting where a pre_tool_call hook lives?
+func hermesEntryIsOurs(lines []hermesLine, i, top, blockEnd int, ref installationRef) bool {
+	if lines[i].indent != 4 {
+		return false
+	}
+	cmd, ok := hermesItemCommand(lines, i, blockEnd)
 	if !ok || !hermesCommandIsOurHook(cmd, ref) {
 		return false
 	}
-	want := hermesHookLines(cmd)
 	// Under `  pre_tool_call:`, itself under the hooks: line found above.
 	parent := hermesParent(lines, i, top)
-	if parent < 0 || lines[parent].text != want[1] {
+	if parent < 0 || lines[parent].text != hermesHookLines("")[1] {
 		return false
 	}
 	for k := parent - 1; k > top; k-- {
@@ -610,15 +712,55 @@ func hermesEntryIsOurs(lines []hermesLine, i, top int, ref installationRef) bool
 	return true
 }
 
-// hermesNextContent is the first line at or after i that is neither blank
-// nor a comment, or -1.
-func hermesNextContent(lines []hermesLine, i int) int {
-	for k := i; k < len(lines); k++ {
-		if lines[k].indent >= 0 {
-			return k
-		}
+// hermesItemCommand reads the command scalar of the entry at i: the rest of
+// its `    - command:` line and, for a scalar folded over several lines the
+// way PyYAML folds a long one, the deeper lines under it, joined by single
+// spaces as YAML joins them.
+func hermesItemCommand(lines []hermesLine, i, blockEnd int) (string, bool) {
+	key := strings.TrimRight(hermesCommandPrefix, " ")
+	rest, ok := strings.CutPrefix(lines[i].text, key)
+	if !ok || (rest != "" && rest[0] != ' ') {
+		return "", false
 	}
-	return -1
+	value := strings.TrimSpace(rest)
+	for k := i + 1; k < blockEnd && lines[k].indent > 6; k++ {
+		value += " " + strings.TrimSpace(lines[k].text)
+	}
+	return hermesDecodeScalar(strings.TrimSpace(value))
+}
+
+// hermesDecodeScalar reads a scalar in the three styles a command can be
+// written in. Anything it is not sure of is not a command.
+func hermesDecodeScalar(v string) (string, bool) {
+	switch {
+	case v == "":
+		return "", false
+	case v[0] == '\'':
+		return hermesUnquoteSingle(v)
+	case v[0] == '"':
+		s, err := strconv.Unquote(v)
+		return s, err == nil
+	case strings.ContainsRune("|>&*!{}[]%@`#,?-:", rune(v[0])):
+		return "", false // an indicator: a block scalar, an anchor, a flow collection
+	case strings.Contains(v, " #") || strings.Contains(v, ": "):
+		return "", false // a comment or a mapping inside it: not a plain scalar
+	}
+	return v, true
+}
+
+// hermesUnquoteSingle reads a YAML single-quoted scalar, and accepts only one
+// that the renderer's own encoder reproduces exactly from what was decoded.
+// A lone quote inside — which a lenient reading would decode to the very same
+// command — is not a scalar any YAML parser reads that way.
+func hermesUnquoteSingle(q string) (string, bool) {
+	if len(q) < 2 || q[0] != '\'' || q[len(q)-1] != '\'' {
+		return "", false
+	}
+	s := strings.ReplaceAll(q[1:len(q)-1], "''", "'")
+	if hermesYAMLSingleQuoted(s) != q {
+		return "", false
+	}
+	return s, true
 }
 
 // hermesParent is the nearest line above i that is less indented than the
@@ -644,8 +786,9 @@ func hermesListEnd(lines []hermesLine, parent, blockEnd int) int {
 }
 
 // hermesHasOther: is there a content line at exactly depth in [from, to),
-// outside [skipFrom, skipTo)? At depth 4 that is a sibling entry; at depth 2
-// a sibling event.
+// outside [skipFrom, skipTo)? At depth 4 that is a sibling entry — the
+// caller has already established that everything at that depth is one — and
+// at depth 2 a sibling event.
 func hermesHasOther(lines []hermesLine, from, to, skipFrom, skipTo, depth int) bool {
 	for k := from; k < to; k++ {
 		if k >= skipFrom && k < skipTo {
@@ -658,23 +801,25 @@ func hermesHasOther(lines []hermesLine, from, to, skipFrom, skipTo, depth int) b
 	return false
 }
 
+// hermesNextContent is the first line at or after i that is neither blank
+// nor a comment, or -1.
+func hermesNextContent(lines []hermesLine, i int) int {
+	for k := i; k < len(lines); k++ {
+		if lines[k].indent >= 0 {
+			return k
+		}
+	}
+	return -1
+}
+
 // hermesDecodeCommandLine reads `    - command: '<scalar>'` and returns the
-// scalar. It accepts only a line the renderer's own encoder reproduces
-// exactly from what was decoded, so a stray quote, a trailing comment or a
-// different scalar style is simply not our line.
+// scalar: the renderer's own form, on one line. A folded scalar, a plain
+// one, a trailing comment or a different quote style is not this.
 func hermesDecodeCommandLine(text string) (string, bool) {
 	if !strings.HasPrefix(text, hermesCommandPrefix) {
 		return "", false
 	}
-	q := text[len(hermesCommandPrefix):]
-	if len(q) < 2 || q[0] != '\'' || q[len(q)-1] != '\'' {
-		return "", false
-	}
-	cmd := strings.ReplaceAll(q[1:len(q)-1], "''", "'")
-	if hermesCommandPrefix+hermesYAMLSingleQuoted(cmd) != text {
-		return "", false
-	}
-	return cmd, true
+	return hermesUnquoteSingle(text[len(hermesCommandPrefix):])
 }
 
 // hermesCommandIsOurHook: H5's rule — this installation's binary, this
@@ -708,16 +853,43 @@ func hermesRunIsRendered(lines []hermesLine, e hermesOwnEntry, at int) bool {
 	if !ok {
 		return false
 	}
-	want := hermesHookLines(cmd)
+	rendered := hermesHookLines(cmd)
 	n := e.end - e.start
-	if n < 2 || n > len(want) {
+	if n < 2 || n > len(rendered) {
 		return false
 	}
-	want = want[len(want)-n:]
+	want := rendered[len(rendered)-n:]
 	for k := 0; k < n; k++ {
 		if lines[e.start+k].text != want[k] {
 			return false
 		}
+	}
+	// The run must also BEGIN under what the renderer puts above it. A run
+	// of two lines carries no heading of its own to compare, so without this
+	// our two lines under `  post_tool_call:` pass every comparison above:
+	// walk up from the run, and each ancestor must be the rendered line for
+	// its depth.
+	for level, idx := lines[e.start].indent, e.start; level > 0; {
+		p := idx - 1
+		for p >= 0 && (lines[p].indent < 0 || lines[p].indent >= level) {
+			p--
+		}
+		if p < 0 {
+			return false
+		}
+		switch lines[p].indent {
+		case 2:
+			if lines[p].text != rendered[1] {
+				return false
+			}
+		case 0:
+			if lines[p].text != rendered[0] {
+				return false
+			}
+		default:
+			return false
+		}
+		level, idx = lines[p].indent, p
 	}
 	// And the run must END where the thing it removes ends. Lines that are
 	// ours can still be the head of something that is not: take the two
@@ -744,4 +916,71 @@ func removeHermesOwnEntry(b []byte, e hermesOwnEntry) []byte {
 		out.WriteString(l.raw)
 	}
 	return []byte(out.String())
+}
+
+// hermesMention is the last tier: does this file name this installation's
+// hook command anywhere outside a comment? It returns the 1-based line, or 0.
+//
+// It exists for the shapes the structured find deliberately will not read —
+// `hooks: ` with a trailing space, `hooks: &h`, `  "pre_tool_call":`, the
+// explicit `? pre_tool_call` key, a closing `...`, `HOOKS:` beside `hooks:` —
+// every one of which a YAML parser reads as a live hook of ours while the
+// plan said "Hermes: not installed". It reads words, not structure: the
+// file's non-comment text split on whitespace, which is also exactly what
+// survives YAML's line folding, searched for the renderer's closing words
+// and then backwards for a command that decodes, in any of the three scalar
+// styles, to this installation's hook under H5's rule. Knowing nothing about
+// where the words sit is what lets it see all of those shapes, and is why it
+// may only ever produce a sentence.
+func hermesMention(b []byte, ref installationRef) int {
+	type word struct {
+		text string
+		line int
+	}
+	var words []word
+	for i, l := range hermesLines(b) {
+		if l.indent < 0 {
+			continue
+		}
+		for _, f := range strings.Fields(l.text) {
+			words = append(words, word{f, i + 1})
+		}
+	}
+	const closers = `'",}]`
+	for e := 1; e < len(words); e++ {
+		if strings.TrimRight(words[e].text, closers) != "pre_tool_call" || words[e-1].text != "hermes" {
+			continue
+		}
+		for s := e - 2; s >= 0 && s >= e-24; s-- {
+			parts := make([]string, 0, e-s+1)
+			for _, w := range words[s : e+1] {
+				parts = append(parts, w.text)
+			}
+			cand := strings.TrimRight(strings.Join(parts, " "), ",}]")
+			for _, cmd := range hermesScalarReadings(cand) {
+				if hermesCommandIsOurHook(cmd, ref) {
+					return words[s].line
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// hermesScalarReadings is every command a run of words might spell: as it
+// stands, and unquoted in either YAML quote style. Lenient on purpose, which
+// is affordable only because nothing is ever edited on its say-so.
+func hermesScalarReadings(cand string) []string {
+	out := []string{cand}
+	if len(cand) >= 2 {
+		switch cand[0] {
+		case '\'':
+			out = append(out, strings.ReplaceAll(strings.TrimSuffix(cand[1:], "'"), "''", "'"))
+		case '"':
+			if s, err := strconv.Unquote(cand); err == nil {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
