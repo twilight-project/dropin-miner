@@ -34,6 +34,9 @@ type lineageProbe struct {
 	fs  *fakeHookFS
 	ops searchOps
 	now time.Time
+	// reads counts lineage files opened, so a test can ask not only what a
+	// search adopted but what it looked at.
+	reads *int
 }
 
 func newLineageProbe(t *testing.T, cwd string, env map[string]string) *lineageProbe {
@@ -41,9 +44,16 @@ func newLineageProbe(t *testing.T, cwd string, env map[string]string) *lineagePr
 	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 	fs, hook := newFakeHookOps(env)
 	hook.now = func() time.Time { return now }
+	reads := 0
+	underlying := hook.readFile
+	hook.readFile = func(p string) ([]byte, error) {
+		reads++
+		return underlying(p)
+	}
 	return &lineageProbe{
-		fs:  fs,
-		now: now,
+		fs:    fs,
+		now:   now,
+		reads: &reads,
 		ops: searchOps{
 			getppid:  func() int { return 4242 },
 			hostname: func() (string, error) { return "probe-host", nil },
@@ -200,6 +210,30 @@ func TestTheExactLineagePathIsStillHonoured(t *testing.T) {
 
 	if env == nil || env.SessionID != "cursor-session" || env.Seq != 8 {
 		t.Fatalf("the sidecar named outright was not used: %+v", env)
+	}
+}
+
+// A search that can name no host does not even OPEN another session's
+// sidecar.
+//
+// Refusing to adopt one after reading it would give the same trace, so this
+// is a test about what the walk touches rather than what it returns: a search
+// with nothing to match against has no business parsing the sessions of every
+// agent working above it, and a walk it never starts cannot grow a way to
+// adopt something later. The harness check and this gate are separate rules,
+// and without this test only the first of them is guarded.
+func TestASearchThatNamesNoHostReadsNoOtherSessionsFile(t *testing.T) {
+	p := newLineageProbe(t, filepath.Join(adoptRoot, "ws-cursor"), nil)
+	p.write(t, adoptRoot, "claude-code", "claude-session")
+
+	*p.reads = 0
+	env := p.trace(nil)
+
+	if env == nil {
+		t.Fatal("no trace at all")
+	}
+	if *p.reads != 0 {
+		t.Errorf("a search naming no host opened %d lineage file(s) belonging to other sessions; it cannot own any of them, so it should not be reading them", *p.reads)
 	}
 }
 
