@@ -166,3 +166,44 @@ func TestSplitMarkedBlockRecognizesAnArrayOfTables(t *testing.T) {
 		t.Fatalf("sections = %v, want [provider]", got)
 	}
 }
+
+// TOML's key grammar, not "anything but ]": a quoted segment may hold any
+// bracket it likes. Each of these was no boundary at all to the first
+// pattern, so the table merged into the section above it.
+func TestSplitMarkedBlockReadsAHeaderByTheKeyGrammar(t *testing.T) {
+	for _, header := range []string{
+		`projects.'/home/u/work [1]'`,
+		`projects."/home/u/a]b"`,
+		`projects."/home/u/say \"hi\" ]x"`,
+		`a . 'b]' . "c]"`,
+		`'only]quoted'`,
+	} {
+		t.Run(header, func(t *testing.T) {
+			region := ourBlockRegion(t, "/home/u/.tokendrop/state") + "[" + header + "]\nk = 1\n"
+			_, sections, ok := splitMarkedBlock(region)
+			if !ok {
+				t.Fatal("did not split")
+			}
+			if len(sections) != 2 {
+				t.Fatalf("sections = %v, want ours and [%s]: the header was not a boundary", sectionNames(sections), header)
+			}
+			if sections[1].header != header {
+				t.Fatalf("header = %q, want %q", sections[1].header, header)
+			}
+			if strings.Contains(sections[0].text, "k = 1") {
+				t.Fatalf("our section swallowed the table below it:\n%s", sections[0].text)
+			}
+		})
+	}
+}
+
+// And what is not a header stays not one.
+func TestSplitMarkedBlockDoesNotTakeAValueForAHeader(t *testing.T) {
+	_, sections, ok := splitMarkedBlock("[a]\nlist = [\n  1,\n]\nother = [ \"x]\" ]\n")
+	if !ok {
+		t.Fatal("did not split")
+	}
+	if got := sectionNames(sections); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("sections = %v, want just [a]", got)
+	}
+}

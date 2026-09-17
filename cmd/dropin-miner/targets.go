@@ -519,6 +519,9 @@ func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntr
 				p.notes = append(p.notes, fmt.Sprintf("%s: keeping %s in %s that dropin-miner did not write: %s",
 					t.Label(), tables(len(r.kept)), paths.codexConfig, strings.Join(r.kept, ", ")))
 			}
+			if len(r.dropped) > 0 {
+				p.notes = append(p.notes, droppedKeysNote(t.Label(), paths.codexConfig, r.dropped))
+			}
 			planWrite(ops, t.Label(), paths.codexConfig, r.next, mode, "remove sandbox block", p)
 			removed = true
 		case r.had:
@@ -537,6 +540,9 @@ type sandboxRemoval struct {
 	ours bool     // it is this installation's, and next may be written
 	kept []string // tables inside the markers this client did not write
 	why  string   // why it was left, when ours is false
+	// dropped is the keys inside OUR table the renderer does not write,
+	// which go with the table and are named in the plan (keysWeDidNotWrite).
+	dropped []string
 }
 
 // removeOurSandboxBlock takes out the marked [sandbox_workspace_write] table
@@ -584,10 +590,11 @@ func removeOurSandboxBlock(existing []byte, entry binEntry) sandboxRemoval {
 		}
 	}
 	return sandboxRemoval{
-		next: appendTables(stripped, contents.foreignText()),
-		had:  true,
-		ours: true,
-		kept: contents.foreignNames(),
+		next:    appendTables(stripped, contents.foreignText()),
+		had:     true,
+		ours:    true,
+		kept:    contents.foreignNames(),
+		dropped: keysWeDidNotWrite(contents.oursText()),
 	}
 }
 

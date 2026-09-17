@@ -287,3 +287,154 @@ func TestAnotherInstallationsBlockIsStillLeftAloneWithHostTablesInIt(t *testing.
 		t.Errorf("the reason was not reported:\n%s", out)
 	}
 }
+
+// ── L2b: a header the first pattern could not see ───────────────────────
+
+// Codex keys a project's trust by its path, so a folder named `work [1]`
+// puts a `]` inside a quoted key. The first header pattern said "anything
+// but ]" between the brackets, could not match these, and so saw no
+// boundary: the table merged into our section and was deleted with it, exit
+// 0, no note. Reproduced through both real paths before this was written.
+var bracketedHeaders = []struct{ name, table string }{
+	{"a ] inside a single-quoted key", "[projects.'/home/u/work [1]']\ntrust_level = \"trusted\"\n"},
+	{"a ] inside a double-quoted key", "[projects.\"/home/u/a]b\"]\ntrust_level = \"trusted\"\n"},
+	{"an escaped quote before the ]", "[projects.\"/home/u/say \\\"hi\\\" ]x\"]\ntrust_level = \"trusted\"\n"},
+}
+
+// insideOurMarkers runs a real install and then puts text where Codex puts
+// its appends: at the end of the file, which is inside our markers.
+func insideOurMarkers(t *testing.T, text string) (m *fakeMachine, ops agentOps, cfgPath, seeded string) {
+	t.Helper()
+	cfgPath, _ = sandboxTestConfig(t)
+	m, ops = newFakeMachine("codex")
+	m.files["/home/u/.codex/config.toml"] = []byte("model = \"gpt-5\"\n")
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", cfgPath, "-yes"); code != exitOK {
+		t.Fatalf("install: %d\n%s%s", code, out, errOut)
+	}
+	installed := string(m.files["/home/u/.codex/config.toml"])
+	i := strings.LastIndex(installed, agentsMarkerEnd)
+	if i < 0 {
+		t.Fatalf("no end marker in the installed config:\n%s", installed)
+	}
+	seeded = installed[:i] + text + installed[i:]
+	m.files["/home/u/.codex/config.toml"] = []byte(seeded)
+	return m, ops, cfgPath, seeded
+}
+
+// Kept AND removed, not merely refused: a refusal also leaves the table in
+// the file, so asserting only that it survived would pass on the net alone
+// and leave the grammar unpinned.
+func TestUninstallKeepsATableWhoseHeaderHoldsABracket(t *testing.T) {
+	for _, tc := range bracketedHeaders {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ops, cfgPath, _ := insideOurMarkers(t, tc.table)
+			code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", cfgPath, "-yes")
+			if code != exitOK {
+				t.Fatalf("uninstall: %d\n%s%s", code, out, errOut)
+			}
+			got := string(m.files["/home/u/.codex/config.toml"])
+			if !strings.Contains(got, tc.table) {
+				t.Fatalf("the table was destroyed:\n%s", got)
+			}
+			if strings.Contains(got, agentsMarkerBegin) || strings.Contains(got, "["+codexSandboxTable+"]") {
+				t.Errorf("our own table was not removed — the header was not recognized as a boundary, and only the net saved the table:\n%s\n%s", got, out)
+			}
+			if !strings.Contains(out, "keeping 1 table") {
+				t.Errorf("the plan did not name what it kept:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestInstallKeepsATableWhoseHeaderHoldsABracket(t *testing.T) {
+	for _, tc := range bracketedHeaders {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ops, cfgPath, _ := insideOurMarkers(t, tc.table)
+			code, out, errOut := runAgents(t, ops, nil, "install", "-config", cfgPath, "-yes")
+			if code != exitOK {
+				t.Fatalf("install: %d\n%s%s", code, out, errOut)
+			}
+			got := string(m.files["/home/u/.codex/config.toml"])
+			if !strings.Contains(got, tc.table) {
+				t.Fatalf("the table was destroyed:\n%s", got)
+			}
+			end := strings.Index(got, agentsMarkerEnd)
+			if end < 0 || strings.Index(got, tc.table) < end {
+				t.Errorf("the table was not moved out below our block — the header was not recognized as a boundary, and only the net saved the table:\n%s\n%s", got, out)
+			}
+		})
+	}
+}
+
+// The net, handed directly the thing it exists to stop: a section classified
+// as ours that is carrying somebody else's table. No header trick is needed
+// to build it, which is the point — the net must not depend on knowing which
+// header the scan will miss next.
+func TestTheNetRefusesASectionThatIsNotOnlyOurs(t *testing.T) {
+	ours := sandboxSettings([]string{"/home/u/.tokendrop/state"})
+	for _, tc := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"our table alone", ours, true},
+		{"our table with our comments above it", "# a comment\n" + ours, true},
+		{"our table and a foreign one", ours + "[windows]\nsandbox = \"unelevated\"\n", false},
+		{"our table and the table the first pattern missed", ours + "[projects.'/home/u/work [1]']\ntrust_level = \"trusted\"\n", false},
+		{"a sub-table nested under our own name", ours + "[" + codexSandboxTable + ".'a]b']\nk = 1\n", false},
+		{"an inline table inside ours", ours + "extra = { k = 1 }\n", false},
+		{"a foreign table alone", "[windows]\nsandbox = \"unelevated\"\n", false},
+		{"not TOML", "= = =\n", false},
+		{"nothing at all", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := oursIsOnlyOurs(tc.text); got != tc.want {
+				t.Fatalf("oursIsOnlyOurs = %v, want %v, for:\n%s", got, tc.want, tc.text)
+			}
+		})
+	}
+}
+
+// The net's other direction, through both real paths. A sub-table written
+// under our own name is recognized as a header and classified as somebody
+// else's — correctly, the renderer never writes it — but keeping it while
+// removing or re-rendering our table would leave Codex a config that defines
+// [sandbox_workspace_write] twice, or a child with no parent it was written
+// for. Neither path may guess, so both leave the block exactly as it is and
+// say so.
+func TestABlockHoldingATableUnderOurNameIsLeftAlone(t *testing.T) {
+	nested := "[" + codexSandboxTable + ".mine]\nk = 1\n"
+	m, ops, cfgPath, seeded := insideOurMarkers(t, nested)
+	for _, verb := range []string{"uninstall", "install"} {
+		code, out, errOut := runAgents(t, ops, nil, verb, "-config", cfgPath, "-yes")
+		if code != exitOK && verb == "uninstall" {
+			t.Fatalf("%s: %d\n%s%s", verb, code, out, errOut)
+		}
+		if got := string(m.files["/home/u/.codex/config.toml"]); got != seeded {
+			t.Fatalf("%s changed a block it could not attribute:\n%s", verb, got)
+		}
+		if !strings.Contains(out+errOut, "cannot be read as TOML tables") {
+			t.Errorf("%s did not say why it left the block:\n%s%s", verb, out, errOut)
+		}
+	}
+}
+
+// A key the participant added inside OUR table goes with the table — the
+// table between our markers is ours to render — and is named in the plan
+// first, on both paths, never dropped silently.
+func TestAKeyAddedInsideOurTableIsNamedBeforeItGoes(t *testing.T) {
+	for _, verb := range []string{"uninstall", "install"} {
+		t.Run(verb, func(t *testing.T) {
+			_, ops, cfgPath, _ := insideOurMarkers(t, "exclude_slash_tmp = true\n")
+			code, out, errOut := runAgents(t, ops, nil, verb, "-config", cfgPath, "-dry-run")
+			if code != exitOK {
+				t.Fatalf("%s -dry-run: %d\n%s%s", verb, code, out, errOut)
+			}
+			for _, want := range []string{"exclude_slash_tmp", "did not write", "goes with the table"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the plan did not say %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}

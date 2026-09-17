@@ -1367,6 +1367,9 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 		if have.oursText() == wantContents.oursText() && len(have.foreign) == 0 {
 			return // already what we would write, wherever in the file it sits
 		}
+		if extra := keysWeDidNotWrite(have.oursText()); len(extra) > 0 {
+			p.notes = append(p.notes, droppedKeysNote(label, path, extra))
+		}
 		if len(have.foreign) > 0 {
 			p.notes = append(p.notes, fmt.Sprintf("%s: moving %s out of the dropin-miner block in %s, below it, so a later append by Codex lands outside ours: %s",
 				label, tables(len(have.foreign)), path, strings.Join(have.foreignNames(), ", ")))
@@ -1377,6 +1380,14 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 	}
 	next := appendMarkedBlock(stripped, want)
 	planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
+}
+
+// droppedKeysNote is the one sentence both plans use for a key a participant
+// added inside our own table, which goes when the table is rewritten or
+// removed (keysWeDidNotWrite).
+func droppedKeysNote(label, path string, keys []string) string {
+	return fmt.Sprintf("%s: [%s] inside the dropin-miner block in %s also holds %s, which dropin-miner did not write and which goes with the table; to keep it, move it to a table of your own outside the block first",
+		label, codexSandboxTable, path, strings.Join(keys, ", "))
 }
 
 // mustRegion is the text between the markers of a block this client just
@@ -1489,12 +1500,39 @@ type tomlSection struct {
 	text   string // original bytes: attached comments, the header, the body
 }
 
-// tomlHeaderLine is a whole line that is nothing but a table header. Anchored
-// at both ends on purpose: this is not a TOML parser and must not become one.
-// It recognizes exactly the shape a table header is written in, and
-// splitMarkedBlock refuses the whole block rather than guess when what it
-// produced does not decode.
-var tomlHeaderLine = regexp.MustCompile(`^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$`)
+// tomlHeaderLine is a whole line that is nothing but a table header, with the
+// name spelled in TOML's own key grammar: bare, single-quoted and
+// double-quoted segments joined by dots.
+//
+// The first version said "anything but ]" between the brackets, and that is
+// not the grammar. Codex keys a project's trust by its path, so a folder
+// named `work [1]` gives `[projects.'/home/u/work [1]']` — a header the
+// pattern could not match, which therefore was no boundary at all: the table
+// merged into the section above it, ours, and was deleted with it. Every
+// section still decoded, so the decode check saw nothing wrong.
+//
+// Getting the grammar right fixes that header. It does not make the scan
+// trustworthy, because the next miss would fail the same silent way; that is
+// oursIsOnlyOurs' job, and the two are deliberately independent.
+var tomlHeaderLine = func() *regexp.Regexp {
+	const (
+		bare    = `[A-Za-z0-9_-]+`
+		literal = `'[^'\n]*'`
+		basic   = `"(?:[^"\\\n]|\\.)*"`
+		segment = `(?:` + bare + `|` + literal + `|` + basic + `)`
+		key     = segment + `(?:[ \t]*\.[ \t]*` + segment + `)*`
+	)
+	return regexp.MustCompile(`^[ \t]*(?:\[\[[ \t]*(` + key + `)[ \t]*\]\]|\[[ \t]*(` + key + `)[ \t]*\])[ \t]*(?:#.*)?$`)
+}()
+
+// headerName is the table name a tomlHeaderLine match captured, from
+// whichever of its two alternatives matched.
+func headerName(m []string) string {
+	if m[1] != "" {
+		return strings.TrimSpace(m[1])
+	}
+	return strings.TrimSpace(m[2])
+}
 
 // splitMarkedBlock cuts the text inside our markers into its top-level
 // tables. preamble is whatever precedes the first table, comments included.
@@ -1531,7 +1569,7 @@ func splitMarkedBlock(region string) (preamble string, sections []tomlSection, o
 		if len(marks) > 0 && start <= marks[len(marks)-1].header {
 			start = marks[len(marks)-1].header + 1
 		}
-		marks = append(marks, mark{start: start, header: i, name: strings.TrimSpace(m[1])})
+		marks = append(marks, mark{start: start, header: i, name: headerName(m)})
 	}
 	if len(marks) == 0 {
 		return region, nil, decodesAsTOML(region)
@@ -1631,7 +1669,115 @@ func splitCodexBlock(region string) (codexBlockContents, bool) {
 		}
 		c.foreign = append(c.foreign, s)
 	}
+	// The net, in both directions. What is about to be deleted or rewritten
+	// as ours must be our table and nothing else; what is about to be kept
+	// must not be hiding our table, or a refresh would write a second one
+	// beside it and leave Codex a config that no longer parses.
+	if len(c.ours) > 0 && !oursIsOnlyOurs(c.oursText()) {
+		return codexBlockContents{}, false
+	}
+	for _, s := range c.foreign {
+		if definesTopLevel(s.text, codexSandboxTable) {
+			return codexBlockContents{}, false
+		}
+	}
 	return c, true
+}
+
+// oursIsOnlyOurs is the last check before text classified as ours is deleted
+// or rewritten: decoded, it must hold exactly one top-level key,
+// codexSandboxTable, and no table nested inside it. Anything else means the
+// line scan missed a boundary and somebody else's table is riding along in
+// our section — and the only safe reading of that is to touch nothing.
+//
+// It exists because the scan's failure is silent. A header the pattern does
+// not recognize is not an error, it is just not a boundary; the text around
+// it still decodes; and the first anyone hears of it is a participant's
+// folder trust gone. Correcting the pattern fixes the headers known about
+// today. This makes every one not yet known about safe by construction: a
+// false negative in header recognition can now only ever cost a refusal,
+// never a table. Its own function so it can be handed a bad section
+// directly, without needing a header the scan happens to miss.
+func oursIsOnlyOurs(text string) bool {
+	var doc map[string]any
+	if _, err := toml.Decode(text, &doc); err != nil {
+		return false
+	}
+	if len(doc) != 1 {
+		return false
+	}
+	table, ok := doc[codexSandboxTable].(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, v := range table {
+		if holdsTable(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// holdsTable: is v a table, or an array with one in it? A sub-table header
+// the scan missed (`[sandbox_workspace_write.'a]b']`) decodes as exactly
+// this, nested under our own name where a count of top-level keys would not
+// see it.
+func holdsTable(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		return true
+	case []map[string]any:
+		return len(x) > 0
+	case []any:
+		for _, e := range x {
+			if holdsTable(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// definesTopLevel: does this text, decoded, define key at its top level?
+func definesTopLevel(text, key string) bool {
+	var doc map[string]any
+	if _, err := toml.Decode(text, &doc); err != nil {
+		return true // unreadable is not provably free of it
+	}
+	_, ok := doc[key]
+	return ok
+}
+
+// keysWeDidNotWrite names the keys inside OUR table that the renderer does
+// not write, sorted. A participant can add one there — Codex has other
+// settings that live in [sandbox_workspace_write] — and the table is
+// replaced whole on a refresh and removed whole on uninstall, so such a key
+// goes with it. That is a decision, not an accident: the table between our
+// markers is ours to render, merging a stranger's keys into it would make
+// "what the renderer writes" stop being the definition of ours, and the
+// participant's copy of the setting belongs in a table of their own outside
+// the block. But it is never dropped silently: every plan that drops one
+// names it first.
+//
+// The renderer's own key set is read from the renderer, not repeated here.
+func keysWeDidNotWrite(oursText string) []string {
+	var have, want map[string]any
+	if _, err := toml.Decode(oursText, &have); err != nil {
+		return nil
+	}
+	if _, err := toml.Decode(sandboxSettings(nil), &want); err != nil {
+		return nil
+	}
+	ours, _ := want[codexSandboxTable].(map[string]any)
+	table, _ := have[codexSandboxTable].(map[string]any)
+	var extra []string
+	for k := range table {
+		if _, rendered := ours[k]; !rendered {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return extra
 }
 
 // onlyComments: is every line a comment or blank? Such a preamble is ours

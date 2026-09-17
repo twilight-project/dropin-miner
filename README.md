@@ -218,7 +218,13 @@ and names them. Install does the same rather than rewriting over them, and
 moves any it finds inside the markers out below them, so the host's next append
 lands outside our block. A block that cannot be read as TOML tables is left
 exactly as it is and reported, because deleting a region this client cannot
-parse is how a config gets destroyed. For the same reason "already installed"
+parse is how a config gets destroyed. Before anything classified as ours is
+deleted or rewritten it is decoded and must be exactly our one table, with
+nothing nested in it — so a table header the scan fails to recognize can cost a
+refusal, never a table. The one thing that does go with our table is a key you
+added inside it yourself: the table between the markers is ours to render, so
+the plan names that key before it goes and tells you to move it to a table of
+your own first. For the same reason "already installed"
 compares our own table against what the renderer would write, not the file's
 last bytes against a rebuilt file: with anything at all after our block the
 latter differed every time and planned a write on every run. In practice only the opencode plugin and the Pi extension can be in

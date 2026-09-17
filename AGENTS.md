@@ -227,7 +227,13 @@ each line names the file that owns the rule and the test that proves it.
   `codexSandboxTable`. Neither is about position, which is what made both defects possible — #73
   matched a hook by its binary alone, #82 deleted a marker-to-marker byte range and took Codex's
   folder trust and `[windows] sandbox` with it. A block that will not decode is left alone and
-  reported, never deleted. `codex_block_ownership_test.go` drives install and uninstall against
+  reported, never deleted. The line scan that finds the boundaries is **not trusted**:
+  `oursIsOnlyOurs` decodes whatever was classified as ours and requires exactly our one table with
+  nothing nested in it before a byte is deleted or rewritten, because a header the scan misses is
+  not an error, only a missing boundary, and the text around it still decodes — the first pattern
+  said "anything but `]`", Codex keys folder trust by path, and `[projects.'/home/u/work [1]']`
+  went with our table, exit 0, no note. The grammar is fixed; the net is what makes the next miss
+  a refusal instead of a lost table, and the two are tested independently on purpose. `codex_block_ownership_test.go` drives install and uninstall against
   the shapes Codex produces; `marked_block_sections_test.go` tests the split on its own first,
   because getting it wrong in the removing direction destroys a participant's settings.
 - **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
