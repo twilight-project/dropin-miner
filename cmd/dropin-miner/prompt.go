@@ -68,6 +68,19 @@ func promptSetup(w io.Writer, question string, r io.Reader) (string, error) {
 // the reading the prompts which already handled their read error — the
 // enrollment token, the provider key, the sr- key, the keyfile
 // passphrase, the purge confirmation — were each written against.
+//
+// Two of those did not move here and should be named rather than left to
+// be rediscovered: enroll.go's enrollment-token and provider-key prompts
+// still carry their own copy of this classification, spelled
+// `err != nil && strings.TrimSpace(line) == ""`. It agrees with this one
+// in substance today — a read that delivered only whitespace is as good
+// as one that delivered nothing — and both are correct. But they are two
+// answers to the question this file exists to answer once, and they will
+// not follow if the rule here ever changes. They read os.Stdin directly
+// rather than a reader passed in, so routing them through promptBufio
+// needs a seam they do not have; giving them one is a change to how
+// `enroll` and `provider` take their input, which is worth doing on its
+// own and not as a rider on this.
 func answerOrAbort(line string, err error) (string, error) {
 	if err != nil && line == "" {
 		return "", errPromptAborted

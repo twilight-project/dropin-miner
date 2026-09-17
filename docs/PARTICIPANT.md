@@ -515,6 +515,11 @@ way, saying which. Your approval on the platform is revoked only at the
 console. If you made the wallet here, the 24 words you wrote down are the only
 other copy, so do not purge until you have them or have moved the funds.
 
+If you stop it — answer the address prompt wrong, say no to the plain
+uninstall — the installation is left exactly as it was found. That includes the
+lock files uninstall has to take to be sure nothing else is running: one it had
+to create is removed again, one that was already there is left alone.
+
 Coming back later, run the installer again (or `dropin-miner setup`). It looks
 for `~/.tokendrop`, or a set-aside copy beside it (`~/.tokendrop.bak-<date>`,
 `~/.tokendrop.old`), tells you what it holds — the wallet's address, whether it

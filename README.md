@@ -598,6 +598,10 @@ While uninstall runs it holds a lock that setup, connect and flush wait for, so
 none of them starts underneath it. A plain uninstall refuses to start while
 setup is running; `-binary` and `-purge-state` also refuse while connect or
 flush is. Those are excluded for as long as uninstall holds their locks.
+Holding a lock creates its file if it was not there yet, so a run that stops
+before it changes anything — a confirmation answered wrong, a refusal — removes
+exactly the lock files it made itself, and never one that was already there.
+"Nothing was changed" means the installation is as it was found.
 
 The wallet in `~/.tokendrop` is the only copy unless you kept the 24 words.
 Instead of purging, you can set the directory aside as

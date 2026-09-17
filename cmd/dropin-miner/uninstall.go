@@ -282,6 +282,11 @@ func (r *uninstallRun) run(homeFlag string) int {
 		}
 	}
 
+	// Past the decision: the operation lock files this run's exclusion had
+	// to create are now part of the installation it is changing, not
+	// something an abort has to undo (#86, lifecycle.go's release).
+	r.ex.proceeded()
+
 	r.applyIntegrations()
 	r.applyEnvironment()
 	revocation := ""
@@ -401,7 +406,12 @@ func (r *uninstallRun) exclude() (*lifecycleExclusion, error) {
 	if err != nil {
 		return nil, err
 	}
-	ex := &lifecycleExclusion{home: r.home, gate: gate}
+	// removeCreated for the same reason excludeLifecycle sets it: a
+	// default run that is declined at "Remove what is listed above?"
+	// prints that nothing was changed, and a setup.lock this probe made
+	// would make that false too (#86). The issue reported -purge-state,
+	// but nothing about the defect was particular to it.
+	ex := &lifecycleExclusion{home: r.home, gate: gate, removeCreated: true}
 	if err := ex.hold("setup", filepath.Join(r.home, setupLockFile)); err != nil {
 		ex.release()
 		return nil, err

@@ -219,6 +219,16 @@ each line names the file that owns the rule and the test that proves it.
   `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
   read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
   uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
+- **What a destructive run may leave behind** — `cmd/dropin-miner/lifecycle.go` owns the
+  exclusion: which operation locks it takes, which of those files it created, and the rule that
+  `release` removes exactly those and only when the operation never proceeded (`proceeded()`).
+  `excludeForUpgrade` opts out, in its own words, at its own construction. `install.sh`'s EXIT
+  trap and `install.ps1`'s try/finally are the same rule for the download: the temporary directory
+  goes on every exit path, because a checksum failure is the one case where what is left behind is
+  the file just called untrustworthy. `lifecycle_created_locks_test.go` and
+  `installer_tempdir_test.go` guard them; the second names where the temporary directory was
+  before it claims it is gone, because asserting an empty scratch directory passes just as well
+  when nothing was ever created there.
 - **Wallet custody and the send journal** — `wallet_store.go` owns the creation lock and the
   wallet directory's layout; `wallet_journal.go` owns `pending_tx.json` and its resolution;
   `wallet_tx.go` hand-encodes the signed bytes. `wallet_lock_test.go` proves creation is exclusive
