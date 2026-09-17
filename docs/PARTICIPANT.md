@@ -124,8 +124,8 @@ Setup asks, in order:
 |---|---|
 | **Use it? [Y/n]** | Only if a previous installation is set aside beside `~/.tokendrop` (one inside `~/.tokendrop` is simply used). Setup first says where it is and what it holds. Yes brings back your wallet, registration and key; the questions below that they answer are then skipped. |
 | **Enable mining rewards? [y/N]** | A bare Enter answers no — search still works either way. Yes asks the next question now; changing your mind later is `dropin-miner mining enable` (or `mining disable` to stop). |
-| **Payout address (leave empty to create a wallet here):** | Only asked after yes above. Paste a `twilight1…` address you control, or leave it empty for a wallet: it prints its 24 words once. Have paper ready. |
-| **Add them to ~/.zshrc? [Y/n]** | (or `~/.bashrc`, whichever your shell reads). Puts the binary on PATH and sets `TOKENDROP_CONFIG`, in one marked block. Saying no just means longer commands. On Windows the question is **Set them for your user? [Y/n]**: the same two, in your user environment. |
+| **Payout address (leave empty to create a wallet here):** | Only asked after yes above. Paste a `twilight1…` address you control, or leave it empty for a wallet: it asks for a keyfile passphrase (**keyfile passphrase:**, then **again:** to confirm) before it prints the 24 words once. Have paper ready. |
+| **Add them to ~/.zshrc? [Y/n]** | (or `~/.bashrc`, whichever your shell reads). Puts the binary on PATH, sets `TOKENDROP_CONFIG`, and — when a wallet was made here — `TOKENDROP_WALLET_DIR`, in one marked block. Saying no just means longer commands. On Windows the question is **Set them for your user? [Y/n]**: PATH and `TOKENDROP_CONFIG` only, in your user environment. |
 | **Set up the coding agents found on this machine now? [Y/n]** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written. |
 
 `dropin-miner setup -yes` answers yes to **Add them to ~/.zshrc?** (on Windows,

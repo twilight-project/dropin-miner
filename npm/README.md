@@ -80,11 +80,13 @@ setup`, which asks as it goes, in this order:
 2. The config is written, or an existing one is kept (see Config). Then
    `connect` registers with the search platform and stores the key it mints —
    nothing to copy, nothing to paste — and asks **Enable mining rewards?**
-   and, on yes, **Payout address** (empty creates a wallet), then prints a
-   claim link.
-3. **Add them to your shell profile?** — the binary's directory on PATH and
-   `TOKENDROP_CONFIG`. On Windows there is no profile: the question is whether
-   to set those two in your user environment.
+   and, on yes, **Payout address** (empty creates a wallet: it asks for a
+   keyfile passphrase, twice, before it prints the 24-word recovery phrase),
+   then prints a claim link.
+3. **Add them to your shell profile?** — the binary's directory on PATH,
+   `TOKENDROP_CONFIG`, and — when a wallet was made here — `TOKENDROP_WALLET_DIR`.
+   On Windows there is no profile: the question is whether to set PATH and
+   `TOKENDROP_CONFIG` (only) in your user environment.
 4. **Set up the coding agents found on this machine now?** — shown with
    exactly what would be written first.
 
