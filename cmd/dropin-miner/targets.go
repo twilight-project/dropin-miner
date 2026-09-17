@@ -117,6 +117,25 @@ const (
 	shellArgv shellKind = "argv"
 )
 
+// shellChoice says who decides which of a cell's shells runs a given call.
+// It matters only where a cell names more than one, and only to the words
+// the skill puts above each block: whoever reads that block has to recognize
+// their own situation in it, and the two situations are not the same one.
+type shellChoice string
+
+const (
+	// chosenPerCall: the host offers several tools, the model picks one per
+	// call, and the call itself says which — Claude Code's PreToolUse payload
+	// names the tool. The label can therefore speak about the call.
+	chosenPerCall shellChoice = "per-call"
+	// chosenByParticipant: one shell runs every call, and which one is the
+	// participant's own configuration — Cursor's editor runs its terminal
+	// according to terminal.integrated.defaultProfile.windows (#96). Nothing
+	// in the call says which it is and nothing this client installs can, so
+	// the label has to speak about the machine instead.
+	chosenByParticipant shellChoice = "participant"
+)
+
 // shellEvidence says how a cell is known.
 type shellEvidence string
 
@@ -140,6 +159,10 @@ type shellCell struct {
 	evidence shellEvidence
 	shells   []shellKind
 	source   string
+	// choice says who picks, and is required of every cell naming more than
+	// one tool shell (TestEveryMultiShellToolCellSaysWhoChooses). A cell
+	// naming one shell leaves it empty: there is nothing to pick between.
+	choice shellChoice
 }
 
 // hostShells is one host's declaration on one OS.
@@ -220,6 +243,25 @@ var (
 
 func established(source string, shells ...shellKind) shellCell {
 	return shellCell{evidence: evidenceEstablished, shells: shells, source: source}
+}
+
+// establishedChosenBy is established() for a cell that names more than one
+// shell, where who picks between them is part of the fact being declared.
+func establishedChosenBy(choice shellChoice, source string, shells ...shellKind) shellCell {
+	c := established(source, shells...)
+	c.choice = choice
+	return c
+}
+
+// toolShellChoice is who picks, among the tool shells t declares on goos.
+// A cell that names one shell, or none this client can render for, answers
+// "": there is nothing to pick between, and nothing to label.
+func toolShellChoice(t installTarget, goos string) shellChoice {
+	d, ok := t.(shellDeclaringTarget)
+	if !ok {
+		return ""
+	}
+	return d.Shells(goos).tool.choice
 }
 
 // installTargets is every target this binary knows how to install, in the
@@ -403,7 +445,7 @@ func (claudeTarget) Shells(goos string) hostShells {
 			// only one where Git for Windows is absent — runs through
 			// PowerShell. A skill that taught only the heredoc would be wrong
 			// for every call the model made with the second.
-			tool: established("live: soak #57 Windows (Git Bash); docs setup: \"With Git for Windows, Claude Code uses Git Bash for the Bash tool\"; docs tools-reference: the PowerShell tool is \"on by default for claude.ai and Console accounts\" and \"Claude treats PowerShell as the primary shell\" when enabled", shellPOSIX, shellPowerShell),
+			tool: establishedChosenBy(chosenPerCall, "live: soak #57 Windows (Git Bash); docs setup: \"With Git for Windows, Claude Code uses Git Bash for the Bash tool\"; docs tools-reference: the PowerShell tool is \"on by default for claude.ai and Console accounts\" and \"Claude treats PowerShell as the primary shell\" when enabled", shellPOSIX, shellPowerShell),
 			hook: established("docs hooks: \"Git Bash on Windows, or PowerShell when Git Bash isn't installed\"; live: soak #57 Windows", shellPOSIX),
 		}
 	}
@@ -623,9 +665,11 @@ func (cursorTarget) Label() string    { return "Cursor" }
 func (cursorTarget) Kind() targetKind { return targetHost }
 
 // Cursor's agent runs commands in the user's terminal shell on macOS and
-// Linux, and in PowerShell on Windows (the CLI's ps-script-*.ps1; the
-// editor's agent "defaults to PowerShell no matter what terminal profile you've
-// set"). Its hooks ran on macOS; on Linux nothing names the runner; on Windows
+// Linux. On Windows it runs them in PowerShell by default (the CLI's
+// ps-script-*.ps1) or in whatever terminal.integrated.defaultProfile.windows
+// names — Git Bash on the machine #96 was found on — so that cell declares
+// both and the skill teaches a form for each. Its hooks ran on macOS; on
+// Linux nothing names the runner; on Windows
 // no hook was observed live, and the hooks.json string fails to parse as
 // PowerShell and runs under cmd — so the Windows hook cell is ruled rather
 // than observed: a hook command must be proven under cmd and both
@@ -655,7 +699,16 @@ func (cursorTarget) Shells(goos string) hostShells {
 		}
 	case "windows":
 		return hostShells{
-			tool: established("live: soak #67 Windows (Cursor CLI, ps-script-*.ps1); forum.cursor.com/t/154914 staff: agent shell \"defaults to PowerShell\"", shellPowerShell),
+			// Two shells, and the participant picks — not per call, once, in
+			// terminal.integrated.defaultProfile.windows (#96). The CLI and a
+			// default editor install use PowerShell, which is why it is first
+			// and why 0.2.10 declared it alone; an editor whose profile is Git
+			// Bash wrapped that PowerShell form in powershell.exe -Command and
+			// bash expanded $OutputEncoding out of it before PowerShell ever
+			// saw it, so the query reached the router as caf? ?? and the search
+			// answered a different question. A single declared shell cannot
+			// describe a host whose shell the participant selects.
+			tool: establishedChosenBy(chosenByParticipant, "live: soak #67 Windows (Cursor CLI, ps-script-*.ps1) and forum.cursor.com/t/154914 staff: agent shell \"defaults to PowerShell\"; live: 0.2.10 release check Windows 11 row R5 (#96), editor with terminal.integrated.defaultProfile.windows = Git Bash ran the Bash heredoc byte-exact and mangled the PowerShell form", shellPowerShell, shellPOSIX),
 			hook: shellCell{
 				evidence: evidenceRuled,
 				shells:   []shellKind{shellCmd, shellPowerShell},

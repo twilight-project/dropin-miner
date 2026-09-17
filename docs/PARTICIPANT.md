@@ -194,9 +194,10 @@ JSON
 
 The skill each agent is given carries that command written for the shell
 that agent actually runs, with the paths of your own installation already
-quoted for it. Where the shell is PowerShell — Cursor and opencode on
-Windows, and Claude Code's PowerShell tool — it is a here-string piped into
-the call instead, with a first line that sets the output encoding:
+quoted for it. Where the shell is PowerShell — opencode on Windows, Claude
+Code's PowerShell tool, and Cursor on Windows unless your terminal profile
+says otherwise — it is a here-string piped into the call instead, with a
+first line that sets the output encoding:
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -209,6 +210,15 @@ That first line is what makes a query with an apostrophe, a quotation mark
 or any non-ASCII character arrive exactly as written: without it, Windows
 PowerShell 5.1 replaces every non-ASCII character with a question mark on
 the way to the program, and the search answers a different question.
+
+Cursor on Windows is the one host that gets both forms, because it runs
+commands in whatever terminal `terminal.integrated.defaultProfile.windows`
+names and that is your setting, not something this client can read. Its skill
+labels the two blocks "If your terminal is PowerShell" and "If your terminal
+is Git Bash"; use the one that matches yours. v0.2.10 taught the PowerShell
+form alone, and on a Git Bash terminal the encoding line was expanded away
+before PowerShell saw it, so a query went out mangled and the search
+succeeded anyway.
 
 That prints exactly one JSON object. Eight fields are always there —
 `version`, `command`, `ok`, `exit_code`, `status`, `code`, `retryable` and

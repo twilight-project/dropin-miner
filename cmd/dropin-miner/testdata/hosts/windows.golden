@@ -10,7 +10,7 @@ claude    tool established posix+powershell
 claude    hook established posix
 codex     tool established powershell
 codex     hook none
-cursor    tool established powershell
+cursor    tool established powershell+posix
 cursor    hook ruled       cmd+powershell
 opencode  tool established powershell
 opencode  hook none
@@ -117,10 +117,18 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 @'
 {"version":1,"query":"exact query text"}
 '@ | & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin
+-- fence bash
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' --stdin <<'JSON'
+{"version":1,"query":"exact query text"}
+JSON
 -- fence powershell
 & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' agents prefer -config 'C:\Users\u\.tokendrop\tokendrop.toml' <argument>
+-- fence bash
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' agents prefer -config 'C:\Users\u\.tokendrop\tokendrop.toml' <argument>
 -- fence powershell
 & 'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
+-- fence bash
+'C:\Users\u\.tokendrop\bin\dropin-miner.exe' search -config 'C:\Users\u\.tokendrop\tokendrop.toml' -format model "<query>"
 
 == cursor: hooks.json commands, as read back from the file
 -- sessionStart
@@ -145,9 +153,15 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 == cursor: beforeShellExecution recognizer grammar on windows
 -- skill block (powershell)
 matches the rendered `search` for powershell
+-- skill block (bash)
+matches the rendered `search` for posix
 -- skill block (powershell)
 matches the rendered `agents prefer` for powershell
+-- skill block (bash)
+matches the rendered `agents prefer` for posix
 -- skill block (powershell)
+refused
+-- skill block (bash)
 refused
 -- stdin command alone
 refused

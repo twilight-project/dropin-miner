@@ -876,7 +876,7 @@ func renderedShellsOnThisOS(t *testing.T, host string) []execShell {
 	}
 	kinds, _ := toolShellsForSkill(tg, runtime.GOOS)
 	var out []execShell
-	for _, k := range kinds {
+	for _, k := range kinds.kinds {
 		out = append(out, execShellsFor(k, false)...)
 	}
 	return out
@@ -903,8 +903,8 @@ func (unestablishedToolHost) Shells(string) hostShells {
 
 func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
 	kinds, note := toolShellsForSkill(unestablishedToolHost{}, "windows")
-	if len(kinds) != 1 || kinds[0] != shellPOSIX {
-		t.Fatalf("an unknown cell renders for %v, want the POSIX fallback", kinds)
+	if len(kinds.kinds) != 1 || kinds.kinds[0] != shellPOSIX {
+		t.Fatalf("an unknown cell renders for %v, want the POSIX fallback", kinds.kinds)
 	}
 	if !strings.Contains(note, "not established") || !strings.Contains(note, "Fake Unestablished Host") {
 		t.Fatalf("the install plan says %q, which does not name the host and the reason", note)
@@ -913,8 +913,8 @@ func TestUnknownToolCellKeepsTheBashForm(t *testing.T) {
 	// declares and prints no note at all.
 	codex, _ := targetByID(installTargets, "codex")
 	kinds, note = toolShellsForSkill(codex, "windows")
-	if len(kinds) != 1 || kinds[0] != shellPowerShell || note != "" {
-		t.Fatalf("Codex on Windows renders for %v with note %q, want powershell and no note", kinds, note)
+	if len(kinds.kinds) != 1 || kinds.kinds[0] != shellPowerShell || note != "" {
+		t.Fatalf("Codex on Windows renders for %v with note %q, want powershell and no note", kinds.kinds, note)
 	}
 }
 

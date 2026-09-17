@@ -362,7 +362,7 @@ func bridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 func recognizerVerdict(command string, entry binEntry, goos string) string {
 	cursor, _ := targetByID(installTargets, "cursor")
 	shells, _ := toolShellsForSkill(cursor, goos)
-	for _, sh := range shells {
+	for _, sh := range shells.kinds {
 		for _, form := range renderedCursorCommands(entry.cfg, sh) {
 			got, ok := matchRendered(strings.TrimSuffix(command, "\n"), form)
 			if !ok || got.bin != entry.command {
@@ -495,7 +495,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 			section(id + ": bridge prefix its lineage adapter writes")
 			tg, _ := targetByID(installTargets, id)
 			shells, _ := toolShellsForSkill(tg, goos)
-			for _, sh := range shells {
+			for _, sh := range shells.kinds {
 				search := skillBlockFor(t, renderedSkillFor(id, entry, goos), sh, "search").body
 				stdin, err := entry.stdinCommandForShell(sh)
 				if err != nil {
