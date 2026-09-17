@@ -206,7 +206,22 @@ rather than a config, so it is matched by its writable roots lying under this
 installation. Anything that names another installation is left in place and
 reported, the same as the shell-profile block; so is anything that names no
 installation at all, since a file uninstall cannot attribute is not one it will
-delete. In practice only the opencode plugin and the Pi extension can be in
+delete.
+
+Inside Codex's block the same question is asked one level down. Codex appends
+its own tables — a project's folder trust, a `[windows] sandbox` choice — to
+the end of `config.toml`, which puts them between our markers whenever our
+block is last, and install had made it last. So removal takes out the one table
+this client writes and keeps every other table in the block, in its original
+bytes, moved below where the block was; the plan says how many it is keeping
+and names them. Install does the same rather than rewriting over them, and
+moves any it finds inside the markers out below them, so the host's next append
+lands outside our block. A block that cannot be read as TOML tables is left
+exactly as it is and reported, because deleting a region this client cannot
+parse is how a config gets destroyed. For the same reason "already installed"
+compares our own table against what the renderer would write, not the file's
+last bytes against a rebuilt file: with anything at all after our block the
+latter differed every time and planned a write on every run. In practice only the opencode plugin and the Pi extension can be in
 that state, and only if they were written before this version — every skill and
 hook command has named its config since v0.2.9 — so uninstall names the file
 and tells you that one `agents install` would stamp it, after which a later

@@ -219,6 +219,17 @@ each line names the file that owns the rule and the test that proves it.
   `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
   read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
   uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
+- **Whose content is inside our marked block** — `cmd/dropin-miner/agents.go` owns the split
+  (`markedRegion`, `splitMarkedBlock`, `splitCodexBlock`) and `targets.go` owns what uninstall
+  does with it (`removeOurSandboxBlock`). It is `ownership_match.go`'s rule one level finer: H5
+  decides whether a block is *this installation's* by what the renderer wrote into it rather than
+  where it sits; this decides which tables *inside* it are ours the same way, from the one name in
+  `codexSandboxTable`. Neither is about position, which is what made both defects possible — #73
+  matched a hook by its binary alone, #82 deleted a marker-to-marker byte range and took Codex's
+  folder trust and `[windows] sandbox` with it. A block that will not decode is left alone and
+  reported, never deleted. `codex_block_ownership_test.go` drives install and uninstall against
+  the shapes Codex produces; `marked_block_sections_test.go` tests the split on its own first,
+  because getting it wrong in the removing direction destroys a participant's settings.
 - **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
   renders `tokendrop.toml`, fresh and migrated; `agents.go`, `setup_env.go` and
   `hermes_install.go` render the blocks that go into a host's own config. Every byte any of them

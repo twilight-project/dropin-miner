@@ -297,7 +297,12 @@ prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
 block in `~/.codex/config.toml` that widens its sandbox just enough: network
-on, and a short list of writable directories. The state directory is always
+on, and a short list of writable directories. Codex writes its own tables into
+that file too — a project's folder trust, a `[windows] sandbox` choice — and
+because it appends them at the end they can land between dropin-miner's
+markers. Only the one table dropin-miner writes is ever removed from there:
+anything else inside the markers is yours, is kept exactly as you left it, and
+is named in the plan before anything is written. The state directory is always
 on that list, because the detached claim resume writes there after every
 search whether you mine or not; the intake, sessions and spool directories
 join it when `[miner] enabled` is set, which is where the mining observation

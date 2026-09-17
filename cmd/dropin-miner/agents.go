@@ -65,10 +65,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/twilight-project/dropin-miner/pkg/config"
 )
@@ -1321,6 +1324,22 @@ func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 // config.toml. A [sandbox_workspace_write] table we did not write is left
 // untouched and reported with a snippet, mirroring the refuse-rather-than-
 // guess rule the installer uses everywhere else.
+//
+// Two things here are #82 and #88 item 4, and they are the same answer:
+//
+//   - The refresh used to strip the marker-to-marker byte range and append a
+//     fresh block, so a table Codex had appended INTO our block was deleted
+//     by install exactly as it was by uninstall. The issue only reported
+//     uninstall because that is where the tester met it; the bug was on both
+//     paths and one helper now answers for both. A foreign table found
+//     inside the markers is moved out, below them, so the next append by the
+//     host lands outside our block instead of inside it.
+//   - "Already installed" used to mean "these file bytes are what we would
+//     write", which is a claim about position: with anything at all after
+//     our block, the rebuilt file put the block last, the bytes differed,
+//     and a write was planned on every run forever. It now means what it
+//     says — our own table already reads as the renderer would write it —
+//     and the rest of the file is none of its business.
 func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agentPlan) {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil {
@@ -1328,22 +1347,69 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 		return
 	}
 	stripped, _ := removeMarkedBlock(existing)
-	if bytes.Contains(stripped, []byte("[sandbox_workspace_write]")) {
+	if bytes.Contains(stripped, []byte("["+codexSandboxTable+"]")) {
 		p.refused = append(p.refused, fmt.Sprintf(
-			"%s: %s already defines [sandbox_workspace_write]; add these settings to it by hand so searches can record:\n%s",
-			label, path, indentBlock(sandboxSettings(roots))))
+			"%s: %s already defines [%s]; add these settings to it by hand so searches can record:\n%s",
+			label, path, codexSandboxTable, indentBlock(sandboxSettings(roots))))
 		return
 	}
-	next := appendMarkedBlock(stripped, codexSandboxBlock(roots))
+
+	want := codexSandboxBlock(roots)
+	if _, region, _, ok := markedRegion(existing); ok {
+		have, readable := splitCodexBlock(region)
+		if !readable {
+			p.refused = append(p.refused, fmt.Sprintf(
+				"%s: the dropin-miner block in %s cannot be read as TOML tables, so it is left as it is; "+
+					"remove the block between its two markers by hand and run this again", label, path))
+			return
+		}
+		wantContents, _ := splitCodexBlock(mustRegion(want))
+		if have.oursText() == wantContents.oursText() && len(have.foreign) == 0 {
+			return // already what we would write, wherever in the file it sits
+		}
+		if len(have.foreign) > 0 {
+			p.notes = append(p.notes, fmt.Sprintf("%s: moving %s out of the dropin-miner block in %s, below it, so a later append by Codex lands outside ours: %s",
+				label, tables(len(have.foreign)), path, strings.Join(have.foreignNames(), ", ")))
+		}
+		next := appendTables(appendMarkedBlock(stripped, want), have.foreignText())
+		planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
+		return
+	}
+	next := appendMarkedBlock(stripped, want)
 	planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
 }
+
+// mustRegion is the text between the markers of a block this client just
+// rendered. The renderer always produces one, so a failure here is a
+// programming error rather than a participant's file being odd.
+func mustRegion(block []byte) string {
+	_, region, _, ok := markedRegion(block)
+	if !ok {
+		return ""
+	}
+	return region
+}
+
+// tables reads "1 table" or "3 tables", for a sentence a participant reads.
+func tables(n int) string {
+	if n == 1 {
+		return "1 table"
+	}
+	return strconv.Itoa(n) + " tables"
+}
+
+// codexSandboxTable is the one table this client writes into Codex's
+// config.toml. Named once and used by the renderer, by install's
+// refuse-a-foreign-one check and by the ownership split on the way out, so
+// no two of them can come to disagree about which table is ours (#82).
+const codexSandboxTable = "sandbox_workspace_write"
 
 func sandboxSettings(roots []string) string {
 	quoted := make([]string, len(roots))
 	for i, r := range roots {
 		quoted[i] = strconv.Quote(r)
 	}
-	return "[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [" + strings.Join(quoted, ", ") + "]\n"
+	return "[" + codexSandboxTable + "]\nnetwork_access = true\nwritable_roots = [" + strings.Join(quoted, ", ") + "]\n"
 }
 
 func codexSandboxBlock(roots []string) []byte {
@@ -1357,21 +1423,10 @@ func codexSandboxBlock(roots []string) []byte {
 
 // removeMarkedBlock strips the block between our markers (inclusive) and
 // reports whether it removed anything, leaving surrounding content intact.
-// markedBlock is the text between our two markers, for a caller that has to
-// read what the block says rather than only take it out.
-func markedBlock(b []byte) (string, bool) {
-	s := string(b)
-	i := strings.Index(s, agentsMarkerBegin)
-	if i < 0 {
-		return "", false
-	}
-	j := strings.Index(s[i:], agentsMarkerEnd)
-	if j < 0 {
-		return "", false
-	}
-	return s[i+len(agentsMarkerBegin) : i+j], true
-}
-
+// A caller that has to read what the block says before taking it out uses
+// markedRegion, which hands back the surrounding text as well — markedBlock,
+// which returned only the middle, had no callers left once #82 made every
+// one of them need the other two pieces too.
 func removeMarkedBlock(b []byte) ([]byte, bool) {
 	s := string(b)
 	i := strings.Index(s, agentsMarkerBegin)
@@ -1396,6 +1451,216 @@ func removeMarkedBlock(b []byte) ([]byte, bool) {
 	default:
 		return []byte(pre + "\n\n" + post), true
 	}
+}
+
+// ── what is inside a marked block ───────────────────────────────────────
+
+// markedRegion is one file split around our block: everything before the
+// begin marker, the text between the markers, and everything after the end
+// marker. ok is false when the file has no well-formed block.
+//
+// removeMarkedBlock answers "take the block out"; this answers "let me look
+// at what is in it first", which is what #82 needs — a third party's tables
+// ended up inside our markers and the byte-range delete took them with it.
+func markedRegion(b []byte) (pre, region, post string, ok bool) {
+	s := string(b)
+	i := strings.Index(s, agentsMarkerBegin)
+	if i < 0 {
+		return "", "", "", false
+	}
+	j := strings.Index(s[i:], agentsMarkerEnd)
+	if j < 0 {
+		return "", "", "", false
+	}
+	end := i + j + len(agentsMarkerEnd)
+	if end < len(s) && s[end] == '\n' {
+		end++
+	}
+	return s[:i], s[i+len(agentsMarkerBegin) : i+j], s[end:], true
+}
+
+// tomlSection is one top-level table inside a region of TOML text, in its
+// original bytes, with the comment and blank lines written immediately above
+// its header. A participant's note about a table belongs to that table and
+// not to whatever happened to precede it, so removing the table above must
+// not take the note with it.
+type tomlSection struct {
+	header string // the table name as written, e.g. `projects.'C:\w'`
+	text   string // original bytes: attached comments, the header, the body
+}
+
+// tomlHeaderLine is a whole line that is nothing but a table header. Anchored
+// at both ends on purpose: this is not a TOML parser and must not become one.
+// It recognizes exactly the shape a table header is written in, and
+// splitMarkedBlock refuses the whole block rather than guess when what it
+// produced does not decode.
+var tomlHeaderLine = regexp.MustCompile(`^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$`)
+
+// splitMarkedBlock cuts the text inside our markers into its top-level
+// tables. preamble is whatever precedes the first table, comments included.
+//
+// ok is false when the result cannot be trusted: when the region does not
+// decode as TOML at all, or when any section taken on its own does not — a
+// cut made inside a multi-line string leaves an unterminated one on both
+// sides of it, which is the one way a line-by-line scan can be fooled here,
+// and is exactly what this catches. A caller that gets ok=false must leave
+// the block alone rather than act on a bad reading.
+func splitMarkedBlock(region string) (preamble string, sections []tomlSection, ok bool) {
+	lines := strings.SplitAfter(region, "\n")
+	// starts[i] is the index of the line a section begins at: the first of
+	// the comment/blank run above its header, else the header itself.
+	type mark struct {
+		start, header int
+		name          string
+	}
+	var marks []mark
+	for i, line := range lines {
+		m := tomlHeaderLine.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
+		if m == nil {
+			continue
+		}
+		start := i
+		for start > 0 {
+			prev := strings.TrimSpace(strings.TrimRight(lines[start-1], "\r\n"))
+			if prev != "" && !strings.HasPrefix(prev, "#") {
+				break
+			}
+			start--
+		}
+		// Never claim a line an earlier section already owns.
+		if len(marks) > 0 && start <= marks[len(marks)-1].header {
+			start = marks[len(marks)-1].header + 1
+		}
+		marks = append(marks, mark{start: start, header: i, name: strings.TrimSpace(m[1])})
+	}
+	if len(marks) == 0 {
+		return region, nil, decodesAsTOML(region)
+	}
+	preamble = strings.Join(lines[:marks[0].start], "")
+	for k, mk := range marks {
+		endLine := len(lines)
+		if k+1 < len(marks) {
+			endLine = marks[k+1].start
+		}
+		sections = append(sections, tomlSection{header: mk.name, text: strings.Join(lines[mk.start:endLine], "")})
+	}
+	if !decodesAsTOML(region) {
+		return "", nil, false
+	}
+	for _, s := range sections {
+		if !decodesAsTOML(s.text) {
+			return "", nil, false
+		}
+	}
+	return preamble, sections, true
+}
+
+// decodesAsTOML is the check that keeps the scan above honest.
+func decodesAsTOML(s string) bool {
+	var doc map[string]any
+	_, err := toml.Decode(s, &doc)
+	return err == nil
+}
+
+// codexBlockContents is what is inside our markers, split by who wrote it.
+//
+// #82: Codex appends its own tables to config.toml, and whenever our block
+// is last in the file — which install made it — they land INSIDE our
+// markers. v0.2.9 removed the marker-to-marker byte range, so uninstall
+// deleted the participant's folder trust and their `[windows] sandbox =
+// "unelevated"` choice along with our own settings, leaving a 0-byte file.
+//
+// The answer is H5's, one level finer. H5 decided whether the whole block
+// was THIS installation's by reading what the renderer wrote into it (its
+// writable_roots) rather than by where it sat. This decides which tables
+// inside it are ours the same way: the renderer writes exactly one table,
+// named by codexSandboxTable, and everything else between the markers was
+// put there by somebody else. Neither rule is about position, which is what
+// made both defects possible.
+//
+// ok is false when the block cannot be read well enough to act on: it does
+// not decode, a section does not stand on its own, or there is content
+// before the first table that is not a whole table and so cannot be moved
+// without changing which table its keys belong to. A caller that gets
+// ok=false leaves the block exactly as it is and says so.
+type codexBlockContents struct {
+	ours    []tomlSection
+	foreign []tomlSection
+}
+
+func (c codexBlockContents) foreignText() string {
+	var b strings.Builder
+	for _, s := range c.foreign {
+		b.WriteString(s.text)
+	}
+	return b.String()
+}
+
+func (c codexBlockContents) foreignNames() []string {
+	out := make([]string, 0, len(c.foreign))
+	for _, s := range c.foreign {
+		out = append(out, "["+s.header+"]")
+	}
+	return out
+}
+
+func (c codexBlockContents) oursText() string {
+	var b strings.Builder
+	for _, s := range c.ours {
+		b.WriteString(s.text)
+	}
+	return b.String()
+}
+
+func splitCodexBlock(region string) (codexBlockContents, bool) {
+	preamble, sections, ok := splitMarkedBlock(region)
+	if !ok {
+		return codexBlockContents{}, false
+	}
+	if strings.TrimSpace(preamble) != "" && !onlyComments(preamble) {
+		// Bare keys before the first table belong to whatever table preceded
+		// our block. Moving them would silently re-parent them, so this is
+		// refused rather than guessed at.
+		return codexBlockContents{}, false
+	}
+	var c codexBlockContents
+	for _, s := range sections {
+		if s.header == codexSandboxTable {
+			c.ours = append(c.ours, s)
+			continue
+		}
+		c.foreign = append(c.foreign, s)
+	}
+	return c, true
+}
+
+// onlyComments: is every line a comment or blank? Such a preamble is ours
+// (the renderer's own comments, when they have not attached to a table) and
+// is dropped with the block rather than kept.
+func onlyComments(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && !strings.HasPrefix(t, "#") {
+			return false
+		}
+	}
+	return true
+}
+
+// appendTables puts whole tables at the very END of a file, never back where
+// our block was. A table header inserted between an earlier table and key
+// lines that continue it would re-parent those keys; appended last, nothing
+// can be re-parented, because nothing follows.
+func appendTables(base []byte, tables string) []byte {
+	tables = strings.TrimRight(tables, "\n")
+	if tables == "" {
+		return base
+	}
+	head := strings.TrimRight(string(base), "\n")
+	if head == "" {
+		return []byte(tables + "\n")
+	}
+	return []byte(head + "\n\n" + tables + "\n")
 }
 
 func appendMarkedBlock(b, block []byte) []byte {

@@ -581,13 +581,13 @@ func TestTheCodexSandboxBlockIsAttributedByItsWritableRoots(t *testing.T) {
 	ours := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(home, "state"), filepath.Join(home, "intake")}))
 	theirs := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(t.TempDir(), "other", "state")}))
 
-	if _, had, isOurs := removeOurSandboxBlock(ours, entry); !had || !isOurs {
-		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", had, isOurs)
+	if r := removeOurSandboxBlock(ours, entry); !r.had || !r.ours {
+		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", r.had, r.ours)
 	}
-	if _, had, isOurs := removeOurSandboxBlock(theirs, entry); !had || isOurs {
-		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", had, isOurs)
+	if r := removeOurSandboxBlock(theirs, entry); !r.had || r.ours {
+		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", r.had, r.ours)
 	}
-	if _, had, _ := removeOurSandboxBlock([]byte("[nothing]\n"), entry); had {
+	if r := removeOurSandboxBlock([]byte("[nothing]\n"), entry); r.had {
 		t.Error("a config with no marked block reported one")
 	}
 }
