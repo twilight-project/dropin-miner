@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -605,6 +606,59 @@ func hermesFindStructured(b []byte, ref installationRef) hermesOwnEntry {
 	parent := hermesParent(lines, at, top)
 	listEnd := hermesListEnd(lines, parent, blockEnd)
 
+	// Two rules about the block itself come BEFORE "found", because when
+	// either trips this scan does not know what a YAML parser makes of the
+	// lines it matched — and "found" is a claim install turns into "already
+	// set up" and status into "installed". Review's oracle caught both
+	// claimed where PyYAML read no live hook at all. So these answer at the
+	// mention tier: a sentence that is true whichever way the parser reads
+	// it, a refusal with a warning from install, nothing counted by status.
+	//
+	// Exactly one pre_tool_call: key, for the reason there must be exactly
+	// one hooks: key, one level down. YAML keeps the last of two — a second
+	// `pre_tool_call: null` included — so ours under the first is dead text,
+	// and taking ours out of the second would un-shadow the first.
+	events := 0
+	for k := top + 1; k < blockEnd; k++ {
+		if lines[k].indent != 2 {
+			continue
+		}
+		if key, ok := hermesTopLevelKey(lines[k].text[2:]); ok && strings.EqualFold(key, "pre_tool_call") {
+			events++
+		}
+	}
+	if events != 1 {
+		return hermesOwnEntry{}
+	}
+	// Everything at list depth must BE a list entry. A `|` or a `>-` alone
+	// on the line under pre_tool_call: makes our two lines below it the TEXT
+	// of a block scalar, not a hook; an anchor or a tag there is content at
+	// the right depth that is not a sibling. Counted as one, it took our two
+	// lines out from under a block scalar, a null and a file that then would
+	// not parse.
+	for k := parent + 1; k < listEnd; k++ {
+		if lines[k].indent < 0 || lines[k].indent > 4 {
+			continue
+		}
+		if item := lines[k].text[lines[k].indent:]; lines[k].indent != 4 || (item != "-" && !strings.HasPrefix(item, "- ")) {
+			return hermesOwnEntry{}
+		}
+	}
+	// And the block must be one a parser can load at all, as far as that can
+	// be said of our own entry without being one. The oracle, pointed at
+	// install, found "already set up" claimed on files PyYAML rejects
+	// outright: a line at depth one or five after our entry, and our matcher
+	// line with the next key glued to it where a final newline was missing.
+	// Hermes cannot load those, so no hook in them is live.
+	for k := top + 1; k < blockEnd; k++ {
+		if lines[k].indent == 1 || lines[k].indent == 3 {
+			return hermesOwnEntry{}
+		}
+	}
+	if !hermesItemReadable(lines, at, listEnd) {
+		return hermesOwnEntry{}
+	}
+
 	// Ours, and from here on the question is only whether it can be taken
 	// out. An entry that cannot be still runs our binary on every terminal
 	// call, so it is reported and left rather than not seen at all: silence
@@ -622,34 +676,6 @@ func hermesFindStructured(b []byte, ref installationRef) hermesOwnEntry {
 
 	if len(hits) > 1 {
 		return leave("appears there more than once")
-	}
-	// Exactly one pre_tool_call: key, for the reason there must be exactly
-	// one hooks: key, one level down. YAML keeps the last of two, so taking
-	// ours out of the second would un-shadow whatever sits under the first.
-	events := 0
-	for k := top + 1; k < blockEnd; k++ {
-		if lines[k].indent != 2 {
-			continue
-		}
-		if key, ok := hermesTopLevelKey(lines[k].text[2:]); ok && strings.EqualFold(key, "pre_tool_call") {
-			events++
-		}
-	}
-	if events != 1 {
-		return leave("is under one of several pre_tool_call: keys, and YAML reads only the last of them")
-	}
-	// Everything at list depth must BE a list entry. A `|`, a `>-`, an
-	// anchor or a tag alone on the line under pre_tool_call: is content at
-	// the right depth that is not a sibling, and counting it as one took our
-	// two lines out from under a block scalar, a null and a file that then
-	// would not parse.
-	for k := parent + 1; k < listEnd; k++ {
-		if lines[k].indent < 0 || lines[k].indent > 4 {
-			continue
-		}
-		if item := lines[k].text[lines[k].indent:]; lines[k].indent != 4 || (item != "-" && !strings.HasPrefix(item, "- ")) {
-			return leave(fmt.Sprintf("shares its list with line %d, which dropin-miner cannot read as a list entry", k+1))
-		}
 	}
 	if _, ok := hermesDecodeCommandLine(lines[at].text); !ok {
 		return leave("is not written the way dropin-miner writes it — Hermes rewrites config.yaml in its own style when it saves it")
@@ -711,6 +737,40 @@ func hermesEntryIsOurs(lines []hermesLine, i, top, blockEnd int, ref installatio
 	}
 	return true
 }
+
+// hermesItemReadable: below its command, is our entry made only of lines a
+// YAML parser would accept where they stand — `key: value` at the entry's own
+// depth, with a value that is empty, plain, or one complete quoted scalar, and
+// deeper lines only under such a key? Not a parser and not trying to be one:
+// it judges the few lines of OUR entry, and only ever to withdraw a claim.
+func hermesItemReadable(lines []hermesLine, at, listEnd int) bool {
+	k := at + 1
+	for k < listEnd && lines[k].indent > 6 {
+		k++ // the command's own folded continuation lines
+	}
+	underKey := false
+	for ; k < listEnd; k++ {
+		switch l := lines[k]; {
+		case l.indent < 0:
+			continue
+		case l.indent <= 4:
+			return true
+		case l.indent == 6:
+			if !hermesKeyValueLine.MatchString(l.text[6:]) {
+				return false
+			}
+			underKey = true
+		case l.indent > 6 && underKey:
+		default:
+			return false // depth five, or deeper with no key above it
+		}
+	}
+	return true
+}
+
+// hermesKeyValueLine is `key:` or `key: value`, the value plain or one whole
+// quoted scalar with nothing after it.
+var hermesKeyValueLine = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*:(?: +(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'#&*!|>{}\[\]%@` + "`" + `][^#"']*?))? *$`)
 
 // hermesItemCommand reads the command scalar of the entry at i: the rest of
 // its `    - command:` line and, for a scalar folded over several lines the

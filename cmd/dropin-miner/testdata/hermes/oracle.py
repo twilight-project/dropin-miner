@@ -12,9 +12,15 @@ before/after pair TestHermesDifferential writes:
               exactly our entry taken out (an emptied list and an emptied
               hooks: pruned), and every surviving line byte-identical, in order
 
+  install     judged on the same file: "already set up" only where YAML reads
+              a live hook of ours; a refusal beside a live hook must carry the
+              warning that the file already names the command; and nothing is
+              ever written beside a live hook
+
 Anything else is a finding. It started as the oracle of L3's review, where it
-found 870 across 2,875 files (F2, F3 and F4 of that review); the expected
-result now is FINDINGS: 0.
+found 870 across 2,875 files (F2, F3 and F4 of that review), and took on the
+install checks from the review after that (D1, D2); the expected result now is
+FINDINGS: 0.
 
     HERMES_DIFFERENTIAL_OUT=/tmp/pairs.json go test ./cmd/dropin-miner -run TestHermesDifferential -count=1
     python3 cmd/dropin-miner/testdata/hermes/oracle.py /tmp/pairs.json      # needs PyYAML
@@ -52,6 +58,15 @@ def expected(data, cmd):
     return d
 
 
+def live(data, cmd):
+    """Does YAML read a hook of ours Hermes would run? Any entry with our command counts."""
+    try:
+        lst = data["hooks"]["pre_tool_call"]
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(lst, list) and any(isinstance(e, dict) and e.get("command") == cmd for e in lst)
+
+
 def is_subsequence(after_lines, before_lines):
     it = iter(before_lines)
     return all(any(a == b for b in it) for a in after_lines)
@@ -62,10 +77,26 @@ tally, findings = Counter(), []
 for p in pairs:
     b, a, cmd = p["before"], p["after"], p["cmd"]
     okb, db = load(b)
+    is_live = okb and live(db, cmd)
+    io = p.get("install_out", "")
+    if "already set up \u2014 the pre_tool_call hook is in" in io:
+        tally["install: already set up"] += 1
+        if not is_live:
+            findings.append(("install says ALREADY SET UP though YAML reads no live hook of ours", p["name"]))
+    elif "entry by hand" in io:
+        tally["install: refused"] += 1
+        if is_live and "already names this installation" not in io:
+            findings.append(("install advises pasting a DUPLICATE beside a live hook, with no warning", p["name"]))
+    elif p.get("install_changed"):
+        tally["install: wrote"] += 1
+        if is_live:
+            findings.append(("install WROTE though a live hook of ours was already there", p["name"]))
+    if a == b and is_live and "Hermes: not installed" in p["out"]:
+        findings.append(("uninstall says not installed though YAML reads a live hook of ours", p["name"]))
     if a == b:
         present = okb and expected(db, cmd) is not None
         tally["left, our entry present per YAML" if present else "left, our entry not present per YAML"] += 1
-        if present and "pre_tool_call hook" not in p["out"]:
+        if (present or is_live) and "pre_tool_call hook" not in p["out"]:
             findings.append(("left SILENTLY though YAML reads our entry as live", p["name"]))
         continue
     tally["changed"] += 1

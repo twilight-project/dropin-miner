@@ -250,6 +250,12 @@ each line names the file that owns the rule and the test that proves it.
   the file and dumps it through PyYAML, dropping our markers and folding the command — is counted
   by install and status and named with its lines by uninstall; a command named somewhere the
   structured find will not read earns a sentence and never an edit or an "already set up".
+  "Found" is a claim about what Hermes will run — install turns it into "already set up", status
+  into "installed" — so every rule about the block itself runs before it is made, and a rule that
+  trips answers at the mention tier: one `pre_tool_call:` key, nothing at list depth that is not a
+  list entry, no line at a depth a parser would reject, and our own entry made only of lines a
+  parser would accept where they stand. Install's refusal then carries the warning that the file
+  already names the command, so the paste advice never lands silently beside a live hook.
   `hermes_own_entry_test.go` pairs each removed shape with neighbors one step away that must come
   back byte-identical, and takes its command from a real install rather than a typed string;
   `testdata/hermes/*.resaved.yaml` is the real output of Hermes' dumper (`resave.py`), never typed;

@@ -15,7 +15,10 @@ package main
 // Judged here, on every run and every platform, is everything that needs no
 // parser: that a surviving line is never altered or reordered; that each
 // shape is edited or left as this table says; that a shape left with our
-// entry in it gets a sentence, and never "Hermes: not installed" beside it.
+// entry in it gets a sentence, and never "Hermes: not installed" beside it;
+// and that install and uninstall agree about the same file — whatever
+// uninstall could only mention, install refuses WITH its warning, and never
+// calls already set up (L3d: both were wrong somewhere, and no test knew).
 // Judged by testdata/hermes/oracle.py, on request, is what the file MEANS:
 //
 //	HERMES_DIFFERENTIAL_OUT=/tmp/pairs.json go test ./cmd/dropin-miner -run TestHermesDifferential -count=1
@@ -38,6 +41,9 @@ type hermesDifferentialPair struct {
 	Before string `json:"before"`
 	After  string `json:"after"`
 	Out    string `json:"out"`
+	// Install's verdict on the same file, on a machine of its own.
+	InstallOut     string `json:"install_out"`
+	InstallChanged bool   `json:"install_changed"`
 }
 
 type hermesOutcome int
@@ -77,6 +83,7 @@ func TestHermesDifferential(t *testing.T) {
 	post := foreignPostTool
 	postZero := "  post_tool_call:\n  - command: 'zero-indented'\n    matcher: y\n"
 	head := "hooks:\n  pre_tool_call:\n"
+	plain := "    - command: " + cmd + "\n      matcher: terminal\n"
 
 	bodies := map[string]struct {
 		text string
@@ -131,6 +138,18 @@ func TestHermesDifferential(t *testing.T) {
 		"upper-hooks-too":        {"HOOKS:\n  x: 1\nhooks:\n  pre_tool_call:\n" + ours, left},
 		"doc-end":                {head + ours + "...\n", left},
 
+		// L3d: the plain form Hermes writes, and shapes whose command is ours
+		// but whose place is not one the structured find reads.
+		"plain-only":             {head + plain, left},
+		"literal-plain":          {head + "    |\n" + plain, left},
+		"folded-plain":           {head + "    >-\n" + plain, left},
+		"first-of-two-null":      {head + ours + "  pre_tool_call: null\n", left},
+		"trailing-comment-plain": {head + "    - command: " + cmd + " # mine\n      matcher: terminal\n", left},
+		"anchored-value":         {head + "    - command: &c " + hermesYAMLSingleQuoted(cmd) + "\n      matcher: terminal\n", left},
+		"flow-item":              {head + "    - {command: " + hermesYAMLSingleQuoted(cmd) + ", matcher: terminal}\n", left},
+		"command-not-first":      {head + "    - matcher: terminal\n      command: " + hermesYAMLSingleQuoted(cmd) + "\n", left},
+		"zero-indented":          {head + "  - command: " + hermesYAMLSingleQuoted(cmd) + "\n    matcher: terminal\n", left},
+
 		// With nothing after it the last line is ours without its newline and
 		// goes; with a suffix, that suffix is glued to our matcher line.
 		"ours-then-eof-noeol": {head + foreign + strings.TrimRight(ours, "\n"), varies},
@@ -142,7 +161,31 @@ func TestHermesDifferential(t *testing.T) {
 		m.files[hermesConfigPath] = []byte(before)
 		code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
 		after := string(m.files[hermesConfigPath])
-		pairs = append(pairs, hermesDifferentialPair{Name: name, Cmd: cmd, Before: before, After: after, Out: out})
+
+		im, iops := newFakeMachine("hermes")
+		im.files[hermesConfigPath] = []byte(before)
+		_, installOut, _ := runAgents(t, iops, nil, "install", "-config", testCfg, "-yes")
+		installChanged := string(im.files[hermesConfigPath]) != before
+		pairs = append(pairs, hermesDifferentialPair{Name: name, Cmd: cmd, Before: before, After: after, Out: out,
+			InstallOut: installOut, InstallChanged: installChanged})
+
+		// Install and uninstall read the same file with the same finder, and
+		// their verdicts must be the same verdict. What uninstall could only
+		// MENTION, install may not call set up, may not write beside, and may
+		// not advise pasting a second copy of without saying what it saw.
+		if strings.Contains(out, "names this installation's pre_tool_call hook command") {
+			switch {
+			case strings.Contains(installOut, "already set up —"):
+				t.Errorf("%s: install says already set up where uninstall could only mention the command:\n%s", name, installOut)
+			case installChanged:
+				t.Errorf("%s: install wrote beside a command uninstall mentions", name)
+			case !strings.Contains(installOut, "already names this installation's pre_tool_call hook command"):
+				t.Errorf("%s: install advised pasting a second copy with no warning:\n%s", name, installOut)
+			}
+		}
+		if (after != before || strings.Contains(out, "was left there because")) && !strings.Contains(installOut, "already set up —") {
+			t.Errorf("%s: uninstall found our hook and install did not call it set up:\n%s", name, installOut)
+		}
 		if code != exitOK {
 			t.Errorf("%s: uninstall exit %d\n%s%s", name, code, out, errOut)
 			return

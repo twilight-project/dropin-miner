@@ -21,7 +21,7 @@ import pathlib
 import yaml
 
 
-class IndentDumper(yaml.Dumper):
+class IndentDumper(yaml.SafeDumper):
     def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
         return super().increase_indent(flow, False)
 

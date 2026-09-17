@@ -18,6 +18,7 @@ package main
 // test the guess.
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -243,9 +244,11 @@ func init() {
 	list := func(above string) func(string) string {
 		return func(c string) string { return "hooks:\n  pre_tool_call:\n" + above + entryLines(c) + hermesAfter }
 	}
-	const cannotRead = "which dropin-miner cannot read as a list entry"
-	const several = "one of several pre_tool_call: keys"
 	const mention = "names this installation's pre_tool_call hook command"
+	// F2 and F3 answer at the mention tier (L3d): when either rule trips,
+	// this scan does not know what a parser makes of the lines it matched,
+	// so it may not call them found.
+	const cannotRead, several = mention, mention
 	hermesLeftAlone = append(hermesLeftAlone,
 		// F2. Content at list depth that is not a list entry. Counted as a
 		// sibling, it made "only our two lines go" the plan; PyYAML then read
@@ -682,6 +685,113 @@ func TestTheHermesNetRefusesARunThatIsNotUnderTheRenderersHeadings(t *testing.T)
 			lines := hermesLines([]byte(tc.file))
 			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, tc.at); got != tc.want {
 				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
+			}
+		})
+	}
+}
+
+// L3d, D1. Install's refusal must carry the warning clause wherever the file
+// names our command and the structured find will not vouch for it. Forcing
+// that clause off left every test green, and under that mutant each of these
+// got the plain paste advice beside a hook PyYAML reads as live: the advice
+// to add a second copy, with nothing saying the first was there.
+func TestInstallWarnsBeforeAdvisingASecondCopyBesideALiveHook(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	ours := entryLines(cmd)
+	quoted := hermesYAMLSingleQuoted(cmd)
+	for _, tc := range []struct {
+		name   string
+		config string
+		line   int // where the command is named
+	}{
+		{"hooks: with a trailing space", "model: x\nhooks: \n  pre_tool_call:\n" + ours, 4},
+		{"hooks: with a trailing comment", "hooks: # mine\n  pre_tool_call:\n" + ours, 3},
+		{"hooks: with an anchor", "hooks: &h\n  pre_tool_call:\n" + ours, 3},
+		{"pre_tool_call: with a trailing space", "hooks:\n  pre_tool_call: \n" + ours, 3},
+		{"pre_tool_call: with a trailing comment", "hooks:\n  pre_tool_call: # mine\n" + ours, 3},
+		{"pre_tool_call in quotes", "hooks:\n  \"pre_tool_call\":\n" + ours, 3},
+		{"the explicit key form", "hooks:\n  ? pre_tool_call\n  :\n" + ours, 4},
+		{"a closing document marker", "hooks:\n  pre_tool_call:\n" + ours + "...\n", 3},
+		{"HOOKS: beside hooks:", "HOOKS:\n  x: 1\nhooks:\n  pre_tool_call:\n" + ours, 5},
+		{"a trailing comment on a plain command", "hooks:\n  pre_tool_call:\n    - command: " + cmd + " # mine\n      matcher: terminal\n", 3},
+		{"an anchored value", "hooks:\n  pre_tool_call:\n    - command: &c " + quoted + "\n      matcher: terminal\n", 3},
+		{"a flow-style item", "hooks:\n  pre_tool_call:\n    - {command: " + quoted + ", matcher: terminal}\n", 3},
+		{"command is not the first key", "hooks:\n  pre_tool_call:\n    - matcher: terminal\n      command: " + quoted + "\n", 4},
+		{"PyYAML's default zero-indented list", "hooks:\n  pre_tool_call:\n  - command: " + quoted + "\n    matcher: terminal\n", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesConfigPath] = []byte(tc.config)
+			code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+			if code != exitTransport {
+				t.Fatalf("exit %d, want the refusal exit\n%s", code, out)
+			}
+			want := fmt.Sprintf("line %d of it already names this installation's pre_tool_call hook command", tc.line)
+			if !strings.Contains(out, want) || !strings.Contains(out, "check whether it is already set up before adding this entry by hand") {
+				t.Errorf("install advised pasting a second copy without saying %q:\n%s", want, out)
+			}
+			if got := string(m.files[hermesConfigPath]); got != tc.config {
+				t.Errorf("the file was changed:\n%q", got)
+			}
+		})
+	}
+}
+
+// L3d, D2. "Already set up" is a claim about what Hermes will run, and these
+// are shapes where PyYAML reads no live hook of ours although every line the
+// scan matched is there: our two lines as the TEXT of a block scalar, and
+// ours under the first of two pre_tool_call: keys, which YAML discards. The
+// hits were collected before the list-entry rule and the one-key rule ran,
+// so found was true. When either rule trips the answer is now the mention
+// tier: install refuses with the warning, status does not count it, and
+// uninstall gives the mention note — wording that is also still true for
+// the reverse duplicate, where ours is under the last key and IS live.
+func TestAStructuralRuleThatTripsAnswersAtTheMentionTier(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	ours := entryLines(cmd)
+	plain := "    - command: " + cmd + "\n      matcher: terminal\n"
+	head := "hooks:\n  pre_tool_call:\n"
+	for _, tc := range []struct{ name, config string }{
+		{"a literal block scalar holding our quoted lines", head + "    |\n" + ours},
+		{"a folded block scalar holding our quoted lines", head + "    >-\n" + ours},
+		{"a literal block scalar holding the plain form", head + "    |\n" + plain},
+		{"a folded block scalar holding the plain form", head + "    >-\n" + plain},
+		{"ours under the first of two pre_tool_call: keys", head + ours + "  pre_tool_call:\n" + foreignEntry},
+		{"ours under the first, the second one null", head + ours + "  pre_tool_call: null\n"},
+		{"the reverse: ours under the last key, and live", head + foreignEntry + "  pre_tool_call:\n" + ours},
+		// Files PyYAML rejects outright, which the oracle found install calling
+		// already set up. Hermes cannot load them, so nothing in them is live.
+		{"unparseable: a line at depth one after ours", head + ours + " odd: 1\n"},
+		{"unparseable: a line at depth five inside our entry", head + ours + "     odd: 1\n"},
+		{"unparseable: a line at depth three in the block", "hooks:\n   odd: 1\n  pre_tool_call:\n" + ours},
+		{"unparseable: the next key glued to our matcher line", head + foreignEntry + strings.TrimRight(ours, "\n") + "database:\n  x: 1\n"},
+		{"unparseable: a deeper line in our entry with no key above it", head + hermesHookLines(cmd)[2] + "\n          stray\n" + hermesHookLines(cmd)[3] + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesConfigPath] = []byte(tc.config)
+			ref := refFor(func() binEntry { e, _ := ourHermesEntry(t); return e }())
+
+			if own := findHermesOwnEntry([]byte(tc.config), ref); own.found || own.mention == 0 {
+				t.Fatalf("found=%v mention=%d; want not found, and mentioned", own.found, own.mention)
+			}
+			code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+			if code != exitTransport || strings.Contains(out, "already set up —") {
+				t.Errorf("install: exit %d; \"already set up\" is claimed where this scan cannot say what a parser reads:\n%s", code, out)
+			}
+			if !strings.Contains(out, "already names this installation's pre_tool_call hook command") {
+				t.Errorf("install's refusal did not carry the warning:\n%s", out)
+			}
+			_, status, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+			if strings.Contains(status, "skill+hook") {
+				t.Errorf("status counts a hook this scan cannot vouch for:\n%s", status)
+			}
+			code, out, _ = runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
+			if code != exitOK || !strings.Contains(out, "names this installation's pre_tool_call hook command") || strings.Contains(out, "was left there because") {
+				t.Errorf("uninstall: exit %d, want the mention note and not the found-and-left one:\n%s", code, out)
+			}
+			if got := string(m.files[hermesConfigPath]); got != tc.config {
+				t.Errorf("the file was changed:\n%q", got)
 			}
 		})
 	}
