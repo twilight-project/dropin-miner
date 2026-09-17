@@ -1411,9 +1411,20 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("  (nothing is there)\n")
 		}
 		if !r.binary {
-			r.printf("\nTo use this binary without setting it up again, pass -config %s;\n"+
-				"or run: dropin-miner setup -home %s\n"+
-				"A bare `dropin-miner connect` afterwards would register this machine anew.\n", r.cfgPath, r.home)
+			// #88: the old wording ended on `connect`, which read as the
+			// next step. It is the opposite — setup -home is what reuses
+			// this registration, and a bare connect is what replaces it,
+			// because uninstall has just removed the profile block (on
+			// Windows, the user environment) that pointed at this
+			// installation. With nothing pointing at it, connect reads the
+			// default state location, finds no registration there, and
+			// makes a new one.
+			r.printf("\nTo keep using this installation, run:\n"+
+				"  dropin-miner setup -home %s\n"+
+				"It finds this state and uses it: the same agent, the same wallet, no new registration.\n"+
+				"Or, to use this binary without setting it up again, pass -config %s to each command.\n"+
+				"Do not run `dropin-miner connect` on its own to come back: with nothing naming this\n"+
+				"installation any more, it would register this machine anew.\n", r.home, r.cfgPath)
 		} else {
 			r.printf("\nTo come back, reinstall and run setup; it finds this state and uses it.\n")
 		}

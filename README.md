@@ -597,9 +597,13 @@ and is left. Without that record nothing in the environment is guessed at; it
 prints what to remove by hand. Anything that runs another installation's
 binary, or a profile block naming another config, is left and reported. Your
 wallet, registration, stored key, recorded searches and config stay, and
-nothing is revoked; it ends by saying how to keep using them (`-config
-~/.tokendrop/tokendrop.toml`, or `dropin-miner setup` again). A bare `connect`
-afterwards would register this machine anew.
+nothing is revoked; it ends by saying how to keep using them. That is
+`dropin-miner setup -home ~/.tokendrop`, which finds this state and reuses it —
+the same agent, the same wallet, no new registration — or `-config
+~/.tokendrop/tokendrop.toml` passed to each command. Not a bare `dropin-miner
+connect`: uninstall has just removed the profile block (on Windows, the user
+environment) that named this installation, so with nothing naming it, connect
+would register this machine anew.
 
 `-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
 binary running and no package manager owns it, together with the

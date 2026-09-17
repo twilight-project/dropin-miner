@@ -219,6 +219,15 @@ each line names the file that owns the rule and the test that proves it.
   `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
   read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
   uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
+- **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
+  renders `tokendrop.toml`, fresh and migrated; `agents.go`, `setup_env.go` and
+  `hermes_install.go` render the blocks that go into a host's own config. Every byte any of them
+  contributes is ASCII: Windows PowerShell 5.1 reads a file with no byte-order mark in the ANSI
+  code page, so an em dash reaches a participant as `â€”` (#88), and in a PowerShell
+  script a mis-decoded quotation mark ends a string early and the file stops parsing.
+  `generated_config_ascii_test.go` renders each artifact from ASCII inputs and refuses a byte
+  above 0x7F — from ASCII inputs, because a participant whose home is `C:\Users\José` is not
+  this client's doing. `installer_bridge_test.go` holds the same rule for `scripts/install.ps1`.
 - **What a destructive run may leave behind** — `cmd/dropin-miner/lifecycle.go` owns the
   exclusion: which operation locks it takes, which of those files it created, and the rule that
   `release` removes exactly those and only when the operation never proceeded (`proceeded()`).

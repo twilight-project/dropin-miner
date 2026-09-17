@@ -520,7 +520,15 @@ uninstall — the installation is left exactly as it was found. That includes th
 lock files uninstall has to take to be sure nothing else is running: one it had
 to create is removed again, one that was already there is left alone.
 
-Coming back later, run the installer again (or `dropin-miner setup`). It looks
+Coming back later, run the installer again, or `dropin-miner setup` — with
+`-home <dir>` if this installation is not the default one. Setup is the way
+back: it finds the state uninstall left and reuses it, the same agent and the
+same wallet, with no new registration. Do not run `dropin-miner connect` on its
+own to come back. Uninstall removed the profile block (on Windows, the user
+environment entries) that named this installation, so connect would look at the
+default location instead, find nothing, and register this machine anew.
+
+Setup looks
 for `~/.tokendrop`, or a set-aside copy beside it (`~/.tokendrop.bak-<date>`,
 `~/.tokendrop.old`), tells you what it holds — the wallet's address, whether it
 is enrolled, whether a key is stored, any unsent searches — and asks before
