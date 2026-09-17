@@ -1,0 +1,24 @@
+{
+  "conversation_id": "00000000-0000-4000-8000-000000000000",
+  "generation_id": "",
+  "model": "cursor-grok-4.6-medium",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "medium"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "is_background_agent": false,
+  "composer_mode": "chat",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "hook_event_name": "sessionStart",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [],
+  "user_email": "redacted",
+  "transcript_path": null
+}

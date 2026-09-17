@@ -23,8 +23,12 @@ package main
 //	    afterAgentThought / afterAgentResponse (the text before a search),
 //	    preCompact (bump the window), stop (flush).
 //	hook [-config file] flush
-//	    Start a detached flush. For hosts whose only lifecycle hook is
-//	    "stop".
+//	    Claude Code Stop. Start a detached flush.
+//
+// The lineage, window and flush entry points are installed for Claude Code
+// and for nobody else. Another host that loads Claude Code's settings and
+// runs them with its own payload (Cursor does, #87) gets nothing from them:
+// see runByAnotherHost.
 //
 // FAIL-OPEN, ALWAYS. Any error, malformed payload, unreadable transcript:
 // emit nothing (or the one output the host requires to proceed) and exit
@@ -148,6 +152,11 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 	// parses nothing emits nothing, and the search loses its lineage.
 	payload, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	payload = trimUTF8BOM(payload)
+	// A hook installed for Claude Code stands down when another host runs it
+	// (#87): nothing written, nothing spawned, nothing printed, exit 0.
+	if event, claudeFormat := claudeEntryEvent(args); claudeFormat && runByAnotherHost(payload, event) {
+		return exitOK
+	}
 	switch args[0] {
 	case "lineage":
 		hookLineage(ops, hc, payload, stdout)
@@ -176,6 +185,85 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	// Fail-open contract: the hook itself never fails a tool call.
 	return exitOK
+}
+
+// ── who is calling (#87) ────────────────────────────────────────────────
+//
+// Cursor loads Claude Code's hooks from ~/.claude/settings.json ("Include
+// Third-Party Plugins, Skills, and Other Configs", on by default) and runs
+// them beside its own, with ITS payload. Measured from Cursor 3.20.21's hook
+// log on macOS and Windows: `window session-start` at sessionStart,
+// `lineage` at preToolUse, `flush` at stop — three extra processes and a
+// second flush every turn, and with v0.2.9 a `lineage` answer Cursor honored,
+// which sent a Cursor search to the router labeled claude-code (#91).
+//
+// The decision is taken from the payload, never from the environment: the
+// environment is whatever the calling host's process happened to inherit,
+// and the payload is what the caller itself says.
+
+// claudeEntryEvent names the Claude Code event a Claude-format entry point is
+// installed under (`claudeHooks` is the authority; a test holds the two
+// together). ok is false for every other subcommand: Cursor's and Hermes'
+// own entry points are theirs and are never gated here.
+func claudeEntryEvent(args []string) (event string, ok bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	switch args[0] {
+	case "lineage":
+		return "PreToolUse", true
+	case "flush":
+		return "Stop", true
+	case "window":
+		if len(args) < 2 {
+			return "", false
+		}
+		switch args[1] {
+		case "session-start":
+			return "SessionStart", true
+		case "pre-compact":
+			return "PreCompact", true
+		case "post-compact":
+			return "PostCompact", true
+		}
+	}
+	return "", false
+}
+
+// runByAnotherHost reports whether the payload itself shows that the caller
+// is not Claude Code. Two signals, each taken from payloads in hand
+// (testdata/hook/cursor-3.20.21-*.json, and Claude Code 2.1.274 probed live):
+//
+//   - `cursor_version` is present. Every payload Cursor sends carries it and
+//     Claude Code sends none. This is the measured minimum.
+//   - `hook_event_name` is present and is not, byte for byte, the event this
+//     entry point is installed under. Claude Code reports exactly the name
+//     the entry was registered under (`PreToolUse`, `SessionStart`, `Stop`);
+//     Cursor's loader translates the registration to its own event and
+//     reports that one (`preToolUse`, `sessionStart`, `stop`). A host that
+//     copies Cursor's loader does the same without ever saying
+//     `cursor_version`, and by its own statement it is not delivering the
+//     Claude Code event.
+//
+// Everything else is NOT evidence and changes nothing: a payload that names
+// no event at all, or one that is not JSON, is handled exactly as before.
+// Nothing is known about a caller that says nothing — Copilot CLI's payload
+// carries no `hook_event_name` and Codex uses Claude Code's own names — and
+// a rule that stood down for them would be a guess.
+func runByAnotherHost(payload []byte, event string) bool {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(payload, &keys) != nil {
+		return false
+	}
+	if _, cursor := keys["cursor_version"]; cursor {
+		return true
+	}
+	raw, named := keys["hook_event_name"]
+	if !named {
+		return false
+	}
+	var name string
+	return json.Unmarshal(raw, &name) != nil || name != event
 }
 
 // ── our command, recognized ─────────────────────────────────────────────
