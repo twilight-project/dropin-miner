@@ -43,19 +43,19 @@ import (
 // anything is compared.
 const bodyPlaceholder = "\x00REQUEST BODY\x00"
 
-// recognizedCursorCommand is what the hook learned from a command it allows.
-type recognizedCursorCommand struct {
+// recognizedForm is what the hook learned from a command it allows.
+type recognizedForm struct {
 	// path is the approved command path: {"search"} or {"agents","prefer"}.
 	path []string
 	// body is the request body of a search, already checked.
 	body string
 }
 
-// cursorCommandMatch is one rendered form a command matched on grammar
+// renderedFormMatch is one rendered form a command matched on grammar
 // alone: which declared shell it was rendered for, which command path it is,
 // and the two paths and the body it carried, each already read back out of
 // the quoting the shell put on it.
-type cursorCommandMatch struct {
+type renderedFormMatch struct {
 	shell     shellKind
 	path      []string
 	bin       string
@@ -64,11 +64,11 @@ type cursorCommandMatch struct {
 	wantsBody bool
 }
 
-// matchedCursorForms is the grammar half of the recognizer: every form this
+// matchedRenderedForms is the grammar half of the recognizer: every form this
 // installation's skill renders, for every shell Cursor runs on this OS, that
 // command is exactly — in declaration order. It decides only whether the
 // command IS one of the strings we teach. Whether the binary and config it
-// names are *this* installation's is recognizeCursorCommand's, because that
+// names are *this* installation's is recognizeRenderedForm's, because that
 // needs the filesystem and a permission answer needs both halves.
 //
 // The two are split so that the hook and the per-OS golden that pins this
@@ -78,19 +78,19 @@ type cursorCommandMatch struct {
 // that stopped after the first declared shell left the whole package green
 // while every search in Cursor's second terminal would have prompted (#66
 // again, for the second terminal).
-func matchedCursorForms(command, cfg string, shells []shellKind) []cursorCommandMatch {
+func matchedRenderedForms(command, cfg string, shells []shellKind) []renderedFormMatch {
 	if command == "" {
 		return nil
 	}
 	command = strings.TrimSuffix(command, "\n")
-	var out []cursorCommandMatch
+	var out []renderedFormMatch
 	for _, sh := range shells {
-		for _, candidate := range renderedCursorCommands(cfg, sh) {
+		for _, candidate := range renderedFormsForShell(cfg, sh) {
 			got, ok := matchRendered(command, candidate)
 			if !ok {
 				continue
 			}
-			out = append(out, cursorCommandMatch{
+			out = append(out, renderedFormMatch{
 				shell:     sh,
 				path:      candidate.path,
 				bin:       got.bin,
@@ -103,16 +103,16 @@ func matchedCursorForms(command, cfg string, shells []shellKind) []cursorCommand
 	return out
 }
 
-// recognizeCursorCommand decides whether command is exactly one of the
+// recognizeRenderedForm decides whether command is exactly one of the
 // commands this installation's skill renders, for one of the shells Cursor
 // runs on this OS, AND names this installation's own binary and config. cfg
 // is the config this hook was started with — the same one the skill's command
 // names, because one install wrote both.
-func recognizeCursorCommand(command string, executable func() (string, error), cfg string, shells []shellKind) *recognizedCursorCommand {
+func recognizeRenderedForm(command string, executable func() (string, error), cfg string, shells []shellKind) *recognizedForm {
 	if executable == nil {
 		return nil
 	}
-	for _, m := range matchedCursorForms(command, cfg, shells) {
+	for _, m := range matchedRenderedForms(command, cfg, shells) {
 		if !sameBinary(m.bin, executable) {
 			continue
 		}
@@ -123,9 +123,9 @@ func recognizeCursorCommand(command string, executable func() (string, error), c
 			if !isOneVersionOneRequest(m.body) {
 				continue
 			}
-			return &recognizedCursorCommand{path: m.path, body: m.body}
+			return &recognizedForm{path: m.path, body: m.body}
 		}
-		return &recognizedCursorCommand{path: m.path}
+		return &recognizedForm{path: m.path}
 	}
 	return nil
 }
@@ -158,7 +158,7 @@ func samePath(a, b string) bool {
 	return a == b
 }
 
-// renderedCursorCommands is every command Cursor may auto-allow, rendered
+// renderedFormsForShell is every command Cursor may auto-allow, rendered
 // for one shell, with the binary path and request body as placeholders.
 //
 // The config path stands as a placeholder, like the binary, and is compared
@@ -167,7 +167,7 @@ func samePath(a, b string) bool {
 // skill's — on Windows a `%q`-quoted hook command hands the process
 // `C:\\Users\\…`, doubled separators and all, naming the same file in other
 // bytes. Everything outside the placeholders is still compared exactly.
-func renderedCursorCommands(cfg string, sh shellKind) []renderedCommand {
+func renderedFormsForShell(cfg string, sh shellKind) []renderedCommand {
 	entry := binEntry{command: binPlaceholder}
 	if cfg != "" {
 		entry.cfg = cfgPlaceholder

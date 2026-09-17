@@ -357,8 +357,8 @@ func bridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 
 // recognizerVerdict is what Cursor's recognizer makes of a command on goos,
 // grammar only: which rendered form it is, or its refusal. The answer comes
-// from production — matchedCursorForms, the same loop over the same declared
-// shells that recognizeCursorCommand runs. The identity half needs a real
+// from production — matchedRenderedForms, the same loop over the same declared
+// shells that recognizeRenderedForm runs. The identity half needs a real
 // file, which a golden rendering Windows and macOS paths on a Linux runner
 // cannot supply; it is exercised against the built binary in the execution
 // tests instead.
@@ -369,7 +369,7 @@ func bridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 func recognizerVerdict(command string, entry binEntry, goos string) string {
 	cursor, _ := targetByID(installTargets, "cursor")
 	shells, _ := toolShellsForSkill(cursor, goos)
-	for _, m := range matchedCursorForms(command, entry.cfg, shells.kinds) {
+	for _, m := range matchedRenderedForms(command, entry.cfg, shells.kinds) {
 		// The binary is compared by spelling here, not by os.SameFile: this
 		// is the reporting half, and what it reports is that the rendered
 		// form handed back the path it was rendered with.

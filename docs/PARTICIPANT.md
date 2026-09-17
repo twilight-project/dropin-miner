@@ -284,11 +284,20 @@ read from the environment or the owner-only credentials file.
 
 **Claude Code** gets a skill and five hook entries in `~/.claude/settings.json`:
 one on Bash that threads each search into the current turn, three that track
-context compaction, and one on Stop that flushes. It also adds two
-`permissions.allow` rules for the search command — the quoted and the bare
-spelling of the same command, because a shell may strip the quotes — so
-Claude Code runs it without asking each time; nothing else the binary does is
-allowed by those rules.
+context compaction, and one on Stop that flushes. It also adds three
+`permissions.allow` rules for the search command — the single-quoted, quoted
+and bare spellings of the same command, because a shell may strip the quotes
+— so Claude Code runs it without asking each time; nothing else the binary
+does is allowed by those rules.
+
+The hook that threads the search also answers the permission question, for
+exactly the search command your own skill renders and nothing else. It has to,
+because the hook is what causes the question: it prefixes the command with the
+trace envelope, and an `allow` rule matches on how a command *begins*, so the
+prefixed command no longer matches the rule that was installed for it. Without
+that answer every search waits for approval — and in a headless session it is
+refused outright, since there is nobody to ask. The rules stay for versions
+and hosts that do not run the hook.
 
 **Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
 cannot rewrite a command, so its hooks maintain the lineage file and the
