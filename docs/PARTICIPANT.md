@@ -264,7 +264,15 @@ ids never leave the machine), a call counter, and the assistant text just
 before the search, capped at 32 KB. That text is conversation content leaving
 your machine; it goes only inside the search request, to the router, and the
 miner stores none of it beyond a per-workspace lineage file under
-`~/.tokendrop/sessions` that the hooks maintain. To send no trace at all:
+`~/.tokendrop/sessions` that the hooks maintain.
+
+One of those files is only ever read back by the agent that wrote it. If you
+have an editor open at a repository root and another agent working in a
+subdirectory, the second one's searches carry its own identity, not the
+first's — a search that cannot say which agent it belongs to gets a plain
+per-shell identity instead of borrowing the nearest session above it. Before
+0.2.11 it borrowed, which meant one agent's narration could be sent as
+another's. To send no trace at all:
 
 ```bash
 export TOKENDROP_TRACE=off

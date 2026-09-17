@@ -127,7 +127,7 @@ func TestLineageFileRoundTripAndWalkUp(t *testing.T) {
 			t.Errorf("lineage file name leaks or is unhashed: %s", name)
 		}
 	}
-	got, path := lineageForCwd(ops, dir, filepath.Join(root, "src", "deep"), now.Add(time.Minute))
+	got, path := lineageForCwd(ops, dir, filepath.Join(root, "src", "deep"), "cursor", now.Add(time.Minute))
 	if got == nil || path != lineagePath(dir, root) || got.SessionID != "abc" {
 		t.Fatalf("walk-up did not find the workspace lineage: %+v %q", got, path)
 	}
@@ -137,7 +137,7 @@ func TestLineageFileRoundTripAndWalkUp(t *testing.T) {
 	}
 	// Stale lineage is ignored rather than threading a new conversation
 	// into an old one.
-	if stale, _ := lineageForCwd(ops, dir, root, now.Add(lineageMaxAge+time.Second)); stale != nil {
+	if stale, _ := lineageForCwd(ops, dir, root, "cursor", now.Add(lineageMaxAge+time.Second)); stale != nil {
 		t.Error("a stale lineage file was used")
 	}
 	// A corrupt file is absent.

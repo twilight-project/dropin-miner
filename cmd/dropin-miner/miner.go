@@ -256,11 +256,44 @@ func updateLineage(ops hookOps, path string, now time.Time, apply func(*lineageF
 	return saveLineage(ops, path, sc, now)
 }
 
+// sameHarness compares two harness names. TOKENDROP_HARNESS is written by a
+// hook and may be set by a participant, so it is compared the way a name is
+// rather than the way bytes are. An empty name matches nothing: a sidecar
+// recording no harness cannot be shown to belong to anyone.
+func sameHarness(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	return a != "" && b != "" && strings.EqualFold(a, b)
+}
+
 // lineageForCwd finds the sidecar governing a directory: the directory
 // itself, then its parents, a bounded number of hops. A stale sidecar is
 // treated as absent.
-func lineageForCwd(ops hookOps, dir, cwd string, now time.Time) (*lineageFile, string) {
-	if dir == "" || cwd == "" {
+//
+// It answers nothing unless the search can say WHOSE session it is making
+// and the sidecar agrees (#97). harness is the searching host's own name, as
+// TOKENDROP_HARNESS gives it.
+//
+// Both halves of that follow from what this walk is for. Every host that
+// carries its lineage in a variable — the bridge, or TOKENDROP_LINEAGE
+// naming the file outright — is already served before this is reached; the
+// walk exists only to find a session's own sidecar again when that variable
+// was lost, which is what happens when the search runs from a subshell. So a
+// search arriving here with NOTHING naming a session is not one that lost its
+// variable: it is one from a host that never had a lineage channel, or from a
+// person at a terminal. Looking up the tree on its behalf cannot find its
+// session, because its session wrote no sidecar — it can only find somebody
+// else's. That is precisely what happened: a Cursor CLI search in a
+// subdirectory, and a plain search from a terminal in the same tree, both
+// reached the router as harness=claude-code carrying a Claude Code session's
+// id and its assistant text, and advanced that session's seq.
+//
+// A mismatch stops the walk rather than climbing past it. A nearer sidecar
+// belonging to someone else says this directory is theirs, and claiming a
+// more distant one because its name matches would be a guess; the safe
+// direction is an honest per-shell identity rather than a confident wrong
+// one. Stopping is also what a stale sidecar already does.
+func lineageForCwd(ops hookOps, dir, cwd, harness string, now time.Time) (*lineageFile, string) {
+	if dir == "" || cwd == "" || harness == "" {
 		return nil, ""
 	}
 	at := filepath.Clean(cwd)
@@ -268,6 +301,9 @@ func lineageForCwd(ops hookOps, dir, cwd string, now time.Time) (*lineageFile, s
 		path := lineagePath(dir, at)
 		if sc, ok := loadLineage(ops, path); ok {
 			if now.Sub(sc.UpdatedAt) > lineageMaxAge {
+				return nil, ""
+			}
+			if !sameHarness(sc.Harness, harness) {
 				return nil, ""
 			}
 			return sc, path

@@ -135,7 +135,13 @@ whichever of these the host allows: a hook, plugin or extension that rewrites
 the shell command with the envelope in an environment variable (Claude Code,
 opencode, Pi, Hermes), a per-workspace
 lineage file the hooks write and `search` reads (Cursor, and every host as a
-fallback), or a hashed per-shell identity when there is no hook at all. The
+fallback), or a hashed per-shell identity when there is no hook at all. A
+lineage file is only ever read by the host that wrote it: a search that cannot
+say which host it belongs to takes the per-shell identity rather than the
+nearest file above it, because an editor open at a repository root and a
+second agent working in a subdirectory is an ordinary arrangement, and the
+alternative is one agent's session id, narration and sequence number being
+sent as another's. The
 assignment is written in the syntax of the shell that will run the command —
 `TOKENDROP_TRACE_BRIDGE=<envelope> <command>` in a POSIX shell, and in
 PowerShell an assignment the same command removes again when it finishes, so

@@ -277,7 +277,13 @@ func TestSearchFallsBackToTheWorkspaceLineageFileAndBumpsSeq(t *testing.T) {
 	_ = saveLineage(h.ops.hook, path, &lineageFile{Harness: "cursor", SessionID: "conv", TurnID: "gen", Window: "none", Seq: 3,
 		History: []traceHistory{{Role: "assistant", Text: "Let me check."}}}, h.ops.now())
 
-	runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, "-config", cfg, "q")
+	// The search says whose it is, the way Cursor's own sessionStart hook
+	// makes it say: TOKENDROP_HARNESS beside the sidecar that hook wrote.
+	// Without it the walk adopts nothing, because a search naming no host
+	// cannot be shown to own anything it finds up the tree — #97, and
+	// TestASearchDoesNotAdoptAnotherHostsLineage. Through 0.2.10 this case
+	// passed with no harness set at all, which is exactly the defect.
+	runSearch(t, h, map[string]string{"TOKENDROP_API_KEY": "k", "TOKENDROP_HARNESS": "cursor"}, "-config", cfg, "q")
 	_, sent := fr.last(t)
 	var m map[string]any
 	_ = json.Unmarshal(sent, &m)
