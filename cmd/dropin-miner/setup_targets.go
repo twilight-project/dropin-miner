@@ -88,12 +88,14 @@ func (r *setupRun) agentsStep() int {
 		switch {
 		case r.noAgents:
 			r.printf("Left the agents alone (-no-agents). When you are ready:\n\n    %s\n", later)
+			r.skip("coding agents")
 			return exitOK
 		case len(selected) == 0:
 			r.printf("No coding agent found on PATH (looked for: %s). When one is installed:\n\n    %s\n", targetIDs(targetHost), later)
 			return exitOK
 		case !r.d.interactive && !r.yes && !r.dry:
 			r.printf("Not an interactive shell — not touching any agent (pass -yes to set them up). When you are ready:\n\n    %s\n", later)
+			r.skip("coding agents")
 			return exitOK
 		}
 	}

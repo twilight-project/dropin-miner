@@ -145,6 +145,7 @@ func (r *setupRun) environmentStep() int {
 		"stored credentials file. Windows and agents started afterwards see them.\n", binDir, r.cfgPath)
 	if r.noProfile {
 		r.printf("Left your user environment alone (-no-profile).\n")
+		r.skip("user environment")
 		return exitOK
 	}
 	env := r.d.userEnv
@@ -174,6 +175,7 @@ func (r *setupRun) environmentStep() int {
 	}
 	if !r.d.interactive && !r.yes {
 		r.printf("Not an interactive shell — not touching your user environment (pass -yes to set them).\n")
+		r.skip("user environment")
 		return exitOK
 	}
 	set, err := r.ask("Set them for your user?")

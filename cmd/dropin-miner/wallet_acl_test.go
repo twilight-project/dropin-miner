@@ -320,8 +320,15 @@ func TestSetupSecuresAnExistingWalletBeforeConnect(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(out, "nothing was changed") {
-		t.Errorf("a run with the wallet already secured reported a change:\n%s", out)
+	// Every run here passes -no-profile -no-agents, so the closing line
+	// reports them as skipped (#75) rather than "already in place" — that
+	// wording is reserved for a run where every step was actually
+	// attempted and found nothing to do.
+	if strings.Contains(out, "already in place") {
+		t.Errorf("closing message claims everything was already in place under -no-profile/-no-agents:\n%s", out)
+	}
+	if !strings.Contains(out, "setup skipped") {
+		t.Errorf("a run with the wallet already secured did not report the flagged-off steps as skipped:\n%s", out)
 	}
 }
 
