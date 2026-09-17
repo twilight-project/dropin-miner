@@ -1029,6 +1029,17 @@ func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 		if next, had := hermesRemoveBlock(existing); had {
 			planWrite(ops, t.Label(), paths.hermesConfig, next, mode, "remove lineage hook", p)
 			removed = true
+		} else if own := findHermesOwnEntry(existing, refFor(entry)); own.removable() {
+			// #83: our entry under a hooks: block this client did not write.
+			// Exactly the lines the renderer writes go; every other line of
+			// the file is copied as it was read.
+			planWrite(ops, t.Label(), paths.hermesConfig, removeHermesOwnEntry(existing, own), mode,
+				"remove lineage hook from a hooks: block dropin-miner did not write; every other line is kept as it is", p)
+			removed = true
+		} else if own.found {
+			p.notes = append(p.notes, fmt.Sprintf(
+				"%s: left this installation's pre_tool_call hook in %s because it %s; remove that entry by hand, or Hermes keeps running it",
+				t.Label(), paths.hermesConfig, own.why))
 		}
 	}
 	if !removed {

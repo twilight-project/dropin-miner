@@ -377,6 +377,18 @@ instead. That refusal is deliberate and errs on the cautious side — YAML keeps
 the last of two identical keys and says nothing, so a config edited on a guess
 could lose the hooks you wrote, with no error to tell you.
 
+Once those lines are under your own `hooks:` section, install sees them: it
+says the hook is already set up and leaves your file alone, and `agents status`
+counts it. Uninstall removes them again — those lines and no others. It takes
+an entry out only when it is written exactly as dropin-miner writes it, names
+this installation's binary and config, and sits under `pre_tool_call:` where
+the four lines put it; if that entry was the only one there, the `pre_tool_call:`
+line goes with it, and `hooks:` too if nothing else is left under it, so no
+empty key stays behind. Anything it cannot be that sure of — an entry you
+added a `timeout:` to, one with a comment between it and its heading, the
+same entry twice — it leaves where it is and tells you, because a hook left
+for you to delete is a smaller mistake than somebody else's hook deleted.
+
 `dropin-miner agents uninstall` removes exactly those files and entries.
 
 ## Four things worth knowing

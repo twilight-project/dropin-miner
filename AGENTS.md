@@ -236,6 +236,17 @@ each line names the file that owns the rule and the test that proves it.
   a refusal instead of a lost table, and the two are tested independently on purpose. `codex_block_ownership_test.go` drives install and uninstall against
   the shapes Codex produces; `marked_block_sections_test.go` tests the split on its own first,
   because getting it wrong in the removing direction destroys a participant's settings.
+- **Our entry in a Hermes `hooks:` block we did not write** — `cmd/dropin-miner/hermes_install.go`
+  owns it (`findHermesOwnEntry`, `hermesRunIsRendered`), in the file that already owns the rule it
+  follows: there is no YAML parser, so a false-positive refusal is cheap and an ambiguous mutation
+  is not. An entry is ours only when the file's structure can be vouched for by the same scan
+  install trusts, the entry sits exactly where the renderer puts one, its command is this
+  installation's under `ownership_match.go`'s rule and ends in exactly the renderer's words, and —
+  the net, as in the Codex block — the lines about to go are byte for byte lines `hermesHookLines`
+  produces. What goes is a contiguous suffix of the rendered mapping (two, three or four lines, so
+  no key is left with a null where Hermes expects a list); every other line is copied as read.
+  `hermes_own_entry_test.go` pairs each removed shape with neighbors one step away that must come
+  back byte-identical, and takes its command from a real install rather than a typed string.
 - **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
   renders `tokendrop.toml`, fresh and migrated; `agents.go`, `setup_env.go` and
   `hermes_install.go` render the blocks that go into a host's own config. Every byte any of them
