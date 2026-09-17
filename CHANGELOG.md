@@ -13,6 +13,128 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.10 — 2026-09-17
+
+0.2.10 is the stabilization release: the fixes from 0.2.9's field validation
+that were ready are cut now, so every 0.2.9 installation can make its first
+real native upgrade — through the shipped updater and the trusted-publishing
+pipeline — before the remaining fixes land in 0.2.11. This is the first
+release published to npm with a provenance attestation.
+
+Coming from 0.2.9: run `dropin-miner upgrade` on a native install, or `npm
+install -g dropin-miner@latest` on an npm install. There is nothing else to
+do — wallet, identity, credential, recorded searches and config are all
+kept, and a second `setup` is idempotent. `upgrade -rollback` puts 0.2.9
+back with no network. Coming from earlier than 0.2.9: the v0.2.9 entry
+below still applies first.
+
+- **Every host is taught the command its own shell can run.** The skill's
+  search command is now rendered per host and per OS: a quoted heredoc
+  where the host runs Bash (macOS, Linux, Git Bash), and on Windows a
+  single-quoted here-string piped into the call — for Cursor, opencode,
+  Codex and Claude Code's PowerShell tool — with the line that keeps a
+  non-ASCII query intact on Windows PowerShell 5.1. Claude Code on Windows
+  is taught both forms, since a model can call either its Bash tool or its
+  PowerShell tool. Codex on Windows is taught the PowerShell form too: a
+  live run showed it runs PowerShell under a PowerShell-fenced skill and
+  reaches for the WSL bash launcher, which fails, under a Bash-fenced one
+  — the shell every host actually runs is now established, on every OS.
+  The binary tolerates one leading byte-order mark on `search --stdin` and
+  on hook input.
+
+- **Cursor auto-allows exactly the search its skill teaches, and lineage
+  follows it.** The shell hook now recognizes exactly the rendered command
+  for Cursor's own shell on each OS — the exact binary, the exact
+  arguments, one JSON body — and nothing looser; a human-typed search
+  still asks.
+
+- **Hook commands and trace prefixes are written for the shell that runs
+  them.** Hook commands no longer carry Go-quoted paths that only a
+  Bash-style shell can parse, and Claude Code's hook now fires for both of
+  its shell tools. The trace bridge is written as a PowerShell assignment
+  where PowerShell runs the command, and an adapter replaces a bridge it
+  did not write rather than trusting one already in the command. Cursor's
+  hooks on Windows keep the v0.2.9 form for now — no single form was
+  proven to run under cmd, Windows PowerShell 5.1 and pwsh together — and
+  `agents install` says its runner is not established there. A Claude Code
+  search made through its PowerShell tool on Windows still prompts once:
+  no permission rule is written for it yet.
+
+- **Claude Code: earlier assistant text reaches the router with a
+  search.** A skill's own injected text was mistaken for a new user turn,
+  which floored the scan for the assistant's sentence one step too late
+  and left every search made through the skill without it. The assistant
+  text from an earlier message in the same turn now reaches the router
+  with the search again. Text written in the same message as the search
+  itself still does not: Claude Code writes that message's own entry
+  after the hook runs, so there is nothing yet to read it from (#93,
+  0.2.11).
+
+- **Codex: the flush a search starts now runs inside the sandbox.** The
+  flush lock stays at its one existing location for every binary, but a
+  flush that cannot open it for writing — because the lock lives beside
+  the config, outside the directories the sandbox lets a search write —
+  now opens it read-only and takes the same exclusive lock instead of
+  failing silently. The flush
+  stamp moves under the state directory, which a sandboxed flush can
+  write. A Codex-only participant's searches are delivered.
+
+- **Windows: the wallet directory keeps its own owner-only access.** The
+  wallet directory gets its own protected, owner-only permissions at
+  creation, and every file written into it keeps that access — reapplied,
+  recursively, by `setup` on an existing installation whose wallet had
+  inherited broader access from its parent directory. `doctor`'s new
+  `wallet access` check reports when another principal can read the
+  wallet or a file in it, says the entry can come back, and names
+  `dropin-miner setup` as the repair. On macOS and Linux a sandboxed agent
+  runs as you, so the passphrase is what protects the wallet file there:
+  one you use nowhere else, with the 24 words kept off the machine. No
+  mechanism beyond that, this release — the advisory carries the rest.
+
+- **Commands name the config they use, and `connect` refuses without
+  one.** Every command resolves its config in the same order now —
+  `-config`, then `TOKENDROP_CONFIG`, then `./tokendrop.toml`, then the
+  installation's own config, then built-in defaults — instead of silently
+  falling back to a default state location that isn't the installation
+  actually running. `status` and `doctor` print which config they loaded,
+  or say plainly that none was found; `connect` refuses outright when
+  resolution finds no config file at all, and names `dropin-miner setup`.
+
+- **Dry runs list what the real run does.** `setup -dry-run` now plans
+  every host's install from the config the real run would write or
+  migrate, instead of from no config at all, so its listing matches what
+  actually gets written. `uninstall -dry-run` lists the flush lock a real
+  purge's own locking would create, and nothing a real run never touches.
+
+- **`doctor` tells the truth about recording and payout.** The `recording`
+  check now judges suspicious activity against the epoch the rewards
+  service reports as current, and a hook-triggered flush with nothing to
+  deliver no longer counts as activity, so a healthy installation no
+  longer reads `recording UNKNOWN` for part of nearly every epoch. When a
+  payout binding is held, the `payout address` check now reports the
+  hold — naming both the address currently active and the one this
+  installation would declare, and the operator action to take — instead
+  of reporting `OK`.
+
+- **Released with provenance.** CI's third-party actions are pinned to
+  commit SHAs, the Windows test matrix no longer cancels its siblings when
+  one job fails, and the npm package is published through npm's trusted
+  publishing with a provenance attestation instead of a long-lived token.
+
+- **Deferred to 0.2.11.** Documentation and status: #60, #62, #75. Cursor
+  detection and the Claude Code PowerShell rule: #61, #77. Lifecycle
+  defects from the Windows validation: #73, #81, #82, #83, #84, #85, #86,
+  #87, #88. The transient Windows upgrade sharing violation: #78. Trace
+  lineage defects found after this cut: #91, #93.
+
+- **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
+  exercise of the replacement transaction, stated in v0.2.9, still has not
+  run — no such machine has been available. Pi and Hermes were run live
+  on Windows during this release's field validation; macOS and Linux
+  still rest on reading each host's own source, not a live run. The
+  upgrade acceptance from 0.2.9 runs after this tag, so this entry does
+  not claim it.
+
 ## v0.2.9 — 2026-09-14
 
 0.2.9 is the field-validation release for the upcoming 0.3.0 line. It contains the new

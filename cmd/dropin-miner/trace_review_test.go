@@ -22,7 +22,7 @@ var (
 	traceReviewKey    = "sk-or-v1-" + strings.Repeat("a", 24) + "SECRET"
 	traceReviewBearer = "Bearer " + strings.Repeat("b", 20) + "TOKEN"
 	traceReviewDBURL  = "postgres://admin:" + "hunter2pw" + "@db.internal/prod"
-	traceReviewEmail  = "quasarai" + "@" + "protonmail.com"
+	traceReviewEmail  = "someone" + "@" + "example.com"
 	traceReviewHome   = "/Users/" + "realname" + "/.aws/credentials"
 )
 

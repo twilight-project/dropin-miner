@@ -70,7 +70,7 @@ func TestNewCredentialShapesAreScrubbed(t *testing.T) {
 	ghToken := "ghp_" + strings.Repeat("a", 36)
 	awsKey := "AKIA" + strings.Repeat("Q", 16)
 	jwt := "eyJ" + strings.Repeat("h", 10) + "." + strings.Repeat("p", 10) + "." + strings.Repeat("s", 10)
-	email := "quasarai" + "@" + "protonmail.com"
+	email := "someone" + "@" + "example.com"
 	homePath := "/Users/" + "realname" + "/.aws/credentials"
 
 	for name, secret := range map[string]string{

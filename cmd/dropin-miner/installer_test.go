@@ -399,6 +399,23 @@ func TestSetupFreshNonInteractiveWritesNoEnabledAndEndsStopped(t *testing.T) {
 	if !strings.Contains(out, "Not an interactive shell — not touching any agent") {
 		t.Errorf("agents step did not refuse without a terminal:\n%s", out)
 	}
+	// #75 (soak S19): the profile and the agents step were both declined
+	// for lack of a terminal, so the closing line must name them as
+	// skipped and give the command to finish them, never claim everything
+	// was already in place.
+	if strings.Contains(out, "already in place") {
+		t.Errorf("closing message claims everything was already in place when the profile and agents were skipped:\n%s", out)
+	}
+	profileStep := "shell profile"
+	if runtime.GOOS == "windows" {
+		profileStep = "user environment"
+	}
+	if !strings.Contains(out, profileStep) || !strings.Contains(out, "coding agents") {
+		t.Errorf("closing message does not name the skipped steps:\n%s", out)
+	}
+	if !strings.Contains(out, "setup -config") || !strings.Contains(out, "-yes") {
+		t.Errorf("closing message does not repeat the command to finish the skipped steps:\n%s", out)
+	}
 	after := snapshotTree(t, s.root)
 	if runtime.GOOS != "windows" && lexists(s.profilePath()) {
 		t.Error("a profile was written without a terminal")
@@ -1973,7 +1990,7 @@ func TestSetupRefusesMalformedProfileMarkers(t *testing.T) {
 	if !strings.Contains(out, "Not touching "+s.profilePath()) || !strings.Contains(out, "export TOKENDROP_CONFIG=") {
 		t.Errorf("refusal or lines to add by hand not printed:\n%s", out)
 	}
-	if !strings.Contains(out, "Setup complete.") {
+	if !strings.Contains(out, "Setup complete") {
 		t.Error("setup did not continue after the refusal")
 	}
 }

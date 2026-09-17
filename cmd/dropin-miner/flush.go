@@ -81,6 +81,25 @@ func clearCurrentTargetHealth(store *auth.Store) {
 	}
 }
 
+// clearAuthUnavailableHealth clears a stale flush health record left by an
+// earlier run that had no refresh authorization at all (#62), once THIS
+// flush has proven authorization is available: it holds a live
+// participation capability for the target epoch, which requires exactly
+// the refresh authorization the earlier failure was missing. Reached only
+// after a join attempt (a fresh join, or finding the epoch already held)
+// — a flush with no target open never calls this. The delivery-only
+// clearing rule in updateFlushDeliveryHealth stays for submission_failed
+// and spool_backlog, whose recovery is a delivery, not authorization; this
+// is scoped to auth_state_unavailable alone so it never touches either.
+func clearAuthUnavailableHealth(store *auth.Store) {
+	if store == nil {
+		return
+	}
+	if record, ok, err := store.LoadHealth(auth.HealthFlush); err == nil && ok && record.Reason == auth.HealthAuthUnavailable {
+		_ = store.ClearHealth(auth.HealthFlush)
+	}
+}
+
 const (
 	flushLockHealthPrefix  = "flush lock: "
 	flushStampHealthPrefix = "flush stamp: "
@@ -363,6 +382,9 @@ func runFlushAdmitted(ctx context.Context, cfg *config.Config, cfgPath string, f
 		epoch = target.epoch
 		driver.joinIfNeeded(ctx, epoch)
 		driver.ensure(ctx, epoch)
+		if holder.Snapshot() != nil {
+			clearAuthUnavailableHealth(store)
+		}
 		rep.AskedAS = true
 		stamp.SlotID, stamp.TargetEpoch, stamp.LastAS = m.SlotID, epoch, now
 	}

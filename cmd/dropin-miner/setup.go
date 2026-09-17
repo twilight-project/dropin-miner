@@ -42,8 +42,9 @@ const setupUsage = `usage: dropin-miner setup [-home dir] [-yes] [-no-profile] [
 
 Everything after the binary, asked as it goes: a previous installation to
 reuse, the config, connect (registration, the mining question and the claim
-link), the shell profile (on Windows, the user PATH and TOKENDROP_CONFIG)
-and the coding agents found on this machine.
+link), the shell profile (PATH, TOKENDROP_CONFIG and, when a wallet was made
+here, TOKENDROP_WALLET_DIR; on Windows, the user PATH and TOKENDROP_CONFIG
+only) and the coding agents found on this machine.
 
   -home dir     the installation directory (default $TOKENDROP_HOME, else ~/.tokendrop)
   -yes          answer yes to setup's shell-profile (Windows: user environment) and
@@ -146,6 +147,13 @@ type setupRun struct {
 	changed       bool   // setup wrote or moved something it owns
 	shortCommands bool   // the profile or user environment carries PATH and TOKENDROP_CONFIG
 
+	// skipped names steps this run declined to touch — no terminal without
+	// -yes, or -no-profile/-no-agents (#75) — as distinct from a step that
+	// found nothing to do (already in place, or no agent to configure).
+	// closing() uses it: "already in place" is true only when this stays
+	// empty, never when a step was merely never attempted.
+	skipped []string
+
 	// configPlanData is set by config() to the bytes it is about to publish
 	// (configFresh or configMigrated; nil for configLeft, which changes
 	// nothing) — agentsStep() needs it: on a dry run, config() prints what
@@ -160,6 +168,7 @@ type setupRun struct {
 
 func (r *setupRun) printf(format string, args ...any) { fmt.Fprintf(r.d.stdout, format, args...) }
 func (r *setupRun) say(msg string)                    { fmt.Fprintf(r.d.stdout, "\n%s\n", msg) }
+func (r *setupRun) skip(step string)                  { r.skipped = append(r.skipped, step) }
 
 // ask is a yes/no question, [Y/n], answered yes by -yes. Without -yes it is
 // only reached with a terminal: every caller decides that case first. The
@@ -660,6 +669,9 @@ func (r *setupRun) closing() {
 	switch {
 	case r.dry:
 		r.printf("Dry run complete: nothing was written, moved or run.\n")
+	case len(r.skipped) > 0:
+		r.printf("Setup complete, but setup skipped the %s (no terminal, or asked not to). Finish with:\n\n    %ssetup%s -yes\n",
+			joinLabels(r.skipped), cmd, hint)
 	case r.foundInPlace && !r.changed:
 		r.printf("Setup complete. Everything setup looks after was already in place; nothing was changed.\n")
 	default:
