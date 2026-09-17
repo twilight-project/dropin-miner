@@ -145,10 +145,10 @@ func TestTargetsByIDsRefusesAnUnknownIDNamingEveryKnownOne(t *testing.T) {
 // place that distinction is observable before a real integration exists.
 type fakeIntegrationTarget struct{}
 
-func (fakeIntegrationTarget) ID() string                                            { return "fake-integration" }
-func (fakeIntegrationTarget) Label() string                                         { return "Fake Integration" }
-func (fakeIntegrationTarget) Kind() targetKind                                      { return targetIntegration }
-func (fakeIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) bool { return false }
+func (fakeIntegrationTarget) ID() string                                              { return "fake-integration" }
+func (fakeIntegrationTarget) Label() string                                           { return "Fake Integration" }
+func (fakeIntegrationTarget) Kind() targetKind                                        { return targetIntegration }
+func (fakeIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) string { return "" }
 func (fakeIntegrationTarget) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
 func (fakeIntegrationTarget) PlanUninstall(agentOps, agentPaths, binEntry, *agentPlan) {}

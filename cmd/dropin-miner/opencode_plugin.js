@@ -27,6 +27,16 @@
 // PowerShell is looked up as a program name and the search never runs (#68).
 const HOST_SHELL = "{{HOST_SHELL}}"
 
+// The installation this file belongs to: the config `dropin-miner agents
+// install` resolved when it wrote this. Nothing here reads it — the plugin
+// runs no command of ours and needs no config — it is how `uninstall` knows
+// whose file this is. Every other artifact names its installation in a
+// command it teaches; this one teaches none, so before this line existed an
+// uninstall had nothing to match and removed another installation's plugin
+// (#73). Two installations share this one path, so it names the one that ran
+// `agents install` last, and the other leaves it alone.
+const INSTALL_CONFIG = "{{INSTALL_CONFIG}}"
+
 export const DropinMinerLineage = async ({ client }) => {
   // sessionID -> how many times this session's context window has compacted.
   const compactions = new Map()

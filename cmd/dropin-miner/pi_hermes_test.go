@@ -153,7 +153,7 @@ func TestPiAndHermesStatusDistinguishesEachHalf(t *testing.T) {
 	t.Run("nothing", func(t *testing.T) {
 		_, ops := newFakeMachine()
 		_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
-		for _, want := range []string{"Pi           not on PATH  not installed", "Hermes       not on PATH  not installed"} {
+		for _, want := range []string{"Pi           not found                  not installed", "Hermes       not found                  not installed"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("status missing %q:\n%s", want, out)
 			}

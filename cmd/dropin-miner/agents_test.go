@@ -409,12 +409,12 @@ func TestAgentsPrintsRulesWhenNoAgentIsFoundAndClientOverridesDetection(t *testi
 func TestAgentsStatusReportsPathAndInstallState(t *testing.T) {
 	m, ops := newFakeMachine("cursor")
 	_, out, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
-	if !strings.Contains(out, "Cursor       on PATH      not installed") || !strings.Contains(out, "Claude Code  not on PATH  not installed") {
+	if !strings.Contains(out, "Cursor       found: cursor on PATH      not installed") || !strings.Contains(out, "Claude Code  not found                  not installed") {
 		t.Fatalf("status:\n%s", out)
 	}
 	_, _, _ = runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
 	_, out, _ = runAgents(t, ops, nil, "status", "-config", testCfg)
-	if !strings.Contains(out, "Cursor       on PATH      installed (skill+hooks)") {
+	if !strings.Contains(out, "Cursor       found: cursor on PATH      installed (skill+hooks)") {
 		t.Fatalf("status after install:\n%s", out)
 	}
 	_ = m
@@ -528,19 +528,14 @@ func TestAgentsHookAndAllowRuleMatchingSurvivesAWindowsStyleBinaryPath(t *testin
 	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
 		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
 	}
-	claudeHooksGone := hooksOf(t, m, settings)
-	for _, ev := range []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"} {
-		if _, ok := claudeHooksGone[ev]; ok {
-			t.Errorf("Claude %s survived uninstall: %v", ev, claudeHooksGone[ev])
-		}
-	}
-	if allow := allowOf(t, m, settings); len(allow) != 0 {
-		t.Errorf("Claude allow rules survived uninstall: %v", allow)
-	}
-	cursorHooksGone := hooksOf(t, m, cursorPath)
-	for _, ev := range []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"} {
-		if _, ok := cursorHooksGone[ev]; ok {
-			t.Errorf("Cursor %s survived uninstall: %v", ev, cursorHooksGone[ev])
+	// Both files held nothing but what this client wrote — every hook entry,
+	// every allow rule, and the `version` key install adds — so from H5 they
+	// are removed rather than left as an empty shell. Leaving ~/.cursor/
+	// hooks.json behind as `{"hooks":{},"version":1}` is what made a machine
+	// that never had Cursor detect as Cursor forever after (H4's leftover).
+	for _, path := range []string{settings, cursorPath} {
+		if _, ok := m.files[path]; ok {
+			t.Errorf("%s held nothing but this installation's entries and was not removed: %s", path, m.files[path])
 		}
 	}
 }

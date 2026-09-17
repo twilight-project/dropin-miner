@@ -139,6 +139,7 @@ type setupRun struct {
 	values  setupValues
 
 	targets         []installTarget
+	targetSignals   map[string]string // host id → what made it count as present
 	explicitTargets bool
 
 	adoptFrom     string // the accepted adoption source, if any
@@ -213,8 +214,11 @@ func readSetupLine(r io.Reader) (string, error) {
 }
 
 // displayPath quotes a path for a command a participant copies, only when it
-// needs it.
-func (r *setupRun) displayPath(p string) string {
+// needs it. A plain function as well as a method, because uninstall prints
+// such a command too and the two must quote identically.
+func (r *setupRun) displayPath(p string) string { return displayPath(p) }
+
+func displayPath(p string) string {
 	if strings.ContainsAny(p, " \t\n'\"\\$`&;|<>()*?[]#~!{}") && filepath.Separator == '/' {
 		return shellQuote(p)
 	}
@@ -278,7 +282,7 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	r.exe = exe
 
 	paths := d.agents.paths(d.getenv)
-	r.targets, r.explicitTargets, err = setupTargets(d.agents, paths, d.getenv, with, r.noAgents)
+	r.targets, r.targetSignals, r.explicitTargets, err = setupTargets(d.agents, paths, d.getenv, with, r.noAgents)
 	if err != nil {
 		fmt.Fprintln(d.stderr, "dropin-miner setup: -with:", err)
 		return exitUsage

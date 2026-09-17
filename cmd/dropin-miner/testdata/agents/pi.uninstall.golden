@@ -1,7 +1,13 @@
 {
   "writes": null,
   "removes": [
-    "/home/u/.pi/agent/skills/dropin-miner",
-    "/home/u/.pi/agent/extensions/dropin-miner.ts"
+    {
+      "surface": "Pi",
+      "path": "/home/u/.pi/agent/skills/dropin-miner"
+    },
+    {
+      "surface": "Pi",
+      "path": "/home/u/.pi/agent/extensions/dropin-miner.ts"
+    }
   ]
 }
