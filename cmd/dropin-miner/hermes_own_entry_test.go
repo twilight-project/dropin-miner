@@ -124,10 +124,11 @@ var hermesRemovals = []hermesCase{
 // else's hook.
 var hermesLeftAlone = []hermesCase{
 	{
-		name: "a further key inside the item: an entry somebody edited is theirs",
+		name: "a further key inside the item: an entry somebody edited is theirs to remove",
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n" + entryLines(c) + "      timeout: 5\n" + hermesAfter
 		},
+		note: "has a further key inside it",
 	},
 	{
 		name: "a comment between pre_tool_call: and its only entry",
@@ -167,6 +168,14 @@ var hermesLeftAlone = []hermesCase{
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n" + hermesHookLines(c)[2] + "\n      matcher: \".*\"\n" + hermesAfter
 		},
+		note: "does not have the matcher line",
+	},
+	{
+		name: "the command line with nothing under it, at the end of the file",
+		config: func(c string) string {
+			return "hooks:\n  pre_tool_call:\n" + hermesHookLines(c)[2] + "\n"
+		},
+		note: "does not have the matcher line",
 	},
 	{
 		name: "a double-quoted scalar: not how the renderer writes it",
@@ -373,6 +382,22 @@ func TestInstallStillRefusesAHooksBlockWithoutOurEntry(t *testing.T) {
 	}
 }
 
+// An entry of ours that somebody edited still fires, so install counts it as
+// set up rather than refusing and printing a second copy to paste beside it.
+func TestInstallCountsAnEditedEntryOfOursAsSetUp(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	before := "hooks:\n  pre_tool_call:\n" + entryLines(cmd) + "      timeout: 5\n"
+	m, ops := newFakeMachine("hermes")
+	m.files[hermesConfigPath] = []byte(before)
+	code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	if code != exitOK || !strings.Contains(out, "already set up") {
+		t.Fatalf("install: exit %d, want already set up\n%s%s", code, out, errOut)
+	}
+	if got := string(m.files[hermesConfigPath]); got != before {
+		t.Errorf("install changed the file:\n%q", got)
+	}
+}
+
 // The net on its own, handed a run the scan would never produce: whatever
 // the scan concluded, lines that are not the renderer's do not go.
 func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
@@ -395,6 +420,38 @@ func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, at); got != tc.want {
 				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v", tc.start, tc.end, got, tc.want)
+			}
+		})
+	}
+}
+
+// The other half of the net. Every line in these runs IS a line the renderer
+// writes, and removing them would still break the file, because something
+// that belongs to what went is left behind. A mutation that switched off the
+// scan's own check for this left the net silent and an orphaned `timeout:`
+// in the participant's config, which is how the half came to exist.
+func TestTheHermesNetRefusesARunThatLeavesSomethingOfItsOwnBehind(t *testing.T) {
+	_, cmd := ourHermesEntry(t)
+	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
+	for _, tc := range []struct {
+		name       string
+		file       string
+		start, end int
+		want       bool
+	}{
+		{"our entry, then a column-zero key", body + hermesAfter, 0, 4, true},
+		{"our entry at the end of the file", body, 0, 4, true},
+		{"our two lines, then a sibling entry", body + foreignEntry, 2, 4, true},
+		{"our two lines, a comment, then a sibling entry", body + "    # theirs\n" + foreignEntry, 2, 4, true},
+		{"our two lines, with a further key of the same item below them", body + "      timeout: 5\n", 2, 4, false},
+		{"the same, behind a blank line and a comment", body + "\n      # mine\n      timeout: 5\n", 2, 4, false},
+		{"pre_tool_call: and our lines, with a sibling entry left under nothing", body + foreignEntry, 1, 4, false},
+		{"all four lines, with another event left under nothing", body + foreignPostTool, 0, 4, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := hermesLines([]byte(tc.file))
+			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, 2); got != tc.want {
+				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
 			}
 		})
 	}

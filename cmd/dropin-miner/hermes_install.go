@@ -536,7 +536,7 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 	}
 
 	var hits []int
-	for i := top + 1; i+1 < blockEnd; i++ {
+	for i := top + 1; i < blockEnd; i++ {
 		if hermesEntryIsOurs(lines, i, top, ref) {
 			hits = append(hits, i)
 		}
@@ -550,6 +550,17 @@ func findHermesOwnEntry(b []byte, ref installationRef) hermesOwnEntry {
 	}
 	at := hits[0]
 	parent := hermesParent(lines, at, top)
+
+	// Ours, and from here on the question is only whether it can be taken
+	// out. An entry somebody has edited still runs our binary on every
+	// terminal call, so it is reported and left rather than not seen at all:
+	// silence about a hook that outlives the installation is what #83 was.
+	if at+1 >= len(lines) || lines[at+1].text != want[3] {
+		return hermesOwnEntry{found: true, why: "does not have the matcher line dropin-miner writes under it, so it has been edited"}
+	}
+	if next := hermesNextContent(lines, at+2); next >= 0 && lines[next].indent > 4 {
+		return hermesOwnEntry{found: true, why: "has a further key inside it that dropin-miner did not write"}
+	}
 
 	// How much goes. Our two lines when another entry shares the list; the
 	// pre_tool_call: line with them when ours was its only entry, since a key
@@ -586,9 +597,6 @@ func hermesEntryIsOurs(lines []hermesLine, i, top int, ref installationRef) bool
 		return false
 	}
 	want := hermesHookLines(cmd)
-	if lines[i+1].text != want[3] {
-		return false
-	}
 	// Under `  pre_tool_call:`, itself under the hooks: line found above.
 	parent := hermesParent(lines, i, top)
 	if parent < 0 || lines[parent].text != want[1] {
@@ -599,16 +607,18 @@ func hermesEntryIsOurs(lines []hermesLine, i, top int, ref installationRef) bool
 			return false
 		}
 	}
-	// And nothing more inside the item: a further key at the matcher's depth
-	// (a timeout, a fail_closed) makes this an entry somebody edited, which
-	// is theirs to remove.
-	for k := i + 2; k < len(lines); k++ {
-		if lines[k].indent < 0 {
-			continue
-		}
-		return lines[k].indent <= 4
-	}
 	return true
+}
+
+// hermesNextContent is the first line at or after i that is neither blank
+// nor a comment, or -1.
+func hermesNextContent(lines []hermesLine, i int) int {
+	for k := i; k < len(lines); k++ {
+		if lines[k].indent >= 0 {
+			return k
+		}
+	}
+	return -1
 }
 
 // hermesParent is the nearest line above i that is less indented than the
@@ -708,6 +718,17 @@ func hermesRunIsRendered(lines []hermesLine, e hermesOwnEntry, at int) bool {
 		if lines[e.start+k].text != want[k] {
 			return false
 		}
+	}
+	// And the run must END where the thing it removes ends. Lines that are
+	// ours can still be the head of something that is not: take the two
+	// lines of an entry that has a `timeout:` under them and the timeout is
+	// left dangling under the entry above; take `pre_tool_call:` while
+	// another entry sits under it and that entry is re-parented or orphaned.
+	// Every line compared above would have been rendered, and the file
+	// would still be broken. So whatever follows may be no deeper than the
+	// run's own first line — nothing after it belongs to what went.
+	if next := hermesNextContent(lines, e.end); next >= 0 && lines[next].indent > lines[e.start].indent {
+		return false
 	}
 	return true
 }
