@@ -1,14 +1,13 @@
 {
-  "writes": [
+  "writes": null,
+  "removes": [
     {
       "surface": "Cursor",
-      "path": "/home/u/.cursor/hooks.json",
-      "mode": 384,
-      "why": "remove hooks",
-      "content": "{\n  \"hooks\": {},\n  \"version\": 1\n}\n"
+      "path": "/home/u/.cursor/skills/dropin-miner"
+    },
+    {
+      "surface": "Cursor",
+      "path": "/home/u/.cursor/hooks.json"
     }
-  ],
-  "removes": [
-    "/home/u/.cursor/skills/dropin-miner"
   ]
 }

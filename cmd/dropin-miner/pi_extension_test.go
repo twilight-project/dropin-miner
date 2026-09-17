@@ -98,7 +98,7 @@ func runPiExtension(t *testing.T, cases map[string][]piCall) map[string][]piOutc
   result[name] = outcomes;
  }
  process.stdout.write(JSON.stringify(result));`
-	input, err := json.Marshal(map[string]any{"extension": renderAgentScript(piExtensionTS, shellPOSIX), "cases": cases})
+	input, err := json.Marshal(map[string]any{"extension": renderAgentScript(piExtensionTS, shellPOSIX, testCfg), "cases": cases})
 	if err != nil {
 		t.Fatal(err)
 	}

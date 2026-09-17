@@ -286,7 +286,19 @@ each line names the file that owns the rule and the test that proves it.
   of NO.
 - **The install registry** — `targets.go` owns the interface, the kinds, the views and the
   slice; `agents.go` owns plan execution; the goldens prove a target's plan cannot drift
-  silently, and the structural test proves the public ID set. `targets.go` also owns **the
+  silently, and the structural test proves the public ID set. `Detect` answers with **the
+  signal** that made a host count — `detectCommand` for the command it is launched by,
+  `detectConfigDir` for the directory it keeps — never a bare yes, because setup's "Found on
+  this machine" and `agents status` both print it, and #61 was filed against a machine told
+  "Cursor not on PATH" while Cursor sat in `~/.cursor` with its Agent CLI on PATH under
+  another name. A config directory is evidence on the same footing as a command: it is where
+  the skill and hooks go, so if it is there this client writes there either way.
+  `host_detect_test.go` holds each host's signal to a literal and drives soak row S18 —
+  `-with cursor`, uninstall, plain setup — because uninstall removed by what was installed
+  while setup restored by what was detected, so anything installed with `-with` was lost by a
+  round trip. A removal carries its host (`agentRemove.surface`) for the same reason a write
+  does: `printPlan` groups by host, and a host with only files to delete used to print under
+  the previous host's heading (#88). `targets.go` also owns **the
   shell declaration**: per host and per OS, the set of shells that run its tool calls and what
   runs its hook commands, each cell established by documentation, source or a live run —
   `host_shells_test.go` holds the declaration to a written-out table so no cell moves without a
@@ -319,6 +331,44 @@ each line names the file that owns the rule and the test that proves it.
   classifier setup, `uninstall -binary` and upgrade consult. `uninstall_test.go`'s
   `TestPurgeRefusesEveryConfirmationButTheExactOne`, `TestDefaultUninstallPreservesEveryParticipantByte`
   and `TestWindowsUninstallRevertsOnlyWhatSetupStillOwns` guard them.
+  **`ownership_match.go` owns which installation an integration belongs to**: one of this
+  installation's binaries AND this installation's resolved config, because two installations
+  share a binary whenever the second was made by running the first's copy, and matching on the
+  binary alone removed both installations' integrations from either one's uninstall (#73). It is
+  the rule the profile block already followed, applied everywhere. The spellings come from the
+  same per-shell renderers install writes with, never a hand-kept list; the config is compared
+  with `samePath`, because v0.2.9's `%q` hands Windows doubled separators naming the same file.
+  Codex's sandbox block names directories rather than a config, so `removeOurSandboxBlock`
+  attributes it by its writable roots lying under this installation. **Every artifact this client
+  writes names the installation that wrote it** — `TestEveryArtifactNamesTheInstallationThatWroteIt`
+  — including the JavaScript adapters, which run no command of ours and therefore carry an
+  `INSTALL_CONFIG` line for no other purpose; without it opencode's plugin named nothing and a
+  disposable installation's purge deleted the main installation's copy. An artifact naming no
+  installation is left and reported, never deleted on the assumption it is ours — with the file
+  named and the one `agents install` that would stamp it, so the dead end self-heals.
+  **One function reads a rendered path**, `unquoteRenderedPath`, and both halves of an
+  attribution go through it: the earlier pair disagreed, because the binary half's helper read a
+  double-quoted word only through `strconv.Unquote`, which a cmd-rendered Windows path fails on
+  `\U`. The config half went red on the Windows runners and the binary half failed OPEN, which
+  is the more dangerous direction and the reason the two must not drift apart again.
+  `ownership_test.go`'s `TestUninstallingOneInstallationLeavesAnothersIntegrations` drives soak
+  row S20 on each CI OS, plain and `-purge-state`, and asks the production matcher over decoded
+  JSON rather than scanning bytes — a raw native path never appears in a JSON-escaped file, which
+  is the mistake `79ea5ba`, `f97df97` and `41faaac` each made once.
+  `TestARenderedPathIsReadBackWhicheverShellQuotedIt` pins every renderer's spelling as a unit
+  case, so that defect no longer needs a Windows runner to surface.
+  **`namedInArtifact` is the one place that decides HOW an artifact is read** — a file that
+  decodes as JSON is decoded, anything else is scanned as rendered text — and production and the
+  tests both go through it. Leaving that distinction implicit cost three defects of one shape:
+  a hook file escapes a command twice, by the shell and then by JSON, so on POSIX a byte scan is
+  right by luck and on Windows it reads `\"C:\\Users\\…\"` as a lone backslash. Never scan
+  encoded bytes for a structure that can be decoded.
+  `TestNoHookFileCanEnterTheAttributionPlan` pins the invariant that keeps `attributeRemoved`
+  away from a hook file: it runs against the agnostic plan, whose probe command begins with a NUL
+  byte and so prefix-matches no rendered command, so `planHooksRemove` never sets changed and
+  never reaches its removal. Both halves are asserted, because either alone passes while the
+  invariant is broken — and breaking it is the #69 family again, a hook file of ours left behind
+  running a binary that is gone.
 
 - **Replacement and rollback** — `internal/selfupdate/replace.go` owns both transactions: on POSIX
   a durable same-directory copy, the candidate renamed over the binary, the canonical path run and

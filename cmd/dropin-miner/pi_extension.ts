@@ -39,6 +39,13 @@
 // command text (H-R1).
 const HOST_SHELL = "{{HOST_SHELL}}"
 
+// The installation this file belongs to — see the opencode plugin's copy of
+// this line. Pi's skill names the installation in the command it teaches, so
+// this extension is attributable through its sibling; it carries the line
+// anyway, because the two halves are removed independently and a machine can
+// have the extension with no skill (#73).
+const INSTALL_CONFIG = "{{INSTALL_CONFIG}}"
+
 // The text parts of one Pi session entry, in the shape the shared
 // preparation takes. An assistant message's content is always an array of
 // parts (packages/ai/src/types.ts: AssistantMessage.content is

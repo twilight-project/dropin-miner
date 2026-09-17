@@ -37,7 +37,6 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -530,22 +529,49 @@ func (r *uninstallRun) plan() {
 // of ours are taken out, and the rest is left and reported.
 func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) (changed bool, left []string) {
 	paths := ops.paths(r.d.getenv)
+	ref := installationRef{bins: r.candidates, cfg: r.cfgPath}
 	for _, t := range r.d.targets {
 		var agnostic agentPlan
-		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand}, &agnostic)
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: r.cfgPath}, &agnostic)
 		skip := map[string]bool{}
-		if foreign := foreignBinary(ops, agnostic.removes, r.candidates, r.d.windows); foreign != "" {
+		hold := func(why string) {
 			for _, w := range agnostic.writes {
 				skip[w.path] = true
 			}
 			for _, rm := range agnostic.removes {
-				skip[rm] = true
+				skip[rm.path] = true
 			}
-			left = append(left, fmt.Sprintf("%s: left in place; it runs %s, not this installation", t.Label(), foreign))
+			left = append(left, fmt.Sprintf("%s: %s", t.Label(), why))
+		}
+		// Only a target that HAS something here can have it left: an empty
+		// agnostic plan is a host that is simply not installed, and saying
+		// "left in place" about a file that does not exist would be a lie in
+		// the one place a participant is checking what survived.
+		kind, other := attributionOurs, ""
+		if !agnostic.empty() {
+			kind, other = attributeRemoved(ops, agnostic.removedPaths(), ref, r.d.windows)
+		}
+		switch kind {
+		case attributionForeign:
+			hold("left in place; it belongs to " + other + ", not this installation")
+		case attributionUnknown:
+			// #73: an uninstall that cannot attribute a file leaves it and
+			// says so. The case is narrow — every skill and hook command has
+			// named its config since v0.2.9, so the only artifacts naming none
+			// are the JavaScript adapters from before they carried
+			// INSTALL_CONFIG — and claiming those by their binary alone is
+			// precisely the opencode-plugin complaint. So the message names
+			// the files and gives the participant the instruction that makes
+			// the problem go away by itself: one `agents install` stamps them,
+			// and the next uninstall can then remove them unaided.
+			hold(fmt.Sprintf("left in place; %s names no installation, so this one cannot claim it. "+
+				"Running `%s agents install -config %s` once would stamp it, and a later uninstall could then remove it; "+
+				"otherwise remove it by hand",
+				unattributedPaths(ops, agnostic), displayPath(r.exe), displayPath(r.cfgPath)))
 		}
 		for _, c := range r.candidates {
 			var p agentPlan
-			t.PlanUninstall(ops, paths, binEntry{command: c}, &p)
+			t.PlanUninstall(ops, paths, binEntry{command: c, cfg: r.cfgPath}, &p)
 			p = planWithout(p, skip)
 			if p.empty() && len(p.refused) == 0 {
 				continue
@@ -565,60 +591,240 @@ func planWithout(p agentPlan, skip map[string]bool) agentPlan {
 		}
 	}
 	for _, rm := range p.removes {
-		if !skip[rm] {
+		if !skip[rm.path] {
 			out.removes = append(out.removes, rm)
 		}
 	}
 	return out
 }
 
+// A rendered word, as any of this client's renderers may have written it: a
+// double-quoted one (cmd's literal, and v0.2.9's %q), or a single-quoted one
+// (POSIX and PowerShell). Both regexes below capture the WHOLE word, quotes
+// included, because reading it back is unquoteRenderedPath's job and there
+// must be exactly one function that does it.
+const renderedWordRe = `"(?:[^"\\\n]|\\.)*"|'[^'\n]*(?:(?:'\\''|'')[^'\n]*)*'`
+
 // installedCommand finds the binaries a rendered skill runs: the quoted path
 // before " search", " hook" or " agents prefer".
 //
-// Two spellings, because two renderers have written this file. v0.2.9 quoted
-// every path with Go's %q; from H2 a skill is rendered for its host's shell,
-// which single-quotes the path (POSIX and PowerShell both). Matching only the
-// first would make every skill written by a current install look like a file
-// that names no binary at all — and a skill that names no binary is one
-// uninstall removes, including another installation's.
-var installedCommand = regexp.MustCompile(`(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*(?:(?:'\\''|'')[^'\n]*)*)') (?:search|hook|agents prefer)\b`)
+// Several spellings, because several renderers have written this file. v0.2.9
+// quoted every path with Go's %q; from H2 a skill is rendered for its host's
+// shell, which single-quotes the path (POSIX and PowerShell) or double-quotes
+// it literally (cmd). Matching only some of them would make a file written by
+// a current install look like one that names no binary at all.
+var installedCommand = regexp.MustCompile(`(` + renderedWordRe + `) (?:search|hook|agents prefer)\b`)
 
-// renderedPathCandidates is how a matched path may have been quoted: Go's
-// %q, POSIX single quotes with '\” for an embedded quote, or PowerShell's
-// doubled ”. A path containing no quote reads the same under all three.
-func renderedPathCandidates(m []string) []string {
-	if m[1] != "" {
-		if bin, err := strconv.Unquote(`"` + m[1] + `"`); err == nil {
-			return []string{bin}
-		}
-		return nil
-	}
-	raw := m[2]
-	return []string{strings.ReplaceAll(raw, `'\''`, "'"), strings.ReplaceAll(raw, "''", "'")}
-}
+// installedConfig finds the installation a rendered artifact declares: the
+// `-config <path>` of a command it teaches, or the INSTALL_CONFIG line a
+// JavaScript adapter carries.
+//
+// The adapter line exists because opencode's plugin names no binary and no
+// command at all — it rewrites commands, it does not run any — so until it
+// carried one, the attribution had nothing to match and read it as unowned.
+// A disposable installation's purge therefore removed the main installation's
+// plugin, which is #73's own last comment.
+// The last alternative is a BARE path: Hermes' splitter takes one, and
+// hermesQuoteArg deliberately leaves an ordinary POSIX path unquoted because
+// the same string is the snippet a participant is asked to paste by hand.
+var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(` + renderedWordRe + `|[^\s"'\n]+)`)
 
-// foreignBinary returns a binary named in the files a target would remove
-// when none of them names one of candidates, and "" otherwise — including
-// when they name no binary at all.
-func foreignBinary(ops agentOps, removes, candidates []string, windows bool) string {
-	foreign := ""
+// attribution is what the files a target would remove say about who they
+// belong to.
+type attribution int
+
+const (
+	attributionOurs    attribution = iota // named this installation
+	attributionForeign                    // named another installation
+	attributionUnknown                    // named none, or none we can read
+)
+
+// attributeRemoved decides, from the bytes on disk, whether the files a
+// target would remove are this installation's.
+//
+// Both halves must agree, which is the whole of #73: two installations that
+// share a binary are told apart only by the config each names, and matching
+// on the binary alone made every uninstall plan the removal of both. A file
+// that names an installation other than this one is foreign; a file that
+// names none — a v0.2.9 artifact, or an adapter written before this version —
+// is UNKNOWN, and unknown is left alone and reported rather than assumed to
+// be ours.
+func attributeRemoved(ops agentOps, removes []string, ref installationRef, windows bool) (attribution, string) {
+	other := ""
+	sawAny := false
 	for _, path := range removes {
 		for _, content := range readRemoved(ops, path) {
-			for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
-				for _, bin := range renderedPathCandidates(m) {
-					for _, c := range candidates {
-						if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
-							return ""
-						}
-					}
-					if foreign == "" {
-						foreign = bin
-					}
-				}
+			bins, cfgs := namedInArtifact(content)
+			if len(bins) == 0 && len(cfgs) == 0 {
+				continue
+			}
+			sawAny = true
+			if binsInclude(bins, ref.bins, windows) && configsInclude(cfgs, ref.cfg) {
+				return attributionOurs, ""
+			}
+			if other == "" {
+				other = describeOther(bins, cfgs, ref)
 			}
 		}
 	}
-	return foreign
+	switch {
+	case other != "":
+		return attributionForeign, other
+	case sawAny:
+		// Every artifact named something, and none of it named us.
+		return attributionForeign, "another installation"
+	}
+	return attributionUnknown, ""
+}
+
+// namedInArtifact is the one place that decides HOW an installed artifact is
+// read: a JSON file is decoded and its strings are read as the rendered
+// commands they are; anything else — a skill, a JavaScript adapter, Hermes'
+// YAML — is scanned as the rendered text it is.
+//
+// The distinction belongs in one function because leaving it implicit has now
+// cost three defects of one shape. A hook file is JSON, so a command inside it
+// is escaped twice: the shell quoting first, then JSON's. On POSIX nothing in
+// a path needs escaping and a byte scan reads correctly by luck; on Windows a
+// cmd-rendered path is `"C:\Users\…"` and the file holds
+// `\"C:\\Users\\…\"`, which no reader of rendered text can make sense of.
+// Every one of those three read correctly on POSIX and wrongly on Windows,
+// and every one was found by the Windows runners rather than by us.
+//
+// Nothing here has to know which artifact it is looking at: a file that
+// decodes as a JSON object is decoded, and one that does not is scanned.
+func namedInArtifact(content string) (bins, cfgs []string) {
+	m, err := decodeJSONObject([]byte(content))
+	if err != nil {
+		return namedBinaries(content), namedConfigs(content)
+	}
+	for _, s := range jsonStringLeaves(m) {
+		bins = append(bins, namedBinaries(s)...)
+		cfgs = append(cfgs, namedConfigs(s)...)
+	}
+	return bins, cfgs
+}
+
+// jsonStringLeaves is every string in a decoded JSON value. A hook entry's
+// command may sit at any depth — Claude Code nests its under a matcher group,
+// Cursor's is a top-level field — and which is which is the host's business,
+// not this reader's.
+func jsonStringLeaves(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		var out []string
+		for _, e := range t {
+			out = append(out, jsonStringLeaves(e)...)
+		}
+		return out
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // stable order, so a report names the same thing twice running
+		var out []string
+		for _, k := range keys {
+			out = append(out, jsonStringLeaves(t[k])...)
+		}
+		return out
+	}
+	return nil
+}
+
+// namedBinaries and namedConfigs both read a rendered path back through
+// unquoteRenderedPath, and that is the point: there is one function in this
+// codebase that reads a rendered path, so the two halves of an attribution
+// cannot disagree about what a Windows path says.
+//
+// They used to share a different helper, which read a double-quoted word only
+// through strconv.Unquote. A cmd-rendered Windows path — "C:\Users\…", a
+// literal, which is what Cursor's hooks.json holds on Windows — fails that on
+// \U, and the helper answered "no path here". The config half went red on the
+// Windows runners; the binary half did not, because an artifact naming no
+// binary is treated as contradicting nothing, so it failed OPEN and quietly
+// widened what uninstall would claim. One reading, not two.
+// unattributedPaths names the files that could not be attributed, tilde-
+// shortened, so the message points at something the participant can look at
+// rather than at a host label. Bounded: a plan that would remove a directory
+// names the directory, not every file in it.
+func unattributedPaths(ops agentOps, p agentPlan) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rm := range p.removes {
+		display := tilde(ops.home, rm.path)
+		if seen[display] {
+			continue
+		}
+		seen[display] = true
+		out = append(out, display)
+	}
+	switch len(out) {
+	case 0:
+		return "what is installed"
+	case 1:
+		return out[0]
+	}
+	return strings.Join(out[:len(out)-1], ", ") + " and " + out[len(out)-1]
+}
+
+func namedBinaries(content string) []string {
+	var out []string
+	for _, m := range installedCommand.FindAllStringSubmatch(content, -1) {
+		out = append(out, unquoteRenderedPath(m[1])...)
+	}
+	return out
+}
+
+func namedConfigs(content string) []string {
+	var out []string
+	for _, m := range installedConfig.FindAllStringSubmatch(content, -1) {
+		out = append(out, unquoteRenderedPath(m[1])...)
+	}
+	return out
+}
+
+func binsInclude(named, candidates []string, windows bool) bool {
+	if len(named) == 0 {
+		return true // an artifact that names no binary cannot contradict one
+	}
+	for _, bin := range named {
+		for _, c := range candidates {
+			if bin == c || (windows && strings.EqualFold(bin, c)) || sameFile(bin, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func configsInclude(named []string, cfg string) bool {
+	if len(named) == 0 {
+		return true // as above: silence is not a contradiction
+	}
+	for _, c := range named {
+		if samePath(c, cfg) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeOther names the other installation the way the profile block's
+// refusal does: by what the artifact actually says, so the participant can
+// see which one it is.
+func describeOther(bins, cfgs []string, ref installationRef) string {
+	for _, c := range cfgs {
+		if !samePath(c, ref.cfg) {
+			return "the installation configured by " + c
+		}
+	}
+	for _, b := range bins {
+		return b
+	}
+	return "another installation"
 }
 
 // readRemoved is the text of a file, or of the regular files directly in a

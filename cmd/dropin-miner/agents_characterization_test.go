@@ -102,12 +102,20 @@ type goldenWrite struct {
 	Content string `json:"content"`
 }
 
+// goldenRemove carries the surface as well as the path: a removal belongs to
+// a host, and printPlan groups by that. Recording only the path is what let
+// #88's grouping defect live in a green golden.
+type goldenRemove struct {
+	Surface string `json:"surface"`
+	Path    string `json:"path"`
+}
+
 type goldenPlan struct {
-	Writes  []goldenWrite `json:"writes"`
-	Removes []string      `json:"removes,omitempty"`
-	Skipped []string      `json:"skipped,omitempty"`
-	Refused []string      `json:"refused,omitempty"`
-	Notes   []string      `json:"notes,omitempty"`
+	Writes  []goldenWrite  `json:"writes"`
+	Removes []goldenRemove `json:"removes,omitempty"`
+	Skipped []string       `json:"skipped,omitempty"`
+	Refused []string       `json:"refused,omitempty"`
+	Notes   []string       `json:"notes,omitempty"`
 }
 
 // capturePlan slashes removes and notes, not only a write's own path.
@@ -120,7 +128,7 @@ type goldenPlan struct {
 func capturePlan(p agentPlan) goldenPlan {
 	g := goldenPlan{Skipped: p.skipped, Refused: p.refused}
 	for _, r := range p.removes {
-		g.Removes = append(g.Removes, slash(r))
+		g.Removes = append(g.Removes, goldenRemove{Surface: r.surface, Path: slash(r.path)})
 	}
 	for _, n := range p.notes {
 		g.Notes = append(g.Notes, slash(n))
@@ -437,7 +445,7 @@ func replaceInGoldenPlan(g goldenPlan, from, placeholder string) goldenPlan {
 		})
 	}
 	for _, r := range g.Removes {
-		out.Removes = append(out.Removes, repl(r))
+		out.Removes = append(out.Removes, goldenRemove{Surface: r.Surface, Path: repl(r.Path)})
 	}
 	for _, s := range g.Skipped {
 		out.Skipped = append(out.Skipped, repl(s))
@@ -560,9 +568,13 @@ func statusOutputFor(t *testing.T, id string, install bool, remove func(agentPat
 
 // exactHostStatusLine returns the single status line for label, in the
 // exact bytes printAgentStatus produced ("  " + a 12-wide label field + a
-// space + a 12-wide found field + a space + the state, per its
-// "  %-12s %-12s %s\n" format). It fails if there is not exactly one such
+// space + a 26-wide found field + a space + the state, per its
+// "  %-12s %-26s %s\n" format). It fails if there is not exactly one such
 // line, so a duplicated row is itself a failure, not just a mismatched one.
+//
+// The found field is passed an empty signal map by statusOutputFor, so every
+// case here reads "not found": this characterizes the printer, and what
+// detection answers is host_detect_test.go's subject.
 func exactHostStatusLine(t *testing.T, out, label string) string {
 	t.Helper()
 	const labelField = 12
@@ -625,7 +637,11 @@ func TestAgentStatusExactStates(t *testing.T) {
 		t.Run(tc.id+"/"+tc.name, func(t *testing.T) {
 			out := statusOutputFor(t, tc.id, tc.install, tc.remove)
 			got := exactHostStatusLine(t, out, tc.label)
-			want := fmt.Sprintf("  %-12s %-12s %s", tc.label, "not on PATH", tc.want)
+			// "not found", not "not on PATH": H4 detects a host by its
+			// command OR its config directory, so the old wording was a
+			// claim about PATH the code no longer makes. These cases all
+			// run with nothing on PATH and no config directory.
+			want := fmt.Sprintf("  %-12s %-26s %s", tc.label, "not found", tc.want)
 			if got != want {
 				t.Errorf("status line for %s:\n got  %q\n want %q", tc.label, got, want)
 			}
@@ -654,7 +670,7 @@ func TestSelectSurfacesSemantics(t *testing.T) {
 	_, ops := newFakeMachine("claude")
 	paths := ops.paths(noEnv)
 
-	selected, detected, err := selectSurfaces(ops, paths, noEnv, nil)
+	selected, detected, _, err := selectSurfaces(ops, paths, noEnv, nil)
 	if err != nil {
 		t.Fatalf("selectSurfaces(nil): %v", err)
 	}
@@ -665,7 +681,7 @@ func TestSelectSurfacesSemantics(t *testing.T) {
 		t.Fatalf("no -client should select exactly what was detected: %v", selected)
 	}
 
-	selected, _, err = selectSurfaces(ops, paths, noEnv, []string{"codex"})
+	selected, _, _, err = selectSurfaces(ops, paths, noEnv, []string{"codex"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([codex]): %v", err)
 	}
@@ -679,7 +695,7 @@ func TestSelectSurfacesSemantics(t *testing.T) {
 func TestSelectSurfacesTrimsAndLowercasesAnExplicitID(t *testing.T) {
 	_, ops := newFakeMachine()
 	paths := ops.paths(noEnv)
-	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{" CoDeX "})
+	selected, _, _, err := selectSurfaces(ops, paths, noEnv, []string{" CoDeX "})
 	if err != nil {
 		t.Fatalf("selectSurfaces([\" CoDeX \"]): %v", err)
 	}
@@ -695,7 +711,7 @@ func TestSelectSurfacesTrimsAndLowercasesAnExplicitID(t *testing.T) {
 func TestSelectSurfacesPreservesExplicitArgumentOrder(t *testing.T) {
 	_, ops := newFakeMachine()
 	paths := ops.paths(noEnv)
-	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{"hermes", "claude"})
+	selected, _, _, err := selectSurfaces(ops, paths, noEnv, []string{"hermes", "claude"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([hermes, claude]): %v", err)
 	}
@@ -711,7 +727,7 @@ func TestSelectSurfacesPreservesExplicitArgumentOrder(t *testing.T) {
 func TestSelectSurfacesUnknownIDErrorTextIsExact(t *testing.T) {
 	_, ops := newFakeMachine()
 	paths := ops.paths(noEnv)
-	_, _, err := selectSurfaces(ops, paths, noEnv, []string{"nonesuch"})
+	_, _, _, err := selectSurfaces(ops, paths, noEnv, []string{"nonesuch"})
 	if err == nil {
 		t.Fatal("selectSurfaces([nonesuch]): want an error")
 	}
@@ -729,7 +745,7 @@ func TestSelectSurfacesUnknownIDErrorTextIsExact(t *testing.T) {
 func TestSelectSurfacesRepeatedIDIsNotDeduplicated(t *testing.T) {
 	_, ops := newFakeMachine()
 	paths := ops.paths(noEnv)
-	selected, _, err := selectSurfaces(ops, paths, noEnv, []string{"claude", "claude"})
+	selected, _, _, err := selectSurfaces(ops, paths, noEnv, []string{"claude", "claude"})
 	if err != nil {
 		t.Fatalf("selectSurfaces([claude, claude]): %v", err)
 	}

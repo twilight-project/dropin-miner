@@ -9,6 +9,9 @@
     }
   ],
   "removes": [
-    "/home/u/.codex/skills/dropin-miner"
+    {
+      "surface": "Codex",
+      "path": "/home/u/.codex/skills/dropin-miner"
+    }
   ]
 }

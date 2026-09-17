@@ -299,9 +299,9 @@ func jsBridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 	if err != nil {
 		t.Fatal("node is required to run the rendered opencode plugin and Pi extension")
 	}
-	source := renderAgentScript(opencodePluginJS, sh)
+	source := renderAgentScript(opencodePluginJS, sh, testCfg)
 	if host == "pi" {
-		source = renderAgentScript(piExtensionTS, sh)
+		source = renderAgentScript(piExtensionTS, sh, testCfg)
 	}
 	script := `
  const fs = await import('node:fs');

@@ -1,6 +1,9 @@
 {
   "writes": null,
   "removes": [
-    "/home/u/.config/opencode/plugins/dropin-miner.js"
+    {
+      "surface": "opencode",
+      "path": "/home/u/.config/opencode/plugins/dropin-miner.js"
+    }
   ]
 }

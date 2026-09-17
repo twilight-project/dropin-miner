@@ -42,8 +42,8 @@ type powerShellDeclaringHost struct{}
 func (powerShellDeclaringHost) ID() string       { return "fake-powershell-host" }
 func (powerShellDeclaringHost) Label() string    { return "Fake PowerShell Host" }
 func (powerShellDeclaringHost) Kind() targetKind { return targetHost }
-func (powerShellDeclaringHost) Detect(agentOps, agentPaths, func(string) string) bool {
-	return false
+func (powerShellDeclaringHost) Detect(agentOps, agentPaths, func(string) string) string {
+	return ""
 }
 func (powerShellDeclaringHost) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
@@ -98,7 +98,7 @@ func TestTheInstallerWritesTheDeclaredShellIntoEveryJavaScriptAdapter(t *testing
 	t.Run("a host that declares powershell gets powershell on any runner", func(t *testing.T) {
 		_, ops := newFakeMachine()
 		var p agentPlan
-		if !planAgentScript(ops, powerShellDeclaringHost{}, "/home/u/adapter.js", opencodePluginJS, "lineage plugin", &p) {
+		if !planAgentScript(ops, powerShellDeclaringHost{}, "/home/u/adapter.js", opencodePluginJS, "lineage plugin", goldenEntry(), &p) {
 			t.Fatalf("the plan refused a host that declares exactly one tool shell: %v", p.refused)
 		}
 		if len(p.writes) != 1 {

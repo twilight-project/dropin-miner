@@ -295,10 +295,12 @@ func TestIdentityBundleMovesStateAndKeyTogether(t *testing.T) {
 // proves setup -with reaches a kind agents -client never can.
 type fakeIntegration struct{}
 
-func (fakeIntegration) ID() string                                            { return "fake-integration" }
-func (fakeIntegration) Label() string                                         { return "Fake integration" }
-func (fakeIntegration) Kind() targetKind                                      { return targetIntegration }
-func (fakeIntegration) Detect(agentOps, agentPaths, func(string) string) bool { return true }
+func (fakeIntegration) ID() string       { return "fake-integration" }
+func (fakeIntegration) Label() string    { return "Fake integration" }
+func (fakeIntegration) Kind() targetKind { return targetIntegration }
+func (fakeIntegration) Detect(agentOps, agentPaths, func(string) string) string {
+	return "fake-integration on PATH"
+}
 func (fakeIntegration) PlanInstall(ops agentOps, _ agentPaths, _ binEntry, _ func(string) string, p *agentPlan) {
 	planWrite(ops, "Fake integration", filepath.Join(ops.home, ".fake-integration"), []byte("x"), 0o600, "marker", p)
 }
@@ -316,7 +318,7 @@ func TestSetupWithReachesEveryTargetKindAndDeduplicates(t *testing.T) {
 	paths := ops.paths(func(string) string { return "" })
 	none := func(string) string { return "" }
 
-	got, explicit, err := setupTargets(ops, paths, none, []string{"fake-integration", "codex", " Codex ", "fake-integration"}, true)
+	got, _, explicit, err := setupTargets(ops, paths, none, []string{"fake-integration", "codex", " Codex ", "fake-integration"}, true)
 	if err != nil || !explicit {
 		t.Fatalf("-with an integration: %v explicit=%v", err, explicit)
 	}
@@ -329,12 +331,12 @@ func TestSetupWithReachesEveryTargetKindAndDeduplicates(t *testing.T) {
 	}
 
 	// Detection is host-only: an integration never arrives uninvited.
-	detected, explicit, err := setupTargets(ops, paths, none, nil, false)
+	detected, _, explicit, err := setupTargets(ops, paths, none, nil, false)
 	if err != nil || explicit || len(detected) != 0 {
 		t.Fatalf("default selection with nothing on PATH: %v %v %v", detected, explicit, err)
 	}
 
-	if _, _, err := setupTargets(ops, paths, none, []string{"nope"}, false); err == nil || !strings.Contains(err.Error(), "fake-integration") {
+	if _, _, _, err := setupTargets(ops, paths, none, []string{"nope"}, false); err == nil || !strings.Contains(err.Error(), "fake-integration") {
 		t.Fatalf("unknown id error does not list every kind: %v", err)
 	}
 }

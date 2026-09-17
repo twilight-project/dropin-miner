@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,63 @@ func installed(t *testing.T) *setupSandbox {
 	}
 	s.onPath = map[string]bool{} // uninstall must not depend on detection
 	return s
+}
+
+// TestDryRunGroupsEveryHostsLinesUnderItsOwnHeading is #88, item 1, from the
+// Windows soak: the dry run printed opencode's, Pi's and Hermes' removals
+// under the "Cursor" heading. The cause was that a removal carried only a
+// path while a write carried its host, and the printer emitted a heading only
+// when a write's host changed — so a host with nothing to rewrite, only files
+// to delete, never got a heading and its lines fell under the previous one.
+//
+// The assertion walks the output and attributes every file line to the last
+// heading above it, which is exactly how a participant reads it.
+func TestDryRunGroupsEveryHostsLinesUnderItsOwnHeading(t *testing.T) {
+	s := newSetupSandbox(t)
+	s.platform.claim("credits")
+	// Cursor writes hooks.json and deletes a skill; opencode only deletes;
+	// Pi only deletes, two files. That ordering is the soak's.
+	if code, out, errOut := s.run(nil, false, "-yes", "-with", "cursor", "-with", "opencode", "-with", "pi"); code != exitOK {
+		t.Fatalf("setup exited %d\n%s\n%s", code, out, errOut)
+	}
+	s.onPath = map[string]bool{}
+
+	code, out, errOut := s.uninstall(t, nil, false, nil, "-dry-run")
+	if code != exitOK {
+		t.Fatalf("uninstall -dry-run exited %d\n%s\n%s", code, out, errOut)
+	}
+
+	paths := s.paths()
+	wantHeadingOf := map[string]string{
+		tilde(s.userHome, paths.cursorHooks):               "Cursor",
+		tilde(s.userHome, filepath.Dir(paths.cursorSkill)): "Cursor",
+		tilde(s.userHome, paths.opencodePlugin):            "opencode",
+		tilde(s.userHome, filepath.Dir(paths.piSkill)):     "Pi",
+		tilde(s.userHome, paths.piExtension):               "Pi",
+	}
+	heading := ""
+	seen := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "    write  "), strings.HasPrefix(line, "    remove "):
+			fields := strings.Fields(strings.TrimSpace(line))
+			if len(fields) >= 2 {
+				seen[fields[1]] = heading
+			}
+		case strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   "):
+			heading = strings.TrimSpace(line)
+		}
+	}
+	for path, want := range wantHeadingOf {
+		got, ok := seen[path]
+		if !ok {
+			t.Errorf("the dry run never listed %s:\n%s", path, out)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s is printed under the %q heading, want %q:\n%s", path, got, want, out)
+		}
+	}
 }
 
 // walletFixtureAddress is a valid twilight bech32 address for a fixed key.
@@ -263,14 +321,14 @@ type uninstallIntegrationTarget struct{ file string }
 func (uninstallIntegrationTarget) ID() string       { return "fake-integration" }
 func (uninstallIntegrationTarget) Label() string    { return "Fake integration" }
 func (uninstallIntegrationTarget) Kind() targetKind { return targetIntegration }
-func (uninstallIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) bool {
-	return false
+func (uninstallIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) string {
+	return ""
 }
 func (uninstallIntegrationTarget) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
 func (f uninstallIntegrationTarget) PlanUninstall(ops agentOps, _ agentPaths, _ binEntry, p *agentPlan) {
 	if pathExists(ops, f.file) {
-		p.removes = append(p.removes, f.file)
+		planRemove(p, f.Label(), f.file)
 	}
 }
 func (uninstallIntegrationTarget) Status(agentOps, agentPaths, binEntry) targetStatus {
@@ -280,7 +338,11 @@ func (uninstallIntegrationTarget) Status(agentOps, agentPaths, binEntry) targetS
 func TestUninstallReachesATargetOfEveryKind(t *testing.T) {
 	s := installed(t)
 	file := filepath.Join(s.userHome, ".fake-integration", "dropin-miner.conf")
-	writeFileT(t, file, "installed by an integration target")
+	// Naming the installation is what every artifact this client writes does
+	// from H5 on (TestEveryArtifactNamesTheInstallationThatWroteIt); an
+	// artifact that names none cannot be attributed and is left alone, so a
+	// fixture that left it out would be testing the wrong branch.
+	writeFileT(t, file, "installed by an integration target\nINSTALL_CONFIG = "+strconv.Quote(s.cfgPath())+"\n")
 	d, out, errOut := s.uninstallDeps(nil, false, &revokeRecorder{})
 	d.targets = append(append([]installTarget{}, installTargets...), uninstallIntegrationTarget{file: file})
 	if code := uninstallMain(d, []string{"-yes"}); code != exitOK {
@@ -355,7 +417,7 @@ func TestUninstallLeavesAnotherInstallationsIntegrations(t *testing.T) {
 	if !lexists(paths.claudeSkill) || !lexists(paths.codexSkill) {
 		t.Error("skills that run another installation's binary must be left in place")
 	}
-	if !strings.Contains(out.String(), "left in place; it runs "+s.exe) {
+	if !strings.Contains(out.String(), "left in place; it belongs to the installation configured by "+s.cfgPath()) {
 		t.Errorf("uninstall must report what it left and why:\n%s", out.String())
 	}
 }

@@ -1726,7 +1726,7 @@ func normalizeAgentPlanRoots(p agentPlan, root string) agentPlan {
 		})
 	}
 	for _, r := range p.removes {
-		out.removes = append(out.removes, repl(r))
+		out.removes = append(out.removes, agentRemove{surface: r.surface, path: repl(r.path)})
 	}
 	for _, n := range p.notes {
 		out.notes = append(out.notes, repl(n))
