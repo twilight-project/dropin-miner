@@ -51,35 +51,81 @@ type recognizedCursorCommand struct {
 	body string
 }
 
-// recognizeCursorCommand decides whether command is exactly one of the
-// commands this installation's skill renders, for one of the shells Cursor
-// runs on this OS. cfg is the config this hook was started with — the same
-// one the skill's command names, because one install wrote both.
-func recognizeCursorCommand(command string, executable func() (string, error), cfg string, shells []shellKind) *recognizedCursorCommand {
-	if command == "" || executable == nil {
+// cursorCommandMatch is one rendered form a command matched on grammar
+// alone: which declared shell it was rendered for, which command path it is,
+// and the two paths and the body it carried, each already read back out of
+// the quoting the shell put on it.
+type cursorCommandMatch struct {
+	shell     shellKind
+	path      []string
+	bin       string
+	cfg       string
+	body      string
+	wantsBody bool
+}
+
+// matchedCursorForms is the grammar half of the recognizer: every form this
+// installation's skill renders, for every shell Cursor runs on this OS, that
+// command is exactly — in declaration order. It decides only whether the
+// command IS one of the strings we teach. Whether the binary and config it
+// names are *this* installation's is recognizeCursorCommand's, because that
+// needs the filesystem and a permission answer needs both halves.
+//
+// The two are split so that the hook and the per-OS golden that pins this
+// grammar reach the SAME loop over the declared shells. The golden cannot run
+// the identity half — it renders Windows and macOS paths that do not exist on
+// the runner — so before T1b it rebuilt the loop for itself, and a recognizer
+// that stopped after the first declared shell left the whole package green
+// while every search in Cursor's second terminal would have prompted (#66
+// again, for the second terminal).
+func matchedCursorForms(command, cfg string, shells []shellKind) []cursorCommandMatch {
+	if command == "" {
 		return nil
 	}
 	command = strings.TrimSuffix(command, "\n")
+	var out []cursorCommandMatch
 	for _, sh := range shells {
 		for _, candidate := range renderedCursorCommands(cfg, sh) {
 			got, ok := matchRendered(command, candidate)
 			if !ok {
 				continue
 			}
-			if !sameBinary(got.bin, executable) {
-				continue
-			}
-			if cfg != "" && !samePath(unquoteRendered(got.cfg, candidate.text), cfg) {
-				continue
-			}
-			if candidate.wantsBody {
-				if !isOneVersionOneRequest(got.body) {
-					continue
-				}
-				return &recognizedCursorCommand{path: candidate.path, body: got.body}
-			}
-			return &recognizedCursorCommand{path: candidate.path}
+			out = append(out, cursorCommandMatch{
+				shell:     sh,
+				path:      candidate.path,
+				bin:       got.bin,
+				cfg:       unquoteRendered(got.cfg, candidate.text),
+				body:      got.body,
+				wantsBody: candidate.wantsBody,
+			})
 		}
+	}
+	return out
+}
+
+// recognizeCursorCommand decides whether command is exactly one of the
+// commands this installation's skill renders, for one of the shells Cursor
+// runs on this OS, AND names this installation's own binary and config. cfg
+// is the config this hook was started with — the same one the skill's command
+// names, because one install wrote both.
+func recognizeCursorCommand(command string, executable func() (string, error), cfg string, shells []shellKind) *recognizedCursorCommand {
+	if executable == nil {
+		return nil
+	}
+	for _, m := range matchedCursorForms(command, cfg, shells) {
+		if !sameBinary(m.bin, executable) {
+			continue
+		}
+		if cfg != "" && !samePath(m.cfg, cfg) {
+			continue
+		}
+		if m.wantsBody {
+			if !isOneVersionOneRequest(m.body) {
+				continue
+			}
+			return &recognizedCursorCommand{path: m.path, body: m.body}
+		}
+		return &recognizedCursorCommand{path: m.path}
 	}
 	return nil
 }
