@@ -336,11 +336,19 @@ func TestInstallShRemovesTheDownloadOnTheSuccessPathToo(t *testing.T) {
 
 // ── install.ps1 ─────────────────────────────────────────────────────────
 
-// tempRootMarker is printed by the preamble once it has established that
-// GetTempPath resolves to the scratch directory. The case requires it in
-// the output, because the wrong-checksum case expects a non-zero exit and
-// would otherwise read a preamble that threw as the refusal it wanted.
-const tempRootMarker = "TEMPROOT-IS-THE-SCRATCH-DIRECTORY"
+// tempRootMarker prefixes the temporary directory the slice is about to
+// use, as GetTempPath itself reports it. The case requires the line in the
+// output, because the wrong-checksum case expects a non-zero exit and would
+// otherwise read a preamble that failed as the refusal it wanted.
+//
+// Judging the path is Go's job, not the preamble's. The first version had
+// PowerShell compare the two strings and throw, and both Windows runners
+// went red on it: GitHub's TEMP is the 8.3 short form
+// (C:\Users\RUNNER~1\...), which is what Go's t.TempDir() hands back and
+// what Resolve-Path leaves alone, while .NET's GetTempPath returns the long
+// form (C:\Users\runneradmin\...). One directory, two spellings, and a
+// string comparison that called them different places.
+const tempRootMarker = "TEMPROOT="
 
 func runInstallPs1Slice(t *testing.T, stub *releaseStub, binDir, tmpRoot string) (int, string) {
 	t.Helper()
@@ -353,14 +361,11 @@ func runInstallPs1Slice(t *testing.T, stub *releaseStub, binDir, tmpRoot string)
 		`$ErrorActionPreference = "Stop"`,
 		`$env:TEMP = ` + psLiteral(tmpRoot),
 		`$env:TMP = ` + psLiteral(tmpRoot),
-		// Proven, not assumed: the slice's own GetTempPath call is what
+		// Reported, not assumed: the slice's own GetTempPath call is what
 		// decides where the temporary directory lands, so the case has no
-		// business asserting the scratch directory is empty until this
-		// says the two are the same place.
-		`$resolved = [System.IO.Path]::GetTempPath().TrimEnd('\')`,
-		`$want = (Resolve-Path ` + psLiteral(tmpRoot) + `).Path.TrimEnd('\')`,
-		`if ($resolved -ne $want) { throw "test preamble: GetTempPath is $resolved, not $want" }`,
-		`Write-Host ` + psLiteral(tempRootMarker),
+		// business asserting the scratch directory is empty until it has
+		// seen that the two are the same place.
+		`Write-Host (` + psLiteral(tempRootMarker) + ` + [System.IO.Path]::GetTempPath())`,
 		`$tag = "v9.9.9"`,
 		`$name = ` + psLiteral(stub.name),
 		`$BinDir = ` + psLiteral(binDir),
@@ -384,14 +389,39 @@ func psLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// ps1SliceRan is the three things that must hold before "the scratch
-// directory is empty" means anything: the preamble established where the
-// temporary directory would go, the stub served the archive, and the
-// output is the slice's own.
-func ps1SliceRan(t *testing.T, stub *releaseStub, out string) {
+// sameDirOnDisk is whether two spellings name one directory. Windows
+// offers several — 8.3 short names, case, a trailing separator — and
+// EvalSymlinks resolves each to the final path the filesystem knows, which
+// is the only comparison that holds on a GitHub runner. cursor_command.go's
+// samePath deliberately does not ask the filesystem, because it compares
+// paths inside a host's config file that may not exist; here both
+// directories do exist, and 8.3 is exactly what has to collapse.
+func sameDirOnDisk(a, b string) bool {
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Clean(r)
+		}
+		return filepath.Clean(p)
+	}
+	return strings.EqualFold(resolve(a), resolve(b))
+}
+
+// ps1SliceRan is what must hold before "the scratch directory is empty"
+// means anything: the slice reported where its temporary directory would
+// go, that place is the scratch directory, and the stub served the
+// archive.
+func ps1SliceRan(t *testing.T, stub *releaseStub, out, tmpRoot string) {
 	t.Helper()
-	if !strings.Contains(out, tempRootMarker) {
-		t.Fatalf("the preamble never established the temporary directory:\n%s", out)
+	i := strings.Index(out, tempRootMarker)
+	if i < 0 {
+		t.Fatalf("the slice never reported its temporary directory:\n%s", out)
+	}
+	reported := strings.TrimSpace(out[i+len(tempRootMarker):])
+	if nl := strings.IndexAny(reported, "\r\n"); nl >= 0 {
+		reported = reported[:nl]
+	}
+	if !sameDirOnDisk(reported, tmpRoot) {
+		t.Fatalf("GetTempPath is %q, not the scratch directory %q; the emptiness check below would prove nothing", reported, tmpRoot)
 	}
 	if stub.archiveRequests() != 1 {
 		t.Fatalf("the stub served the archive %d time(s); the slice did not run as expected\n%s", stub.archiveRequests(), out)
@@ -412,7 +442,7 @@ func TestInstallPs1RemovesTheDownloadWhenTheChecksumFails(t *testing.T) {
 	}
 
 	code, out := runInstallPs1Slice(t, stub, binDir, tmpRoot)
-	ps1SliceRan(t, stub, out)
+	ps1SliceRan(t, stub, out, tmpRoot)
 	if code == 0 {
 		t.Fatalf("a wrong checksum exited 0\n%s", out)
 	}
@@ -441,7 +471,7 @@ func TestInstallPs1RemovesTheDownloadOnTheSuccessPathToo(t *testing.T) {
 	}
 
 	code, out := runInstallPs1Slice(t, stub, binDir, tmpRoot)
-	ps1SliceRan(t, stub, out)
+	ps1SliceRan(t, stub, out, tmpRoot)
 	if code != 0 {
 		t.Fatalf("a correct checksum exited %d\n%s", code, out)
 	}
