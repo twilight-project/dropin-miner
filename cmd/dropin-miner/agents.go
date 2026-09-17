@@ -676,15 +676,15 @@ func labels(ts []installTarget) []string {
 // for the shell that host runs tool calls in; a host with no established
 // shell, and the generic "any other agent" case, get the POSIX form, which
 // is what v0.2.9 printed for everyone.
-func rulesSnippetFor(entry binEntry, shells []shellKind) string {
+func rulesSnippetFor(entry binEntry, shells skillShells) string {
 	var lines []string
-	for _, sh := range shells {
+	for _, sh := range shells.kinds {
 		cmd, err := entry.stdinCommandForShell(sh)
 		if err != nil {
 			continue
 		}
-		if len(shells) > 1 {
-			lines = append(lines, "    ("+shellLabel(sh)+") "+cmd)
+		if len(shells.kinds) > 1 {
+			lines = append(lines, "    ("+shells.shortLabel(sh)+") "+cmd)
 			continue
 		}
 		lines = append(lines, "    "+cmd)
@@ -707,7 +707,7 @@ func rulesSnippetFor(entry binEntry, shells []shellKind) string {
 // rulesSnippet is the generic form, for an agent this client knows nothing
 // about: the POSIX command, which is what v0.2.9 printed for everyone.
 func rulesSnippet(entry binEntry) string {
-	return rulesSnippetFor(entry, []shellKind{shellPOSIX})
+	return rulesSnippetFor(entry, skillShells{kinds: []shellKind{shellPOSIX}})
 }
 
 // ── install ─────────────────────────────────────────────────────────────
@@ -741,7 +741,7 @@ goes through Hermes' ordinary permission handling.
 // tool calls in on this OS. shells is that host's declaration (H-R1): the
 // commands, their fences and the prose about the quoting all follow it, so
 // no host is taught a form its shell cannot parse.
-func renderSkill(entry binEntry, prefer, note string, shells []shellKind) ([]byte, error) {
+func renderSkill(entry binEntry, prefer, note string, shells skillShells) ([]byte, error) {
 	desc, rules := descriptionOn, rulesOn
 	if prefer == preferOff {
 		desc, rules = descriptionOff, rulesOff

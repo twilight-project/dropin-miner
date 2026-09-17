@@ -392,7 +392,7 @@ func psLiteral(s string) string {
 // sameDirOnDisk is whether two spellings name one directory. Windows
 // offers several — 8.3 short names, case, a trailing separator — and
 // EvalSymlinks resolves each to the final path the filesystem knows, which
-// is the only comparison that holds on a GitHub runner. cursor_command.go's
+// is the only comparison that holds on a GitHub runner. rendered_form.go's
 // samePath deliberately does not ask the filesystem, because it compares
 // paths inside a host's config file that may not exist; here both
 // directories do exist, and 8.3 is exactly what has to collapse.

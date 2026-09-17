@@ -52,8 +52,8 @@ func (f recognizerFixture) renderedSearch(t *testing.T, sh shellKind, body strin
 	return script
 }
 
-func (f recognizerFixture) recognize(command string) *recognizedCursorCommand {
-	return recognizeCursorCommand(command, f.exe, f.entry.cfg, f.shells)
+func (f recognizerFixture) recognize(command string) *recognizedForm {
+	return recognizeRenderedForm(command, f.exe, f.entry.cfg, f.shells)
 }
 
 // The rendered search is allowed, in every shell the host may run it in, and
@@ -179,12 +179,12 @@ func TestRecognizerComparesTheConfigAsAPathNotASpelling(t *testing.T) {
 	if doubled == f.entry.cfg {
 		t.Fatal("this path has no separator to double")
 	}
-	got := recognizeCursorCommand(command, f.exe, doubled, f.shells)
+	got := recognizeRenderedForm(command, f.exe, doubled, f.shells)
 	if got == nil {
 		t.Fatalf("a hook holding %q refused the search rendered with %q", doubled, f.entry.cfg)
 	}
 	// A different file is still a different file.
-	if other := recognizeCursorCommand(command, f.exe, filepath.Join(t.TempDir(), "other.toml"), f.shells); other != nil {
+	if other := recognizeRenderedForm(command, f.exe, filepath.Join(t.TempDir(), "other.toml"), f.shells); other != nil {
 		t.Fatal("a command naming another installation's config was allowed")
 	}
 }

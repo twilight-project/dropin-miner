@@ -639,7 +639,10 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *tra
 	}
 	if lf == nil && m.SessionsDir != "" {
 		if cwd, err := ops.getwd(); err == nil {
-			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, now)
+			// harness is what says whose search this is. Without it the walk
+			// answers nothing, because anything it found up the tree would be
+			// another session's (#97).
+			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, now)
 		}
 	}
 	if lf != nil {

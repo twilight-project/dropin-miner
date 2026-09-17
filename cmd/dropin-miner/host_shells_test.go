@@ -25,30 +25,35 @@ type declaredRow struct {
 	tool, hook shellEvidence
 	toolShells []shellKind
 	hookShells []shellKind
+	// toolChoice is who picks among toolShells, and is part of the declared
+	// fact wherever there is more than one: it decides what the skill says
+	// above each block, and a wrong answer there sends the participant to the
+	// form their shell cannot run (#96).
+	toolChoice shellChoice
 }
 
 // The H1 evidence table. Unknown cells gate the commits that would render
 // for them: an unknown tool cell blocks H2 for that host and OS only, an
 // unknown hook cell blocks H3 for that host and OS only.
 var declaredShellTable = []declaredRow{
-	{"claude", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"claude", "linux", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"claude", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX, shellPowerShell}, []shellKind{shellPOSIX}},
-	{"codex", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"codex", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"codex", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPowerShell}, nil},
-	{"cursor", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"cursor", "linux", evidenceEstablished, evidenceRuled, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}},
-	{"cursor", "windows", evidenceEstablished, evidenceRuled, []shellKind{shellPowerShell}, []shellKind{shellCmd, shellPowerShell}},
-	{"opencode", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"opencode", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"opencode", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPowerShell}, nil},
-	{"pi", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"pi", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"pi", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil},
-	{"hermes", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}},
-	{"hermes", "linux", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}},
-	{"hermes", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}},
+	{"claude", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}, ""},
+	{"claude", "linux", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}, ""},
+	{"claude", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX, shellPowerShell}, []shellKind{shellPOSIX}, chosenPerCall},
+	{"codex", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"codex", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"codex", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPowerShell}, nil, ""},
+	{"cursor", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}, ""},
+	{"cursor", "linux", evidenceEstablished, evidenceRuled, []shellKind{shellPOSIX}, []shellKind{shellPOSIX}, ""},
+	{"cursor", "windows", evidenceEstablished, evidenceRuled, []shellKind{shellPowerShell, shellPOSIX}, []shellKind{shellCmd, shellPowerShell}, chosenByParticipant},
+	{"opencode", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"opencode", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"opencode", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPowerShell}, nil, ""},
+	{"pi", "darwin", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"pi", "linux", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"pi", "windows", evidenceEstablished, evidenceNone, []shellKind{shellPOSIX}, nil, ""},
+	{"hermes", "darwin", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}, ""},
+	{"hermes", "linux", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}, ""},
+	{"hermes", "windows", evidenceEstablished, evidenceEstablished, []shellKind{shellPOSIX}, []shellKind{shellArgv}, ""},
 }
 
 func shellDeclarer(t *testing.T, id string) shellDeclaringTarget {
@@ -104,6 +109,37 @@ func TestShellDeclarationIsTheEvidenceTable(t *testing.T) {
 		}
 		if decl.hook.evidence != row.hook || !slices.Equal(decl.hook.shells, row.hookShells) {
 			t.Errorf("%s on %s, hook: declared %s %v, table says %s %v", row.host, row.goos, decl.hook.evidence, decl.hook.shells, row.hook, row.hookShells)
+		}
+		if decl.tool.choice != row.toolChoice {
+			t.Errorf("%s on %s, tool: declared chosen by %q, table says %q", row.host, row.goos, decl.tool.choice, row.toolChoice)
+		}
+	}
+}
+
+// A tool cell naming more than one shell says who picks between them, and a
+// cell naming one says nothing.
+//
+// This is not tidiness. The skill puts a condition above each block, and the
+// condition is only answerable by whoever does the picking: "the tool you are
+// calling" means nothing to a Cursor participant with one tool, and "your
+// terminal" means nothing to a model choosing between two tools in one
+// session. A cell that named two shells and left the choice empty would take
+// the per-call wording by default, which is the wrong half for a host like
+// Cursor and would point a Git Bash participant at the form that mangled
+// their query (#96).
+func TestEveryMultiShellToolCellSaysWhoChooses(t *testing.T) {
+	for _, tg := range targetsByKind(targetHost) {
+		d := shellDeclarer(t, tg.ID())
+		for _, goos := range hostShellOSes {
+			cell := d.Shells(goos).tool
+			switch {
+			case len(cell.shells) > 1 && cell.choice == "":
+				t.Errorf("%s on %s declares %v and no choice: the skill would label both blocks by the tool being called, which is right only where the model picks per call", tg.ID(), goos, cell.shells)
+			case len(cell.shells) <= 1 && cell.choice != "":
+				t.Errorf("%s on %s declares %v with choice %q: there is nothing to pick between", tg.ID(), goos, cell.shells, cell.choice)
+			case cell.choice != "" && cell.choice != chosenPerCall && cell.choice != chosenByParticipant:
+				t.Errorf("%s on %s declares choice %q, which no renderer knows how to word", tg.ID(), goos, cell.choice)
+			}
 		}
 	}
 }

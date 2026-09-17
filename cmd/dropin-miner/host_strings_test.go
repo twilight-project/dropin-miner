@@ -356,23 +356,30 @@ func bridgedCommand(t *testing.T, host, command string, sh shellKind) string {
 }
 
 // recognizerVerdict is what Cursor's recognizer makes of a command on goos,
-// grammar only: which rendered form it is, or its refusal. The identity
-// check needs a real file and is exercised against the built binary in the
-// execution tests.
+// grammar only: which rendered form it is, or its refusal. The answer comes
+// from production — matchedRenderedForms, the same loop over the same declared
+// shells that recognizeRenderedForm runs. The identity half needs a real
+// file, which a golden rendering Windows and macOS paths on a Linux runner
+// cannot supply; it is exercised against the built binary in the execution
+// tests instead.
+//
+// This used to re-implement the loop, which meant the golden could not
+// observe the recognizer at all: narrowing production to the first declared
+// shell left every test in the package green (T1b).
 func recognizerVerdict(command string, entry binEntry, goos string) string {
 	cursor, _ := targetByID(installTargets, "cursor")
 	shells, _ := toolShellsForSkill(cursor, goos)
-	for _, sh := range shells {
-		for _, form := range renderedCursorCommands(entry.cfg, sh) {
-			got, ok := matchRendered(strings.TrimSuffix(command, "\n"), form)
-			if !ok || got.bin != entry.command {
-				continue
-			}
-			if form.wantsBody && !isOneVersionOneRequest(got.body) {
-				return "refused: the body is not one version 1 request"
-			}
-			return "matches the rendered `" + strings.Join(form.path, " ") + "` for " + string(sh)
+	for _, m := range matchedRenderedForms(command, entry.cfg, shells.kinds) {
+		// The binary is compared by spelling here, not by os.SameFile: this
+		// is the reporting half, and what it reports is that the rendered
+		// form handed back the path it was rendered with.
+		if m.bin != entry.command {
+			continue
 		}
+		if m.wantsBody && !isOneVersionOneRequest(m.body) {
+			return "refused: the body is not one version 1 request"
+		}
+		return "matches the rendered `" + strings.Join(m.path, " ") + "` for " + string(m.shell)
 	}
 	return "refused"
 }
@@ -495,7 +502,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 			section(id + ": bridge prefix its lineage adapter writes")
 			tg, _ := targetByID(installTargets, id)
 			shells, _ := toolShellsForSkill(tg, goos)
-			for _, sh := range shells {
+			for _, sh := range shells.kinds {
 				search := skillBlockFor(t, renderedSkillFor(id, entry, goos), sh, "search").body
 				stdin, err := entry.stdinCommandForShell(sh)
 				if err != nil {

@@ -33,6 +33,67 @@ func shellLabel(sh shellKind) string {
 	return string(sh)
 }
 
+// skillShells is everything the skill needs to know about a host's tool
+// shells on one OS: which shells to render for, who picks between them, and
+// the OS itself — which is what lets the label name a shell the way the
+// participant's own setting does rather than the way a renderer would.
+// The three travel together because they came from one declaration, and a
+// caller holding them separately could pair a label with the wrong OS.
+type skillShells struct {
+	kinds  []shellKind
+	choice shellChoice
+	goos   string
+}
+
+// condition is the sentence above one block of a multi-shell host's skill:
+// the test the reader applies to decide whether that block is theirs.
+//
+// Who picks decides the words entirely. Claude Code runs two tools and the
+// model chooses one per call, so the condition is about the call being made.
+// Cursor runs one shell that the participant configured once, so a condition
+// about "the tool you are calling" would be unanswerable — there is only one
+// tool — and the participant has to be asked about their terminal instead
+// (#96).
+func (s skillShells) condition(sh shellKind) string {
+	if s.choice == chosenByParticipant {
+		return "If your terminal is " + s.terminalLabel(sh)
+	}
+	return "If the tool you are calling runs " + shellLabel(sh)
+}
+
+// terminalLabel names a shell as a terminal-profile list does. On Windows
+// that is "Git Bash", which is what Cursor's own profile picker calls it and
+// so what the participant will recognize; elsewhere the shell's plain name.
+func (s skillShells) terminalLabel(sh shellKind) string {
+	if sh == shellPOSIX {
+		if s.goos == "windows" {
+			return "Git Bash"
+		}
+		return "Bash"
+	}
+	return shellLabel(sh)
+}
+
+// shortLabel names a shell in the space a list item affords: the
+// terminal-profile name where the participant picks, the shell's own name
+// where the tool does.
+func (s skillShells) shortLabel(sh shellKind) string {
+	if s.choice == chosenByParticipant {
+		return s.terminalLabel(sh)
+	}
+	return shellLabel(sh)
+}
+
+// lead is the sentence introducing a multi-shell host's blocks, and it says
+// why there is more than one — a reader who knows which of the two facts
+// applies to them can pick without reading both blocks.
+func (s skillShells) lead() string {
+	if s.choice == chosenByParticipant {
+		return "This host runs tool calls in the terminal this machine is configured to use, which this client cannot know. Use the form that matches it; both reach the same search."
+	}
+	return "This host runs tool calls in more than one shell. Use the form that matches the tool you are calling with; both reach the same search."
+}
+
 // toolShellsForSkill is the shells a host's skill renders for on this OS,
 // and the note the install plan prints when nothing established them.
 //
@@ -40,17 +101,18 @@ func shellLabel(sh shellKind) string {
 // watched keeps working exactly as it does today, and the participant is
 // told which host and OS that applies to instead of finding out from a
 // search that never runs.
-func toolShellsForSkill(t installTarget, goos string) (shells []shellKind, note string) {
+func toolShellsForSkill(t installTarget, goos string) (shells skillShells, note string) {
+	fallback := skillShells{kinds: []shellKind{shellPOSIX}, goos: goos}
 	declared, err := declaredShells(t, goos, channelTool)
 	if err != nil {
-		return []shellKind{shellPOSIX}, fmt.Sprintf(
+		return fallback, fmt.Sprintf(
 			"%s: which shell runs its tool calls on %s is not established, so the skill keeps the Bash form; a search that does not run here is why",
 			t.Label(), goos)
 	}
 	if len(declared) == 0 {
-		return []shellKind{shellPOSIX}, ""
+		return fallback, ""
 	}
-	return declared, ""
+	return skillShells{kinds: declared, choice: toolShellChoice(t, goos), goos: goos}, ""
 }
 
 // fenced wraps a rendered script in its fence.
@@ -60,19 +122,21 @@ func fenced(lang, script string) string {
 
 // perShellSection renders one block per shell, labeled only when the host
 // runs more than one: a single-shell host's skill reads exactly as it did.
-func perShellSection(shells []shellKind, lead string, render func(shellKind) (string, error)) (string, error) {
+// withLead is false for the sections that are one command each, where the
+// conditions alone say everything the lead would.
+func perShellSection(shells skillShells, withLead bool, render func(shellKind) (string, error)) (string, error) {
 	var b strings.Builder
-	multiple := len(shells) > 1
-	if multiple && lead != "" {
-		b.WriteString("\n" + lead + "\n")
+	multiple := len(shells.kinds) > 1
+	if multiple && withLead {
+		b.WriteString("\n" + shells.lead() + "\n")
 	}
-	for _, sh := range shells {
+	for _, sh := range shells.kinds {
 		block, err := render(sh)
 		if err != nil {
 			return "", err
 		}
 		if multiple {
-			fmt.Fprintf(&b, "\nIf the tool you are calling runs %s:\n\n%s\n", shellLabel(sh), block)
+			fmt.Fprintf(&b, "\n%s:\n\n%s\n", shells.condition(sh), block)
 			continue
 		}
 		b.WriteString("\n" + block + "\n")
@@ -82,9 +146,8 @@ func perShellSection(shells []shellKind, lead string, render func(shellKind) (st
 
 // callSection is the skill's "How to call it": the search command, and the
 // sentence about the quoting that carries the request body.
-func callSection(entry binEntry, shells []shellKind) (string, error) {
-	body, err := perShellSection(shells,
-		"This host runs tool calls in more than one shell. Use the form that matches the tool you are calling with; both reach the same search.",
+func callSection(entry binEntry, shells skillShells) (string, error) {
+	body, err := perShellSection(shells, true,
 		func(sh shellKind) (string, error) {
 			lang, script, err := searchBlockForShell(sh, entry, exampleRequest)
 			if err != nil {
@@ -120,8 +183,8 @@ when you substitute your own query.`
 }
 
 // preferSection is the skill's on/off command, per shell.
-func preferSection(entry binEntry, shells []shellKind) (string, error) {
-	return perShellSection(shells, "", func(sh shellKind) (string, error) {
+func preferSection(entry binEntry, shells skillShells) (string, error) {
+	return perShellSection(shells, false, func(sh shellKind) (string, error) {
 		cmd, err := entry.preferCommandForShell(sh)
 		if err != nil {
 			return "", err
@@ -137,8 +200,8 @@ func preferSection(entry binEntry, shells []shellKind) (string, error) {
 // humanSection is the human terminal form, per shell. It keeps the query in
 // argv, which H-R2 leaves alone: it is the form a person types, and it is
 // never what an agent or a machine caller uses.
-func humanSection(entry binEntry, shells []shellKind) (string, error) {
-	return perShellSection(shells, "", func(sh shellKind) (string, error) {
+func humanSection(entry binEntry, shells skillShells) (string, error) {
+	return perShellSection(shells, false, func(sh shellKind) (string, error) {
 		cmd, err := entry.searchCommandForShell(sh)
 		if err != nil {
 			return "", err

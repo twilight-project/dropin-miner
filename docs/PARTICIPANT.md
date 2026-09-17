@@ -204,9 +204,10 @@ JSON
 
 The skill each agent is given carries that command written for the shell
 that agent actually runs, with the paths of your own installation already
-quoted for it. Where the shell is PowerShell — Cursor and opencode on
-Windows, and Claude Code's PowerShell tool — it is a here-string piped into
-the call instead, with a first line that sets the output encoding:
+quoted for it. Where the shell is PowerShell — opencode on Windows, Claude
+Code's PowerShell tool, and Cursor on Windows unless your terminal profile
+says otherwise — it is a here-string piped into the call instead, with a
+first line that sets the output encoding:
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -219,6 +220,15 @@ That first line is what makes a query with an apostrophe, a quotation mark
 or any non-ASCII character arrive exactly as written: without it, Windows
 PowerShell 5.1 replaces every non-ASCII character with a question mark on
 the way to the program, and the search answers a different question.
+
+Cursor on Windows is the one host that gets both forms, because it runs
+commands in whatever terminal `terminal.integrated.defaultProfile.windows`
+names and that is your setting, not something this client can read. Its skill
+labels the two blocks "If your terminal is PowerShell" and "If your terminal
+is Git Bash"; use the one that matches yours. v0.2.10 taught the PowerShell
+form alone, and on a Git Bash terminal the encoding line was expanded away
+before PowerShell saw it, so a query went out mangled and the search
+succeeded anyway.
 
 That prints exactly one JSON object. Eight fields are always there —
 `version`, `command`, `ok`, `exit_code`, `status`, `code`, `retryable` and
@@ -264,7 +274,15 @@ ids never leave the machine), a call counter, and the assistant text just
 before the search, capped at 32 KB. That text is conversation content leaving
 your machine; it goes only inside the search request, to the router, and the
 miner stores none of it beyond a per-workspace lineage file under
-`~/.tokendrop/sessions` that the hooks maintain. To send no trace at all:
+`~/.tokendrop/sessions` that the hooks maintain.
+
+One of those files is only ever read back by the agent that wrote it. If you
+have an editor open at a repository root and another agent working in a
+subdirectory, the second one's searches carry its own identity, not the
+first's — a search that cannot say which agent it belongs to gets a plain
+per-shell identity instead of borrowing the nearest session above it. Before
+0.2.11 it borrowed, which meant one agent's narration could be sent as
+another's. To send no trace at all:
 
 ```bash
 export TOKENDROP_TRACE=off
@@ -284,11 +302,20 @@ read from the environment or the owner-only credentials file.
 
 **Claude Code** gets a skill and five hook entries in `~/.claude/settings.json`:
 one on Bash that threads each search into the current turn, three that track
-context compaction, and one on Stop that flushes. It also adds two
-`permissions.allow` rules for the search command — the quoted and the bare
-spelling of the same command, because a shell may strip the quotes — so
-Claude Code runs it without asking each time; nothing else the binary does is
-allowed by those rules.
+context compaction, and one on Stop that flushes. It also adds three
+`permissions.allow` rules for the search command — the single-quoted, quoted
+and bare spellings of the same command, because a shell may strip the quotes
+— so Claude Code runs it without asking each time; nothing else the binary
+does is allowed by those rules.
+
+The hook that threads the search also answers the permission question, for
+exactly the search command your own skill renders and nothing else. It has to,
+because the hook is what causes the question: it prefixes the command with the
+trace envelope, and an `allow` rule matches on how a command *begins*, so the
+prefixed command no longer matches the rule that was installed for it. Without
+that answer every search waits for approval — and in a headless session it is
+refused outright, since there is nobody to ask. The rules stay for versions
+and hosts that do not run the hook.
 
 **Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
 cannot rewrite a command, so its hooks maintain the lineage file and the
