@@ -1297,6 +1297,24 @@ func (r *uninstallRun) applyEnvironment() {
 	}
 }
 
+// otherInstallationHint completes the restore hint for a home that is not
+// this machine's default installation. setup -home leaves the shell profile
+// and the coding agents alone for such a home (#84) — they belong to the
+// default one — so "run setup -home" on its own would promise a restore it
+// no longer performs. It says what does, both ways: the agents command for an
+// installation that really is a separate one, and TOKENDROP_HOME for one that
+// is this machine's own, kept somewhere else.
+func (r *uninstallRun) otherInstallationHint() string {
+	def, other := otherInstallation(r.home, r.home, r.d.getenv("TOKENDROP_HOME"), r.d.userHome)
+	if !other {
+		return ""
+	}
+	return fmt.Sprintf("%s is not this machine's default installation (%s), so that leaves the shell profile and\n"+
+		"the coding agents alone; configure agents for it with: dropin-miner agents install -config %s\n"+
+		"If it IS this machine's installation, kept somewhere else, run setup with TOKENDROP_HOME set to it\n"+
+		"instead of -home, which sets up the profile and the agents too.\n", r.home, def, r.cfgPath)
+}
+
 // revokeAuthorization attempts the one bounded revocation and returns the
 // sentence the closing message carries about it.
 func (r *uninstallRun) revokeAuthorization() string {
@@ -1422,6 +1440,7 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("\nTo keep using this installation, run:\n"+
 				"  dropin-miner setup -home %s\n"+
 				"It finds this state and uses it: the same agent, the same wallet, no new registration.\n"+
+				r.otherInstallationHint()+
 				"Or, to use this binary without setting it up again, pass -config %s to each command.\n"+
 				"Do not run `dropin-miner connect` on its own to come back: with nothing naming this\n"+
 				"installation any more, it would register this machine anew.\n", r.home, r.cfgPath)

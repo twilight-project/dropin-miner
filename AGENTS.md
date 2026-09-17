@@ -219,6 +219,17 @@ each line names the file that owns the rule and the test that proves it.
   `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
   read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
   uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
+- **Which installation the profile and the agents belong to** — `cmd/dropin-miner/setup.go` owns it
+  (`otherInstallation`, `leftForOtherInstallation`). This machine's installation is
+  `$TOKENDROP_HOME`, else `~/.tokendrop`; an explicit `-home` naming any other directory is a
+  separate installation, and for it the profile step and the agents step are skipped — named as
+  skipped through D4's mechanism, asked before `-yes`, `-with` or the terminal are, because none of
+  them changes whose profile and whose agents these are (#84: the documented way to make a
+  disposable installation repointed the participant's real agents at it). The closing line and
+  uninstall's restore hint both name what does configure such an installation, and
+  `TOKENDROP_HOME` as the way to say a directory elsewhere IS the machine's own.
+  `setup_other_home_test.go` snapshots the whole sandbox, since the claim is about what is not
+  touched.
 - **Whose content is inside our marked block** — `cmd/dropin-miner/agents.go` owns the split
   (`markedRegion`, `splitMarkedBlock`, `splitCodexBlock`) and `targets.go` owns what uninstall
   does with it (`removeOurSandboxBlock`). It is `ownership_match.go`'s rule one level finer: H5

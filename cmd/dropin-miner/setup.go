@@ -46,7 +46,11 @@ link), the shell profile (PATH, TOKENDROP_CONFIG and, when a wallet was made
 here, TOKENDROP_WALLET_DIR; on Windows, the user PATH and TOKENDROP_CONFIG
 only) and the coding agents found on this machine.
 
-  -home dir     the installation directory (default $TOKENDROP_HOME, else ~/.tokendrop)
+  -home dir     the installation directory (default $TOKENDROP_HOME, else ~/.tokendrop).
+                A directory other than that default is a separate installation:
+                setup leaves the shell profile (Windows: user environment) and the
+                coding agents alone, -yes or not, because they belong to the
+                default one, and names the agents command for this one instead
   -yes          answer yes to setup's shell-profile (Windows: user environment) and
                 coding-agents questions, with or without a terminal; automated
                 callers may pass it, and the installers never add it. Also yes to
@@ -146,6 +150,12 @@ type setupRun struct {
 	foundInPlace  bool   // an installation was already in home when setup started
 	changed       bool   // setup wrote or moved something it owns
 	shortCommands bool   // the profile or user environment carries PATH and TOKENDROP_CONFIG
+
+	// otherHome: -home names a directory that is not this machine's
+	// installation, defaultHome. The profile and the agents belong to that
+	// one, so both steps are skipped whatever else was passed (#84).
+	otherHome   bool
+	defaultHome string
 
 	// skipped names steps this run declined to touch — no terminal without
 	// -yes, or -no-profile/-no-agents (#75) — as distinct from a step that
@@ -316,6 +326,7 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	}
 	r.home = home
 	r.cfgPath = filepath.Join(home, setupConfigFile)
+	r.defaultHome, r.otherHome = otherInstallation(homeFlag, home, d.getenv("TOKENDROP_HOME"), d.userHome)
 	if r.values, err = resolveSetupValues(home, d.getenv, d.interactive); err != nil {
 		fmt.Fprintln(d.stderr, "dropin-miner setup:", err)
 		return exitUsage
@@ -406,6 +417,65 @@ func (r *setupRun) run(homeFlag string, with []string) int {
 	// ── 8. closing ──
 	r.closing()
 	return exitOK
+}
+
+// otherInstallation: does -home name a directory other than this machine's
+// installation — $TOKENDROP_HOME, else ~/.tokendrop — and if so, which is
+// that? Only an explicit -home can: with no flag, home IS the default by
+// construction, and `TOKENDROP_HOME=<dir> install.sh` stays the way to put
+// the machine's installation somewhere else. When no default can be named at
+// all there is nothing to compare against, and nothing is withheld.
+//
+// #84: `setup -home <scratch>` is the documented way to make a disposable
+// installation for a destructive test, and it planned the real user's
+// ~/.claude, ~/.codex, ~/.cursor, Pi and Hermes files and the user PATH and
+// TOKENDROP_CONFIG all the same — repointing the participant's real agents
+// and environment at the scratch config. The Windows tester avoided it only
+// by reading the dry run first.
+func otherInstallation(homeFlag, home, envHome, userHome string) (defaultHome string, other bool) {
+	if homeFlag == "" {
+		return "", false
+	}
+	def := envHome
+	if def == "" && userHome != "" {
+		def = filepath.Join(userHome, ".tokendrop")
+	}
+	if def == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(def)
+	if err != nil {
+		return "", false
+	}
+	return abs, !sameInstallationDir(home, abs)
+}
+
+// sameInstallationDir: one directory, however it was spelled. The spelling
+// first, as samePath compares it; then, since `-home` is typed by a person
+// and the default may be reached through a link, what both resolve to.
+func sameInstallationDir(a, b string) bool {
+	if samePath(a, b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && samePath(ra, rb)
+}
+
+// leftForOtherInstallation is the first thing the profile step and the agents
+// step ask. It uses the mechanism D4 added for #75 — the step is named as
+// skipped, so the closing line cannot claim everything is in place — and it
+// is asked before -yes, -with, -no-profile or the terminal are, because none
+// of them changes whose profile and whose agents these are.
+func (r *setupRun) leftForOtherInstallation(step, theirs, consequence string) bool {
+	if !r.otherHome {
+		return false
+	}
+	r.printf("Skipped: -home names %s, which is not this machine's installation (%s).\n"+
+		"%s, and %s. -yes does not change this.\n",
+		r.home, r.defaultHome, theirs, consequence)
+	r.skip(step)
+	return true
 }
 
 // admit passes the lifecycle gate and takes setup.lock for the rest of the
@@ -696,6 +766,16 @@ func (r *setupRun) closing() {
 	switch {
 	case r.dry:
 		r.printf("Dry run complete: nothing was written, moved or run.\n")
+	case r.otherHome:
+		// Not the line below: "finish with setup -yes" would be false here,
+		// since -yes does not override this. What does configure agents for
+		// this installation is the command that already does exactly that.
+		r.printf("Setup complete for the installation at %s.\nIt skipped the %s: -home names a directory that is not this machine's installation (%s),\n"+
+			"and those belong to that one. To configure coding agents for this installation:\n\n    %s agents install -config %s\n\n"+
+			"If %s is in fact this machine's installation, kept somewhere other than the default, run\n"+
+			"setup with TOKENDROP_HOME set to it instead of -home: that names it as the default, and setup\n"+
+			"then looks after the profile and the agents too.\n",
+			r.home, joinLabels(r.skipped), r.defaultHome, r.displayPath(r.exe), r.displayPath(r.cfgPath), r.home)
 	case len(r.skipped) > 0:
 		r.printf("Setup complete, but setup skipped the %s (no terminal, or asked not to). Finish with:\n\n    %ssetup%s -yes\n",
 			joinLabels(r.skipped), cmd, hint)

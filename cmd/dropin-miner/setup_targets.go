@@ -75,6 +75,9 @@ Answering yes here accepts all of that.
 
 func (r *setupRun) agentsStep() int {
 	r.say("Coding agents")
+	if r.leftForOtherInstallation("coding agents", "The coding agents on this machine belong to that one", "setting them up here would repoint your real agents at this installation's config") {
+		return exitOK
+	}
 	ops := r.d.agents
 	paths := ops.paths(r.d.getenv)
 	later := fmt.Sprintf("%s agents install -config %s", r.displayPath(r.exe), r.displayPath(r.cfgPath))

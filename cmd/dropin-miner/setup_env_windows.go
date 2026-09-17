@@ -140,6 +140,9 @@ func (registryUserEnvironment) Broadcast() {
 func (r *setupRun) environmentStep() int {
 	binDir := filepath.Join(r.home, "bin")
 	r.say("User environment")
+	if r.leftForOtherInstallation("user environment", "Your user PATH and TOKENDROP_CONFIG belong to that one", "setting them here would repoint your real environment at this installation") {
+		return exitOK
+	}
 	r.printf("These make the other commands short: %s on your user PATH, and\n"+
 		"TOKENDROP_CONFIG=%s. Your key is not among them: a search reads it from the\n"+
 		"stored credentials file. Windows and agents started afterwards see them.\n", binDir, r.cfgPath)

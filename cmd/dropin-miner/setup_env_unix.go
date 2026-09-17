@@ -57,6 +57,9 @@ func (r *setupRun) environmentStep() int {
 	lines := profileEnvLines(binDir, r.cfgPath, walletDir)
 
 	r.say("Shell environment")
+	if r.leftForOtherInstallation("shell profile", "Your shell profile belongs to that one", "pointing PATH and TOKENDROP_CONFIG here would repoint your real environment at this installation") {
+		return exitOK
+	}
 	r.printf("These lines make the other commands short. Your key is not among them: a\n" +
 		"search reads it from the stored credentials file (or TOKENDROP_API_KEY, if a\n" +
 		"shell exports one, which then wins):\n\n")

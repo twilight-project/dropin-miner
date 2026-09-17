@@ -31,8 +31,15 @@ dropin-miner setup
 Nothing needs removing first. Run the installer again — npm:
 `npm install -g dropin-miner@latest`, then `dropin-miner setup`. If the old
 installation used a non-default home (`TOKENDROP_HOME` was set for the old
-installer), run the installer or `setup -home` with the same one; setup has
-no other way to find it.
+installer), run the installer, or `dropin-miner setup`, with `TOKENDROP_HOME` set
+to the same one; setup has no other way to find it. `TOKENDROP_HOME` is what
+names a directory as this machine's installation. `setup -home <dir>` on its
+own, for a directory other than that, sets up a *separate* installation there
+and leaves your shell profile (Windows: user environment) and your coding
+agents alone, `-yes` or not — they belong to the machine's own installation,
+and the documented way to make a disposable installation must not repoint your
+real agents at it. It names `dropin-miner agents install -config
+<dir>/tokendrop.toml` as the way to configure agents for that one.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an
 identity is the installation, and nothing set aside is offered. Your wallet,

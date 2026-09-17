@@ -74,7 +74,13 @@ dropin-miner setup
 Nothing needs removing first. Run the installer again (npm: `npm install -g
 dropin-miner@latest`, then `dropin-miner setup`). If your old installation used a
 non-default home (you had `TOKENDROP_HOME` set for the old installer), run the
-installer or `setup -home` with that same one — setup has no other way to find it.
+installer, or `dropin-miner setup`, with `TOKENDROP_HOME` set to that same one — setup
+has no other way to find it. `TOKENDROP_HOME` is how you say "this directory is this
+machine's installation". `setup -home <dir>` by itself, for any other directory, makes
+a separate installation there: it leaves your shell profile and your coding agents
+alone, even with `-yes`, because those belong to the machine's own installation, and
+tells you the `agents install -config` command that sets agents up for the new one.
+That is what makes `-home` safe for a disposable installation.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an identity
 is the installation, and nothing set aside is offered. Your existing wallet,
