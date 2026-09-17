@@ -129,8 +129,17 @@ func TestSetupWithTheDefaultHomeNamedIsTheSameAsWithoutIt(t *testing.T) {
 		}
 		// Everything that differs between two sandboxes is their root and
 		// their stub servers' ports; with those named, the rest must match.
+		// The root is spelled three ways on Windows: as it is, with its
+		// backslashes doubled inside TOML and JSON strings (tokendrop.toml,
+		// setup-env.json, settings.json), and with forward slashes. The
+		// doubled form first, since the plain one is a substring of nothing
+		// but is a prefix-match hazard for it.
 		norm := func(x string) string {
-			x = strings.ReplaceAll(x, s.root, "<root>")
+			for _, spelled := range []string{strings.ReplaceAll(s.root, `\`, `\\`), s.root, filepath.ToSlash(s.root)} {
+				x = strings.ReplaceAll(x, spelled, "<root>")
+			}
+			x = strings.ReplaceAll(x, `\\`, `/`)
+			x = strings.ReplaceAll(x, `\`, `/`)
 			x = strings.ReplaceAll(x, s.platform.srv.URL, "<platform>")
 			return strings.ReplaceAll(x, s.as.srv.URL, "<as>")
 		}
@@ -182,9 +191,19 @@ func TestSetupWithTheDefaultHomeNamedIsTheSameAsWithoutIt(t *testing.T) {
 // install.sh` stays the way to put the machine's installation somewhere else,
 // and naming that same directory with -home is still the default.
 func TestOtherInstallationIsDecidedAgainstTheDefault(t *testing.T) {
-	user := filepath.Join(string(filepath.Separator)+"home", "u")
+	// Absolute, as production passes them: run() makes home absolute before
+	// it asks, and on Windows a rooted path with no drive is not absolute —
+	// the first version of this case compared `\home\u` with `D:\home\u`.
+	abs := func(elem ...string) string {
+		p, err := filepath.Abs(filepath.Join(elem...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := abs(string(filepath.Separator)+"home", "u")
 	dot := filepath.Join(user, ".tokendrop")
-	elsewhere := filepath.Join(string(filepath.Separator)+"srv", "td")
+	elsewhere := abs(string(filepath.Separator)+"srv", "td")
 	for _, tc := range []struct {
 		name                    string
 		flag, home, env, userHm string
