@@ -537,6 +537,25 @@ func TestABinaryPathThatNeedsQuotesIsRemovedCleanlyAndALoneQuoteIsNot(t *testing
 	if got := string(m.files[hermesConfigPath]); got != broken {
 		t.Errorf("a scalar holding a lone quote was edited:\n%q", got)
 	}
+	// Unchanged is not enough to pin the round trip: with it switched off the
+	// file still comes back byte-identical, because the net refuses a line
+	// the renderer does not produce for the decoded command. What differs is
+	// what the commands SAY. No YAML parser reads that scalar as our command,
+	// so it is not a hook of ours: uninstall may mention it, and install must
+	// not call it already set up.
+	_, out, _ := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-dry-run")
+	if !strings.Contains(out, "names this installation's pre_tool_call hook command") || strings.Contains(out, "was left there because") {
+		t.Errorf("uninstall took a scalar with a lone quote in it for our entry:\n%s", out)
+	}
+	code, out, _ := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	// "already set up —" is the note's own phrasing; the refusal below also
+	// says "check whether it is already set up", which is the opposite claim.
+	if code != exitTransport || strings.Contains(out, "already set up —") || !strings.Contains(out, "already declares a top-level hooks: key") {
+		t.Errorf("install: exit %d; a scalar no parser reads as our command is not a hook that is already set up\n%s", code, out)
+	}
+	if got := string(m.files[hermesConfigPath]); got != broken {
+		t.Errorf("install edited the file:\n%q", got)
+	}
 }
 
 // Install's refusal, when the file names our command where this client
