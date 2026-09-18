@@ -305,14 +305,34 @@ func sameHarness(a, b string) bool {
 // more distant one because its name matches would be a guess; the safe
 // direction is an honest per-shell identity rather than a confident wrong
 // one. Stopping is also what a stale sidecar already does.
-func lineageForCwd(ops hookOps, dir, cwd, harness string, now time.Time) (*lineageFile, string) {
+//
+// session is the hashed id of the session the shell was started in, as
+// TOKENDROP_SESSION gives it, and it may be empty (#104). The harness tells
+// hosts apart and nothing more: two sessions of ONE host in nested
+// workspaces — a monorepo open at its root and again at a package — are the
+// same name, and the nearest file won whichever of them was searching.
+//
+// When the session is known, it is the test of ownership, and a sidecar
+// recording another session is not this search's whatever its harness says.
+// Such a file is climbed past rather than stopped at, and that does not
+// contradict the paragraph above: what made a more distant file a guess was
+// that only a NAME matched. A file holding this session's own id is not a
+// guess — it is the file this session's hooks wrote — and an agent that
+// changed into somebody else's workspace is still making its own search.
+// The harness must still agree, and a stale file of this session's own still
+// answers nothing.
+//
+// When the session is not known, the rule is exactly the one above. That is
+// a decision: every shell started before this variable existed, and every
+// host that exports a harness and no session, is served as it was.
+func lineageForCwd(ops hookOps, dir, cwd, harness, session string, now time.Time) (*lineageFile, string) {
 	if dir == "" || cwd == "" || harness == "" {
 		return nil, ""
 	}
 	at := filepath.Clean(cwd)
 	for i := 0; i <= lineageWalkUp; i++ {
 		path := lineagePath(dir, at)
-		if sc, ok := loadLineage(ops, path); ok {
+		if sc, ok := loadLineage(ops, path); ok && (session == "" || sc.SessionID == session) {
 			if now.Sub(sc.UpdatedAt) > lineageMaxAge {
 				return nil, ""
 			}

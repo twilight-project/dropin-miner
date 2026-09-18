@@ -675,7 +675,7 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) (env
 			// harness is what says whose search this is. Without it the walk
 			// answers nothing, because anything it found up the tree would be
 			// another session's (#97).
-			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, now)
+			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, getenv(sessionEnv), now)
 		}
 	}
 	if lf != nil {

@@ -61,6 +61,13 @@ const (
 	// lineageEnv names the workspace lineage file for a whole session,
 	// set by hosts that can export environment at session start (Cursor).
 	lineageEnv = "TOKENDROP_LINEAGE"
+	// sessionEnv carries the hashed session id of the session a shell was
+	// started in — the same value that session's hook writes into its lineage
+	// file, so it is nothing the file does not already hold and nothing the
+	// envelope does not already send. It exists for the walk: when the
+	// lineage variable is lost, this says WHICH session of a host the search
+	// belongs to, which the host's name alone cannot (#104).
+	sessionEnv = "TOKENDROP_SESSION"
 )
 
 // hookOps: the machine, injected.
@@ -726,6 +733,12 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		env := map[string]string{"TOKENDROP_HARNESS": "cursor"}
 		if path != "" {
 			env[lineageEnv] = path
+		}
+		if p.ConversationID != "" {
+			// Exported even when no path could be computed: that is one of
+			// the two ways a search ends up on the walk, and the walk is
+			// where this is read.
+			env[sessionEnv] = traceHash(p.ConversationID)
 		}
 		out, _ := json.Marshal(map[string]any{"env": env})
 		fmt.Fprintln(stdout, string(out))
