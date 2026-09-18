@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -48,6 +50,7 @@ const (
 	codeInvalidRecency      = "invalid_recency"
 	codeInvalidDomainFilter = "invalid_domain_filter"
 	codeInvalidMaxResults   = "invalid_max_results"
+	codeInvalidView         = "invalid_view"
 )
 
 // inputError is a local refusal with a stable machine code. It is a type
@@ -71,6 +74,10 @@ type machineSearchRequest struct {
 	recency      *string
 	domainFilter []string
 	maxResults   *int
+	// view is "" (absent, meaning "full") or the caller's validated
+	// choice of "full" or "merged" — never any other string, since
+	// validateView refuses anything else before this is ever set.
+	view string
 }
 
 // wireSearchRequest is the decoded shape. Pointers distinguish an absent
@@ -87,6 +94,7 @@ type wireSearchRequest struct {
 	Recency      json.RawMessage `json:"recency"`
 	DomainFilter json.RawMessage `json:"domain_filter"`
 	MaxResults   json.RawMessage `json:"max_results"`
+	View         json.RawMessage `json:"view"`
 }
 
 // decodeMachineSearchRequest reads exactly one v1 request from r.
@@ -171,6 +179,13 @@ func decodeMachineSearchRequest(r io.Reader) (machineSearchRequest, error) {
 			return machineSearchRequest{}, err
 		}
 		req.maxResults = &maxResults
+	}
+	if len(wire.View) > 0 {
+		view, err := validateView(wire.View)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.view = view
 	}
 	return req, nil
 }
@@ -277,6 +292,32 @@ func validateMaxResults(raw json.RawMessage) (int, *inputError) {
 	return n, nil
 }
 
+// validateView refuses anything but the two shapes this client renders.
+// An absent "view" never reaches here — wire.View is empty and
+// decodeMachineSearchRequest leaves req.view at its zero value, which
+// means "full" everywhere it is read. Decoded as raw JSON first, like
+// recency, domain_filter and max_results: a plain *string field would let
+// an explicit "view": null decode to the same nil the field has when the
+// caller never wrote the key at all, silently treating a stated null as
+// absent instead of refusing it — the same gap already closed for
+// domain_filter. An explicit "" is not "full" either: a caller who wrote
+// the key owes a real value, the same as any other option here.
+func validateView(raw json.RawMessage) (string, *inputError) {
+	if isJSONNull(raw) {
+		return "", inputErrorf(codeInvalidView, `"view" must not be null`)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", inputErrorf(codeInvalidView, `"view" must be a string`)
+	}
+	switch s {
+	case "full", "merged":
+		return s, nil
+	default:
+		return "", inputErrorf(codeInvalidView, `"view" must be "full" or "merged"`)
+	}
+}
+
 // ── the envelope ────────────────────────────────────────────────────────
 
 type searchEnvelope struct {
@@ -305,9 +346,29 @@ type machineResult struct {
 	// Decision and Usage are nil, and so absent from the envelope, exactly
 	// when the router's own response omitted them — never a zeroed struct
 	// standing in for "the router didn't say."
-	Decision   *machineDecision   `json:"decision,omitempty"`
-	Usage      *machineUsage      `json:"usage,omitempty"`
-	Candidates []machineCandidate `json:"candidates"`
+	Decision *machineDecision `json:"decision,omitempty"`
+	Usage    *machineUsage    `json:"usage,omitempty"`
+	// Merged is present in every view: it is the whole reason the option
+	// exists, so an agent that asked for "merged" still gets it, and one
+	// that didn't ask gets it anyway ("an agent may always read merged
+	// first" — S3).
+	Merged []machineMergedPage `json:"merged"`
+	// Candidates is a pointer so "view":"merged" can omit the key
+	// entirely (a nil pointer with omitempty) while "full" — the
+	// default — always carries it, even on the (real-router-never-sends-
+	// this) edge case of zero candidates: a non-nil pointer to an empty
+	// slice is not "empty" to encoding/json, only a nil pointer is.
+	Candidates *[]machineCandidate `json:"candidates,omitempty"`
+}
+
+// machineMergedPage is one page after S3's cross-provider merge: the
+// citations of every "ok" candidate, deduplicated by normalized URL.
+type machineMergedPage struct {
+	URL      string   `json:"url"`
+	Title    string   `json:"title,omitempty"`
+	Snippet  string   `json:"snippet,omitempty"`
+	FoundBy  []string `json:"found_by"`
+	BestRank int      `json:"best_rank"`
 }
 
 // machineDecision is the router's decision block, carried through: which
@@ -356,12 +417,12 @@ type machineCitation struct {
 // prettier would corrupt the thing the caller asked for. The terminal
 // sanitizing belongs to the human renderer, where a control byte would
 // actually do something.
-func machineResultOf(s routerSuccess) *machineResult {
+func machineResultOf(s routerSuccess, view string) *machineResult {
 	r := s.Response
 	out := &machineResult{
-		RequestID:  s.RequestID,
-		Chosen:     r.Chosen,
-		Candidates: make([]machineCandidate, 0, len(r.Candidates)),
+		RequestID: s.RequestID,
+		Chosen:    r.Chosen,
+		Merged:    mergedPagesOf(r),
 	}
 	if r.Session != nil {
 		out.SessionID = r.Session.ID
@@ -382,6 +443,7 @@ func machineResultOf(s routerSuccess) *machineResult {
 			Trimmed:   r.Decision.Trimmed,
 		}
 	}
+	candidates := make([]machineCandidate, 0, len(r.Candidates))
 	for i, c := range r.Candidates {
 		mc := machineCandidate{
 			Provider:   c.Provider,
@@ -402,9 +464,102 @@ func machineResultOf(s routerSuccess) *machineResult {
 			// carry it. A literal would silently drop it instead.
 			mc.Citations = append(mc.Citations, machineCitation(cit))
 		}
-		out.Candidates = append(out.Candidates, mc)
+		candidates = append(candidates, mc)
+	}
+	// "merged" is the one view that omits candidates; every other value
+	// validateView accepts ("full") or leaves absent keeps them.
+	if view != "merged" {
+		out.Candidates = &candidates
 	}
 	return out
+}
+
+// mergePage accumulates one merged page while r.Candidates is walked in
+// order. foundBy is tracked in a set alongside the ordered slice so a
+// provider whose own citation list somehow repeats a URL is not counted
+// twice.
+type mergePage struct {
+	page     machineMergedPage
+	foundSet map[string]bool
+}
+
+// normalizeMergeKey is S3's URL identity rule: scheme dropped, host
+// lowercased, one leading "www." dropped, a trailing slash dropped,
+// fragment dropped (url.Parse never puts it in Path or RawQuery, so
+// nothing further is needed to drop it) — the query string is kept,
+// because two pages differing only in query are, by the spec, distinct
+// pages, not the same one. A URL that fails to parse becomes its own
+// trimmed string: it matches nothing else, which is the safe default for
+// something this client cannot understand well enough to normalize.
+func normalizeMergeKey(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	host := strings.ToLower(u.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	path := strings.TrimSuffix(u.Path, "/")
+	key := host + path
+	if u.RawQuery != "" {
+		key += "?" + u.RawQuery
+	}
+	return key
+}
+
+// mergedPagesOf builds S3's result.merged: the citations of every "ok"
+// candidate, deduplicated by normalizeMergeKey, ordered by how many
+// providers found a page (most first), then by the best (smallest)
+// 0-based rank any one of them gave it, then by which page this walk saw
+// first. sort.SliceStable is what makes that last rule free: accs starts
+// in first-appearance order, and a stable sort never reorders equal keys.
+func mergedPagesOf(r routerResponse) []machineMergedPage {
+	byKey := make(map[string]*mergePage)
+	var accs []*mergePage
+	for _, c := range r.Candidates {
+		if c.Status != "ok" {
+			continue
+		}
+		for rank, cit := range c.Citations {
+			key := normalizeMergeKey(cit.URL)
+			acc, ok := byKey[key]
+			if !ok {
+				acc = &mergePage{
+					page: machineMergedPage{
+						URL:      cit.URL,
+						Title:    cit.Title,
+						Snippet:  cit.Snippet,
+						BestRank: rank,
+					},
+					foundSet: map[string]bool{},
+				}
+				byKey[key] = acc
+				accs = append(accs, acc)
+			}
+			if len(cit.Snippet) > len(acc.page.Snippet) {
+				acc.page.Snippet = cit.Snippet
+			}
+			if rank < acc.page.BestRank {
+				acc.page.BestRank = rank
+			}
+			if !acc.foundSet[c.Provider] {
+				acc.foundSet[c.Provider] = true
+				acc.page.FoundBy = append(acc.page.FoundBy, c.Provider)
+			}
+		}
+	}
+	sort.SliceStable(accs, func(i, j int) bool {
+		a, b := accs[i], accs[j]
+		if len(a.page.FoundBy) != len(b.page.FoundBy) {
+			return len(a.page.FoundBy) > len(b.page.FoundBy)
+		}
+		return a.page.BestRank < b.page.BestRank
+	})
+	pages := make([]machineMergedPage, 0, len(accs))
+	for _, acc := range accs {
+		pages = append(pages, acc.page)
+	}
+	return pages
 }
 
 // machineMining is the economic half of the answer, and it is separate
@@ -575,7 +730,7 @@ func machineCodeLike(s string) (string, bool) {
 // It reads the normalized request id off the outcome rather than the raw
 // body, so the identity in the envelope is the identity the observation
 // was recorded against.
-func searchEnvelopeOf(out searchOutcome, mining *machineMining) (searchEnvelope, int) {
+func searchEnvelopeOf(out searchOutcome, mining *machineMining, view string) (searchEnvelope, int) {
 	c := classifySearch(out)
 	env := searchEnvelope{
 		machineHeader: newMachineHeader("search", c.ExitCode, c.Code, c.Retryable, c.Action),
@@ -588,7 +743,7 @@ func searchEnvelopeOf(out searchOutcome, mining *machineMining) (searchEnvelope,
 	}
 	if out.ok() {
 		env.RequestID = out.Success.RequestID
-		env.Result = machineResultOf(out.Success)
+		env.Result = machineResultOf(out.Success, view)
 		return env, c.ExitCode
 	}
 	if out.HasRouterErr {

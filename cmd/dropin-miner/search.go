@@ -212,6 +212,7 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	var recency *string
 	var domainFilter []string
 	var maxResults *int
+	var view string
 	if machine {
 		// No positional query in machine mode: two sources for the same
 		// value is how a caller ends up sending one and escaping the
@@ -235,6 +236,7 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 		recency = req.recency
 		domainFilter = req.domainFilter
 		maxResults = req.maxResults
+		view = req.view
 	} else {
 		query = strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if query == "" {
@@ -328,7 +330,7 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	if machine {
-		env, code := searchEnvelopeOf(out, &mining)
+		env, code := searchEnvelopeOf(out, &mining, view)
 		emitMachine(stdout, env)
 		return code
 	}

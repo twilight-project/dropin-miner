@@ -41,7 +41,7 @@ func decodeFixtureSuccess(t *testing.T, name string) routerSuccess {
 // S2 adds is present with the fixture's own value.
 func TestEnvelopeCarriesTheRoutersDecisionAndUsage(t *testing.T) {
 	success := decodeFixtureSuccess(t, "balanced_response.json")
-	result := machineResultOf(success)
+	result := machineResultOf(success, "full")
 
 	got, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestEnvelopeCarriesTheRoutersDecisionAndUsage(t *testing.T) {
 // object full of zeros.
 func TestAbsentDecisionAndUsageStayAbsent(t *testing.T) {
 	success := decodeFixtureSuccess(t, "balanced_response_no_decision_usage.json")
-	result := machineResultOf(success)
+	result := machineResultOf(success, "full")
 	if result.Decision != nil {
 		t.Errorf("decision present when the router sent none: %+v", result.Decision)
 	}
@@ -82,8 +82,11 @@ func TestAbsentDecisionAndUsageStayAbsent(t *testing.T) {
 	// Candidates still carry their own cost and latency: those are
 	// per-candidate fields on the wire, untouched by stripping the
 	// top-level decision/usage blocks.
+	if result.Candidates == nil {
+		t.Fatal("candidates omitted for the full view")
+	}
 	var any bool
-	for _, c := range result.Candidates {
+	for _, c := range *result.Candidates {
 		if c.CostMicros != 0 {
 			any = true
 		}
@@ -98,17 +101,21 @@ func TestAbsentDecisionAndUsageStayAbsent(t *testing.T) {
 // latency.ttfb_ms, and not the search-wide usage.cost_micros.
 func TestCandidateCostAndLatencyComeFromTheRightFields(t *testing.T) {
 	success := decodeFixtureSuccess(t, "balanced_response.json")
-	result := machineResultOf(success)
+	result := machineResultOf(success, "full")
 	raw := readSearchTestdata(t, "balanced_response.json")
 	var wire routerResponse
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Candidates) != len(wire.Candidates) {
-		t.Fatalf("candidate count: got %d, want %d", len(result.Candidates), len(wire.Candidates))
+	if result.Candidates == nil {
+		t.Fatal("candidates omitted for the full view")
+	}
+	got := *result.Candidates
+	if len(got) != len(wire.Candidates) {
+		t.Fatalf("candidate count: got %d, want %d", len(got), len(wire.Candidates))
 	}
 	for i, wc := range wire.Candidates {
-		mc := result.Candidates[i]
+		mc := got[i]
 		if mc.CostMicros != wc.CostMicros {
 			t.Errorf("candidate %d (%s) cost_micros: got %d, want %d", i, wc.Provider, mc.CostMicros, wc.CostMicros)
 		}
