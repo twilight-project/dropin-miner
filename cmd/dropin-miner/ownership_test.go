@@ -361,6 +361,75 @@ func TestARenderedPathIsReadBackWhicheverShellQuotedIt(t *testing.T) {
 	}
 }
 
+// TestTheInstallationNamedInAMessageIsTheDecodedReading is the sentence, not
+// the matching.
+//
+// unquoteRenderedPath returns every reading of a rendered word, the decoded
+// one last, and describeOther used to print the FIRST. For a JSON-quoted
+// path -- opencode's and Pi's INSTALL_CONFIG line -- the first reading is the
+// literal one, so on Windows the message named
+// C:\\Users\\...\\tokendrop.toml with every separator doubled while the file
+// itself was correctly left alone. Both Windows runners found it on #123's
+// first CI run; every other runner was green, because on POSIX nothing in a
+// path needs escaping and a word's two readings are the same string.
+//
+// A unit case over literal strings, so it needs no Windows runner: a Windows
+// path is only ever a string here and nothing executes it.
+func TestTheInstallationNamedInAMessageIsTheDecodedReading(t *testing.T) {
+	const ours = "/home/u/.tokendrop/tokendrop.toml"
+	for _, tc := range []struct {
+		name     string
+		artifact string
+		want     string
+	}{
+		{
+			// What renderAgentScript writes into a JavaScript adapter: the
+			// path JSON-quoted, which doubles every backslash. This is the
+			// row that was red on both Windows runners.
+			name:     "a JSON-quoted Windows path (opencode's INSTALL_CONFIG)",
+			artifact: `const INSTALL_CONFIG = "C:\\Users\\u\\dm-disposable\\tokendrop.toml";`,
+			want:     `C:\Users\u\dm-disposable\tokendrop.toml`,
+		},
+		{
+			// v0.2.9 quoted every path with Go's %q, and an installation that
+			// upgraded still carries it until its next agents install.
+			name:     "a %q-quoted Windows path (v0.2.9)",
+			artifact: strconv.Quote(`C:\Users\u\dm-disposable\dropin-miner.exe`) + " search -config " + strconv.Quote(`C:\Users\u\dm-disposable\tokendrop.toml`),
+			want:     `C:\Users\u\dm-disposable\tokendrop.toml`,
+		},
+		{
+			// The POSIX half: a single-quoted path carrying a space, which is
+			// what a participant whose home has one actually gets. Its want
+			// goes through filepath.Clean because the display does, and on
+			// Windows Clean turns / into \ -- a POSIX path inside a Windows
+			// artifact is not a case that occurs, and the normalization
+			// cancels from both sides, leaving this row guarding the one
+			// thing it is here for: that the quotes came off and the space
+			// survived.
+			name:     "a POSIX single-quoted path with a space",
+			artifact: "'/home/u/my configs/dm-disposable/dropin-miner' search -config '/home/u/my configs/dm-disposable/tokendrop.toml'",
+			want:     filepath.Clean("/home/u/my configs/dm-disposable/tokendrop.toml"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfgs := namedInArtifact(tc.artifact)
+			if len(cfgs) == 0 {
+				t.Fatalf("no config was read out of the artifact at all, so this row proves nothing:\n  %s", tc.artifact)
+			}
+			got := describeOther(nil, cfgs, installationRef{cfg: ours})
+			if want := "the installation configured by " + tc.want; got != want {
+				t.Errorf("describeOther named the wrong reading\n got %s\nwant %s\nreadings %q", got, want, cfgs)
+			}
+		})
+	}
+
+	// An artifact naming nothing readable still says "another installation"
+	// rather than naming an empty path.
+	if got := describeOther(nil, nil, installationRef{cfg: ours}); got != "another installation" {
+		t.Errorf("an artifact naming nothing: %s", got)
+	}
+}
+
 // TestAJSONArtifactIsDecodedNotScanned is the Windows failure itself, made
 // reproducible on any runner.
 //

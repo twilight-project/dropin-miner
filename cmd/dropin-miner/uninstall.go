@@ -822,16 +822,53 @@ func configsInclude(named []string, cfg string) bool {
 // describeOther names the other installation the way the profile block's
 // refusal does: by what the artifact actually says, so the participant can
 // see which one it is.
+//
+// It shows the DECODED reading of the word it names, which is the LAST one
+// unquoteRenderedPath returns: a double-quoted word yields the literal
+// reading first -- what cmd would run, and what a %q- or JSON-quoted Windows
+// path spells with every separator doubled -- and the escaped reading after
+// it. Every reading of one word names the same file and matching reads them
+// all (samePath), so nothing about attribution changed when this printed the
+// first one; only the sentence was wrong, and only on Windows, where
+// opencode's INSTALL_CONFIG line is JSON-quoted and came out as
+// C:\\Users\\... on both runners (#123, and #112's own message before it).
+// Taking the last reading of the last word that is not ours is decoded
+// whichever word it comes from, because a word's readings are contiguous and
+// its decoded one is last.
+//
+// filepath.Clean is the second step and not the fix: it would collapse those
+// doubled separators on Windows and do nothing at all on any other OS, where
+// the same wrong reading would still be printed. It is here to tidy a path a
+// participant wrote, not to undo a quoting this function should not have been
+// reading in the first place.
 func describeOther(bins, cfgs []string, ref installationRef) string {
-	for _, c := range cfgs {
-		if !samePath(c, ref.cfg) {
-			return "the installation configured by " + c
-		}
+	if c := lastNotOurs(cfgs, ref.cfg); c != "" {
+		return "the installation configured by " + c
 	}
-	for _, b := range bins {
-		return b
+	if len(bins) > 0 {
+		return displayNamedPath(bins[len(bins)-1])
 	}
 	return "another installation"
+}
+
+// lastNotOurs is the last reading in named that does not name cfg, ready to
+// show, or "" when every reading is ours.
+func lastNotOurs(named []string, cfg string) string {
+	for i := len(named) - 1; i >= 0; i-- {
+		if !samePath(named[i], cfg) {
+			return displayNamedPath(named[i])
+		}
+	}
+	return ""
+}
+
+// displayNamedPath is a path read out of an artifact, in the spelling to show
+// a person.
+func displayNamedPath(p string) string {
+	if p == "" {
+		return p
+	}
+	return filepath.Clean(p)
 }
 
 // readRemoved is the text of a file, or of the regular files directly in a

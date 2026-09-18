@@ -4,6 +4,7 @@ package main
 // misbehaves needs `agents status` to say the host is not on it.
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -42,8 +43,19 @@ func TestStatusReportsAStaleRenderingUntilAnInstallRefreshesIt(t *testing.T) {
 
 	_, out, _ = runAgents(t, ops, nil, "status", "-config", testCfg)
 	got := staleLines(out)
-	if len(got) != 2 || !strings.HasPrefix(got[0], "~/.claude/skills/dropin-miner/SKILL.md: ") || !strings.HasPrefix(got[1], "~/.claude/settings.json: ") {
-		t.Fatalf("want exactly Claude Code's skill and settings named as stale, got %q\n%s", got, out)
+	// Named through tilde, not spelled "~/...": this machine's home is the
+	// literal /home/u while ops.paths joins with the host separator, so on
+	// Windows there is no prefix for tilde to shorten and the line reads
+	// \home\u\.claude\... -- which is what both Windows runners reported
+	// on #123's first CI run. How a path is abbreviated is printPlan's
+	// subject and is pinned there; what this test guards is WHICH files are
+	// called stale, and how many.
+	want := []string{
+		tilde(ops.home, skill) + ": " + staleWords,
+		tilde(ops.home, settings) + ": " + staleWords,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("want exactly Claude Code's skill and settings named as stale\n got %q\nwant %q\n%s", got, want, out)
 	}
 	// The line sits under its own host, not under the next one.
 	claude, cursor := strings.Index(out, "Claude Code"), strings.Index(out, "Cursor")
