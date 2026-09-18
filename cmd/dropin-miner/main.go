@@ -68,6 +68,9 @@ the tool (what an agent runs):
              person, or dropin-miner search --stdin for an agent (one
              version-1 JSON request object on stdin, one JSON envelope on
              stdout; -format is ignored, the envelope is always JSON).
+             The --stdin request may also carry tier, recency, domain_filter,
+             max_results and view ("full" or "merged"); a malformed value
+             answers fix_input before any router call.
              -timeout bounds the whole search in either form, default
              1m0s. Records the served request for mining and starts a
              flush. Exit: 0=valid search response, 1=transport/timeout/

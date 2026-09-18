@@ -1,0 +1,1108 @@
+{
+  "request_id": "01a0b49b-4bf3-7208-8edf-367070fdf6eb",
+  "query": "recent advances in retrieval augmented generation research 2026",
+  "chosen": 7,
+  "candidates": [
+    {
+      "provider": "exa",
+      "model": "exa",
+      "kind": "retrieval",
+      "tier": "core",
+      "usage": {},
+      "cost_micros": 5000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 0,
+        "total_ms": 0
+      },
+      "status": "timeout",
+      "error": "Post https://router.telem.ai/v1/search: context deadline exceeded"
+    },
+    {
+      "provider": "tavily",
+      "model": "tavily",
+      "kind": "retrieval",
+      "tier": "core",
+      "usage": {},
+      "cost_micros": 8000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 1398,
+        "total_ms": 1398
+      },
+      "status": "error",
+      "error": "tavily: upstream status 503"
+    },
+    {
+      "provider": "linkup",
+      "model": "linkup",
+      "kind": "retrieval",
+      "tier": "core",
+      "citations": [
+        {
+          "url": "https://brics-econ.org/retrieval-augmented-generation-rag-advances-better-search-better-answers-in-generative-ai",
+          "domain": "brics-econ.org",
+          "title": "Retrieval-Augmented Generation (RAG) Advances: Better Search, Better Answers in Generative AI",
+          "snippet": "Large language models are powerful, but they have a nasty habit of making things up. You ask them a question about your company's internal policy, and they give you a confident answer that sounds right but is completely wrong. This is the \"hallucination\" problem that has plagued **Generative AI**, which relies on static training data that quickly becomes outdated. The solution isn't just bigger mo\u2026",
+          "rank": 1
+        },
+        {
+          "url": "https://emergentmind.com/topics/retrieval-augmented-generation-graphrag",
+          "domain": "emergentmind.com",
+          "title": "GraphRAG: Retrieval-Augmented Generation",
+          "snippet": "# GraphRAG: Retrieval-Augmented Generation - GraphRAG is a framework that augments large language models with graph-structured knowledge, enabling multi-hop reasoning and precise entity disambiguation. - It combines graph neural networks, hybrid retrieval strategies, and reinforcement learning to dynamically fuse structured and unstructured data. - Empirical results show notable gains in QA perfor\u2026",
+          "rank": 2
+        },
+        {
+          "url": "https://dl.acm.org/doi/abs/10.1145/3477495.3532682?casa_token=A2OoaS3iBIQAAAAA%3Awfnj8_fLAjpZ_RsfbUx-83bzBgY4fp6-EXoOSKlqRG9smuJbrPKNg7Ea7cFLcBBfpV5IwiJT8VIf",
+          "domain": "acm.org",
+          "title": "Recent Advances in Retrieval-Augmented Text Generation | Proceedings of the 45th International ACM SIGIR Conference on Research and Development in Information Retrieval",
+          "snippet": "Zhang JLei SYang ZLiu BWang ZWeng XAmaratunga GLin YWang H(2026)Self-Knowledge Retrieval Augmented Generation Framework for Patent Matching2026 29th International Conference on Computer Supported Cooperative Work in Design (CSCWD)10.1109/CS... SIGIR '22: The 45th International ACM SIGIR Conference on Research and Development in Information Retrieval ... Downloads (Last 12 months)Advanced metrics (\u2026",
+          "rank": 3
+        },
+        {
+          "url": "https://techment.com/blogs/rag-in-2026",
+          "domain": "techment.com",
+          "title": "RAG in 2026: How Retrieval-Augmented Generation Works for Enterprise AI",
+          "snippet": "In 2026, enterprise RAG increasingly combines hybrid retrieval, reranking, multimodal data, access controls, evaluation, and observability to support reliable production AI applications. RAG has evolved dramatically between 2024 and 2026. What once began as a relatively simple retriever\u2013generator pipeline has now matured into a sophisticated enterprise intelligence architecture with multimodal c\u2026",
+          "rank": 4
+        },
+        {
+          "url": "https://ira.lib.polyu.edu.hk/handle/10397/119733",
+          "domain": "edu.hk",
+          "title": "LinearRAG : linear graph retrieval augmented generation on large-scale corpora | PolyU Institutional Research Archive",
+          "snippet": "[Back to results list](javascript:history.back%28%29) | Title: | LinearRAG : linear graph retrieval augmented generation on large-scale corpora | |---|---| | Authors: | [Zhuang, L](/browse?type=author&authority=rp06420) <br />[Chen, S](/browse?type=author&authority=rp06421) <br />[Xiao, Y](/browse?type=author&authority=rp06420) <br />[Zhou, H](/browse?type=author&authority=rp06420) <br />[Zhang, Y\u2026",
+          "rank": 5
+        },
+        {
+          "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+          "domain": "acm.org",
+          "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences",
+          "snippet": "Graph-based Retrieval- Augmented ... by retrieving ... ... Recent advances in enabling Large Language Models (LLMs) to use external tools have significantly extended their functional capabilities ...... Graph-based Retrieval- Augmented Generation (RAG) addresses the incompleteness and hallucination issues of Large Language Models (LLMs) by retrieving ... ... Recent advances in enabling Large Langu\u2026",
+          "rank": 6
+        },
+        {
+          "url": "https://perplexityaimagazine.com/expert-insights/what-is-rag-retrieval-augmented-generation",
+          "domain": "perplexityaimagazine.com",
+          "title": "What Is RAG (Retrieval-Augmented Generation) ? Reliable AI Retrieval in 2026",
+          "snippet": "## What Is RAG (Retrieval-Augmented Generation)? Retrieval-augmented generation combines information retrieval with generative language modelling. The retriever identifies useful evidence from sources outside the model\u2019s trained parameters. The generator receives that evidence with the user\u2019s request and produces an answer. The word augmented matters because the model is not retrained each tim\u2026",
+          "rank": 7
+        },
+        {
+          "url": "https://cervicornconsulting.com/retrieval-augmented-generation-market",
+          "domain": "cervicornconsulting.com",
+          "title": "Retrieval Augmented Generation Market Size, Share 2026-2035",
+          "snippet": "## Retrieval Augmented Generation Market (By Function: Recommendation Engines, Summarization & Reporting, Response Generation, Document Retrieval; By Deployment: On-Premises, Cloud; By Application: Content Generation, Research & Development, Marketing & Sales, Legal & Compliance, Customer Support & Chatbots, Knowledge Management; By End Use: Media & Entertainment, Education, IT & Telecommunication\u2026",
+          "rank": 8
+        }
+      ],
+      "agent": {
+        "run_id": "4ab136df-738e-419e-95bf-bf8b738f4468",
+        "effort": "telem/extended",
+        "status": "succeeded",
+        "steps": 2,
+        "plan": [
+          {
+            "at_ms": 0,
+            "kind": "objective",
+            "text": "recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 1575,
+            "kind": "query",
+            "text": "linkup: recent advances in retrieval augmented generation research 2026"
+          }
+        ],
+        "sources": [
+          {
+            "at_ms": 1575,
+            "url": "https://brics-econ.org/retrieval-augmented-generation-rag-advances-better-search-better-answers-in-generative-ai",
+            "title": "Retrieval-Augmented Generation (RAG) Advances: Better Search, Better Answers in Generative AI"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://www.emergentmind.com/topics/retrieval-augmented-generation-graphrag",
+            "title": "GraphRAG: Retrieval-Augmented Generation"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://dl.acm.org/doi/abs/10.1145/3477495.3532682?casa_token=A2OoaS3iBIQAAAAA%3Awfnj8_fLAjpZ_RsfbUx-83bzBgY4fp6-EXoOSKlqRG9smuJbrPKNg7Ea7cFLcBBfpV5IwiJT8VIf",
+            "title": "Recent Advances in Retrieval-Augmented Text Generation | Proceedings of the 45th International ACM SIGIR Conference on Research and Development in Information Retrieval"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://www.techment.com/blogs/rag-in-2026/",
+            "title": "RAG in 2026: How Retrieval-Augmented Generation Works for Enterprise AI"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://ira.lib.polyu.edu.hk/handle/10397/119733",
+            "title": "LinearRAG : linear graph retrieval augmented generation on large-scale corpora | PolyU Institutional Research Archive"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+            "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://perplexityaimagazine.com/expert-insights/what-is-rag-retrieval-augmented-generation/",
+            "title": "What Is RAG (Retrieval-Augmented Generation) ? Reliable AI Retrieval in 2026"
+          },
+          {
+            "at_ms": 1575,
+            "url": "https://www.cervicornconsulting.com/retrieval-augmented-generation-market",
+            "title": "Retrieval Augmented Generation Market Size, Share 2026-2035"
+          }
+        ],
+        "tool_calls": {
+          "linkup": 1
+        },
+        "events_seen": 1
+      },
+      "usage": {
+        "search_calls": 1
+      },
+      "cost_micros": 5000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 2859,
+        "total_ms": 2859
+      },
+      "status": "ok"
+    },
+    {
+      "provider": "telem",
+      "model": "ceramic,seltz",
+      "kind": "retrieval",
+      "tier": "core",
+      "citations": [
+        {
+          "url": "https://ijcrt.org/indexx.php?issue=4&pubmonth=April+2026&vol=14",
+          "domain": "ijcrt.org",
+          "title": "Journal UGC-CARE IJCRT( ISSN: 2320-2882 ) | UGC Approved Journal | UGC Journal | UGC CARE Journal |",
+          "snippet": "Author Country : India-827013 . KUMAR RAHUL, Dr. Anil Kumar Rajak, Dr. Sagram Hembrom, Dr. Baidya Nath Roy, Dr. Sumit Kumar Sharma. . Author Country : India-431105 . RITESH PRAVIN PAITHANKAR, BHAKTI BHAGWAN KOR, TULSI PANDHARINATH PATIL, NIRAJ ISHWAR KHARAT, SUMIT BALIRAM RATHOD. \\\"Retrieval-Augmented Generation (RAG): A Reliable Framework for Knowledge-Grounded Large Language Models.\\\" , Internat\u2026",
+          "rank": 1
+        },
+        {
+          "url": "https://ijraset.com/ijraset-volume/volume14-issueiv-april2026",
+          "domain": "ijraset.com",
+          "title": "April 2026|Issue IV | Best Journals",
+          "snippet": ", A. Pavani, K. Devi Priya, N. Murali Mohan, K. Prasanth Page No. : 2208-2214 Certificate 25 View Paper IJRASET79731 A Study on Facial Emotion Based Song Recommendations Systems Prof. Asha Gaikar, Vaishnavi Khaire, Snehal Gorad, Payal Chavan, Sambodhi Gaikwad Page No. : 2215-2218 Certificate 19 View Paper IJRASET79732 A Review on Agrofarm: A Farm-to-Buyer E-Commerce Platform Vedangi Bajage, Saloni\u2026",
+          "rank": 2
+        },
+        {
+          "url": "https://fernuni-hagen.de/english/research/clusters/catalpa/research/research-professorships/Forschungsprofessur_Computerlinguistik_en.shtml",
+          "domain": "fernuni-hagen.de",
+          "title": "Research Professorship of Computational Linguistics - FernUniversit\u00e4t in Hagen",
+          "snippet": "Prof. Dr.-Ing. Torsten Zesch and his team conduct research in the field of language technology and natural language processing at CATALPA since March 2022. They are particularly interested in the analysis and processing of non-standardized language as found in the speech of learners. CATALPA | 30.03.2026 age technology and artificial intelligence (AI) support teaching and learning processes? This \u2026",
+          "rank": 3
+        },
+        {
+          "url": "https://ijraset.com/ijraset-volume/volume14-issuei-january2026",
+          "domain": "ijraset.com",
+          "title": "January 2026|Issue I | Best Journals",
+          "snippet": "Issue Details Volume 14 Paper # Paper Title/ Authors Download Paper Downloads View Search IJRASET76407 A Deep Learning Framework for Early Detection of Skin Cancer: Implementing CNNs with Augmented Dermoscopic Images D. Venkateswarlu, Y. Sudhir Babu Page No. : 1-3 Certificate 92 View Paper IJRASET76686 A Web Application for Lung Cancer Analysis and Detection using Deep Learning Approach Ab. Firoz,\u2026",
+          "rank": 4
+        },
+        {
+          "url": "https://siyuxu.com/cv-arxiv-daily",
+          "domain": "siyuxu.com",
+          "title": "Updated on 2026.04.26 | CV Arxiv Daily",
+          "snippet": "n et.al. 2505.09029 null 2025-05-13 Improved Algorithms for Differentially Private Language Model Alignment Keyu Chen et.al. 2505.08849 null 2025-05-13 Reinforcement Learning meets Masked Video Modeling : Trajectory-Guided Adaptive Token Selection Ayush K. Rai et.al. 2505.08561 null 2025-05-13 A Practical Introduction to Deep Reinforcement Learning Yinghan Sun et.al. 2505.08295 null 2025-05-13 Hyp\u2026",
+          "rank": 5
+        },
+        {
+          "url": "https://dice-research.org/students/teaching",
+          "domain": "dice-research.org",
+          "title": "Teaching | DICE Research Group",
+          "snippet": "Teaching | DICE Research Group Summer Term 2026 Project Groups How to Train Your Large Language Model 2 (HTYLLM2) Master Project Groups Knowledge Graph Summarization (KGS) Master Adaptive Retrieval-Augmented Generation Master Seminars Logic-based Explainability in AI Master Seminars Argumentation for Explainable AI Master Recent Advances in Knowledge Graphs Master Project Groups How to Train Your \u2026",
+          "rank": 6
+        },
+        {
+          "url": "https://tilde.ai/research/publication",
+          "domain": "tilde.ai",
+          "title": "Language Technology Research Publications | Tilde.ai",
+          "snippet": "Rinalds V\u012bksna and Inguna Skadi\u0146a. 2025. Anonymise: A Tool for Multilingual Document Pseudonymisation. Proceedings of the 15th International Conference on Recent Advances in Natural Language Processing - Natural Language Processing in the Generative AI erae, 1327\u20131332. Askars Salimbajevs and Jevgenijs Strigins. 2015. Error Analysis and Improving Speech Recognition for Latvian language . Procee\u2026",
+          "rank": 7
+        },
+        {
+          "url": "https://jmir.org/2024/1/e53164/citations",
+          "domain": "jmir.org",
+          "title": "Journal of Medical Internet Research - Hallucination Rates and Reference Accuracy of ChatGPT and Ba",
+          "snippet": "Journal of Medical Internet Research - Hallucination Rates and Reference Accuracy of ChatGPT and Bard for Systematic Reviews: Comparative Analysis Skip to Main Content Skip to Footer Published on in Vol 26 (2024) Preprints (earlier versions) of this paper are available at https://preprints.jmir.org/preprint/53164 , first published . Hallucination Rates and Reference Accuracy of ChatGPT and Bard fo\u2026",
+          "rank": 8
+        },
+        {
+          "url": "https://ppc.land/grounding",
+          "domain": "ppc.land",
+          "snippet": "# Explaining grounding Grounding is the practice of connecting a generative model's output to retrieved source material, so that an answer rests on documents the system can point to rather than on the statistical residue of training\\. A grounded response carries provenance: the passages that informed it, the queries that fetched them, and the position in the answer each source supports\\. The techn\u2026",
+          "rank": 9,
+          "published": "2026-09-05T12:51:00Z"
+        },
+        {
+          "url": "https://weka.io/learn/guide/ai-ml/retrieval-augmented-generation",
+          "domain": "weka.io",
+          "snippet": "# Retrieval Augmented Generation: Everything You Need to Know About RAG in AI October 24, 2024 ## What is RAG in AI? Retrieval augmented generation \\(RAG\\) is a framework for blending generative models such as ChatGPT-3 or 4 with retrieval systems\\. Instead of solely relying on the knowledge base embedded within a model, which can be static or limited by its training cut-off date, RAG in AI dynami\u2026",
+          "rank": 10,
+          "published": "2024-10-24T23:39:47Z"
+        },
+        {
+          "url": "https://arturmarkus.com/why-retrieval-augmented-generation-rag-is-the-critical-next-leap-for-ai-tools-platforms-in-2026",
+          "domain": "arturmarkus.com",
+          "snippet": "Will your AI platform become irrelevant by 2026? Discover the hidden flaw in today\u2019s AI models that RAG-powered systems are set to obliterate\u2014leaving legacy solutions hopelessly outdated\\. ## The Case for RAG: Not Just Another Buzzword The AI ecosystem is shifting under our feet\\. For years, generative AI models dazzled us by producing fluent, humanlike text, images, and code on demand\\. Yet, \u2026",
+          "rank": 11,
+          "published": "2025-11-09T05:01:10Z"
+        },
+        {
+          "url": "https://scienmag.com/multimodal-rag-framework-improves-question-answering-over-lengthy-documents",
+          "domain": "scienmag.com",
+          "snippet": "# Multimodal RAG framework improves question answering over lengthy documents Researchers at South China Normal University have unveiled MMRDoc, a new retrieval-augmented generation framework designed to help artificial intelligence systems read, search and reason over long, visually dense documents such as financial reports, scientific papers and multi-page contracts\\. The study, published in the\u2026",
+          "rank": 12,
+          "published": "2026-09-07T04:49:55Z"
+        },
+        {
+          "url": "https://bioengineer.org/multimodal-rag-framework-improves-question-answering-over-lengthy-documents",
+          "domain": "bioengineer.org",
+          "snippet": "# Multimodal RAG framework improves question answering over lengthy documents Researchers at South China Normal University have unveiled MMRDoc, a new retrieval-augmented generation framework designed to help artificial intelligence systems read, search and reason over long, visually dense documents such as financial reports, scientific papers and multi-page contracts\\. The study, published in the\u2026",
+          "rank": 13,
+          "published": "2026-09-07T05:59:54Z"
+        },
+        {
+          "url": "https://openpr.com/news/4633509/generative-ai-in-augmented-reality-market-research-explores",
+          "domain": "openpr.com",
+          "snippet": "# Generative AI In Augmented Reality Market Research Explores Growth Within A $13\\.45 Billion Opportunity Generative AI In Augmented Reality The intersection of generative artificial intelligence and augmented reality is rapidly reshaping how digital environments are created and experienced\\. This fusion is opening new possibilities across numerous sectors, from entertainment to enterprise, by enh\u2026",
+          "rank": 14,
+          "published": "2026-09-16T14:55:33Z"
+        },
+        {
+          "url": "https://domestika.org/es/projects/1879308-carnet-de-gratitud-cuaderno-de-bocetos-de-agosto-de-2026",
+          "domain": "domestika.org",
+          "snippet": "# \u201cCarnet de gratitud : cuaderno de bocetos de agosto de 2026\u201d\\. Un proyecto de stig\\_legrand \\| Domestika ### Introduction Where am I when I draw? Physically, I am here, at my desk, making decisions about line, colour, composition, and what will remain outside the frame\\. But mentally, I am travelling back to a day that has already been followed by several others\\. I am trying to find what is\u2026",
+          "rank": 15,
+          "published": "2026-09-12T16:40:20Z"
+        }
+      ],
+      "agent": {
+        "run_id": "bb1a8122-0be7-40b1-b97e-20b7d7dbed84",
+        "effort": "telem/extended",
+        "status": "succeeded",
+        "steps": 3,
+        "plan": [
+          {
+            "at_ms": 0,
+            "kind": "objective",
+            "text": "recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 106,
+            "kind": "query",
+            "text": "ceramic: recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 562,
+            "kind": "query",
+            "text": "seltz: recent advances in retrieval augmented generation research 2026"
+          }
+        ],
+        "sources": [
+          {
+            "at_ms": 106,
+            "url": "https://ijcrt.org/indexx.php?vol=14&issue=4&pubmonth=April%202026",
+            "title": "Journal UGC-CARE IJCRT( ISSN: 2320-2882 ) | UGC Approved Journal | UGC Journal | UGC CARE Journal |"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://www.ijraset.com/ijraset-volume/volume14-issueiv-april2026",
+            "title": "April 2026|Issue IV | Best Journals"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://www.fernuni-hagen.de/english/research/clusters/catalpa/research/research-professorships/Forschungsprofessur_Computerlinguistik_en.shtml",
+            "title": "Research Professorship of Computational Linguistics - FernUniversit\u00e4t in Hagen"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://www.ijraset.com/ijraset-volume/volume14-issuei-january2026",
+            "title": "January 2026|Issue I | Best Journals"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://siyuxu.com/cv-arxiv-daily/",
+            "title": "Updated on 2026.04.26 | CV Arxiv Daily"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://dice-research.org/students/teaching/",
+            "title": "Teaching | DICE Research Group"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://tilde.ai/research/publication/",
+            "title": "Language Technology Research Publications | Tilde.ai"
+          },
+          {
+            "at_ms": 106,
+            "url": "https://www.jmir.org/2024/1/e53164/citations",
+            "title": "Journal of Medical Internet Research - Hallucination Rates and Reference Accuracy of ChatGPT and Ba"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://ppc.land/grounding/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://www.weka.io/learn/guide/ai-ml/retrieval-augmented-generation/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://weka.io/learn/guide/ai-ml/retrieval-augmented-generation/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://www.arturmarkus.com/why-retrieval-augmented-generation-rag-is-the-critical-next-leap-for-ai-tools-platforms-in-2026/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://scienmag.com/multimodal-rag-framework-improves-question-answering-over-lengthy-documents/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://bioengineer.org/multimodal-rag-framework-improves-question-answering-over-lengthy-documents/"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://www.openpr.com/news/4633509/generative-ai-in-augmented-reality-market-research-explores"
+          },
+          {
+            "at_ms": 562,
+            "url": "https://www.domestika.org/es/projects/1879308-carnet-de-gratitud-cuaderno-de-bocetos-de-agosto-de-2026"
+          }
+        ],
+        "tool_calls": {
+          "ceramic": 1,
+          "seltz": 1
+        },
+        "events_seen": 2
+      },
+      "usage": {
+        "search_calls": 2
+      },
+      "cost_micros": 10000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 1916,
+        "total_ms": 2028
+      },
+      "status": "ok"
+    },
+    {
+      "provider": "brave",
+      "model": "brave",
+      "kind": "retrieval",
+      "tier": "core",
+      "citations": [
+        {
+          "url": "https://squirro.com/squirro-blog/state-of-rag-genai",
+          "domain": "squirro.com",
+          "title": "What is RAG? Latest Advances in Retrieval-Augmented Generation",
+          "snippet": "As enterprise AI matures, three ... for data leakage. In 2026, these are becoming baseline requirements for any RAG deployment that aims to operate safely and at enterprise scale....",
+          "rank": 1,
+          "published": "2026-01-18T23:15:00Z"
+        },
+        {
+          "url": "https://turingpost.com/p/ragtypes",
+          "domain": "turingpost.com",
+          "title": "20 Advanced RAG Types to Know in 2026",
+          "snippet": "20 cutting-edge RAG approaches in 2026: Agentic RAG, MiA-RAG, HGMem, Graph-O1, Bidirectional RAG, multimodal, multilingual, structured and security RAG systems.",
+          "rank": 2,
+          "published": "2026-09-08T14:17:06Z"
+        },
+        {
+          "url": "https://link.springer.com/article/10.1007/s41019-025-00335-5",
+          "domain": "springer.com",
+          "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey | Data Science and Engineering | Springer Nature Link",
+          "snippet": "Advancements in model algorithms, the growth of foundational models, and access to high-quality datasets have propelled the evolution of Artificial Intelligence Generated Content (AIGC).",
+          "rank": 3,
+          "published": "2026-01-02T00:00:00Z"
+        },
+        {
+          "url": "https://arxiv.org/html/2501.09136v4",
+          "domain": "arxiv.org",
+          "title": "Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG",
+          "snippet": "Advanced retrievers leverage dense vector search and transformer-based models to improve retrieval precision and semantic relevance. ... Augmentation: Processes retrieved data, extracting and summarizing the most relevant information to align with the query context.",
+          "rank": 4,
+          "published": "2026-04-01T00:00:00Z"
+        },
+        {
+          "url": "https://aishwaryasrinivasan.substack.com/p/all-you-need-to-know-about-rag-in",
+          "domain": "substack.com",
+          "title": "All you need to know about RAG (in 2026) - AI with Aish",
+          "snippet": "In 2024, it was enough to shove some PDFs into a vector database, run a cosine similarity search, and call it a day. In 2026, that approach; Naive RAG is seen as a prototype at best and a liability at worst.",
+          "rank": 5,
+          "published": "2026-03-21T17:03:50Z"
+        },
+        {
+          "url": "https://arxiv.org/html/2506.00054v1",
+          "domain": "arxiv.org",
+          "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers",
+          "snippet": "Recent advancements in ... baselines, these enhancements address key limitations in retrieval quality, context integration, computational efficiency, robustness to perturbations, and ranking precision....",
+          "rank": 6
+        },
+        {
+          "url": "https://link.springer.com/chapter/10.1007/978-3-032-13026-6_4",
+          "domain": "springer.com",
+          "title": "Enhancing Generative AI with Retrieval-Augmented Generation: A Comparative Study | Springer Nature Link",
+          "snippet": "Maragatham, G., Khan, A., Shreeharini, S., Paul, S. (2026). Enhancing Generative AI with Retrieval-Augmented Generation: A Comparative Study. In: Ramachandran, G., Dao, NN., Jhanjhi, N.Z., Muthukrishnan, A., Duraivelu, H. (eds) Advances in Artificial Intelligence and Machine Learning in Big Data Processing.",
+          "rank": 7
+        },
+        {
+          "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+          "domain": "acm.org",
+          "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences",
+          "snippet": "Graph-based Retrieval- Augmented ... by retrieving ... ... Recent advances in enabling Large Language Models (LLMs) to use external tools have significantly extended their functional capabilities ......",
+          "rank": 8,
+          "published": "2026-04-12T00:00:00Z"
+        }
+      ],
+      "agent": {
+        "run_id": "4a6fdaf0-ff61-4715-8be2-132a130d89f8",
+        "effort": "telem/extended",
+        "status": "succeeded",
+        "steps": 2,
+        "plan": [
+          {
+            "at_ms": 0,
+            "kind": "objective",
+            "text": "recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 654,
+            "kind": "query",
+            "text": "brave: recent advances in retrieval augmented generation research 2026"
+          }
+        ],
+        "sources": [
+          {
+            "at_ms": 654,
+            "url": "https://squirro.com/squirro-blog/state-of-rag-genai",
+            "title": "What is RAG? Latest Advances in Retrieval-Augmented Generation"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://www.turingpost.com/p/ragtypes",
+            "title": "20 Advanced RAG Types to Know in 2026"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://link.springer.com/article/10.1007/s41019-025-00335-5",
+            "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey | Data Science and Engineering | Springer Nature Link"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://arxiv.org/html/2501.09136v4",
+            "title": "Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://aishwaryasrinivasan.substack.com/p/all-you-need-to-know-about-rag-in",
+            "title": "All you need to know about RAG (in 2026) - AI with Aish"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://arxiv.org/html/2506.00054v1",
+            "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://link.springer.com/chapter/10.1007/978-3-032-13026-6_4",
+            "title": "Enhancing Generative AI with Retrieval-Augmented Generation: A Comparative Study | Springer Nature Link"
+          },
+          {
+            "at_ms": 654,
+            "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+            "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences"
+          }
+        ],
+        "tool_calls": {
+          "brave": 1
+        },
+        "events_seen": 1
+      },
+      "usage": {
+        "search_calls": 1
+      },
+      "cost_micros": 5000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 1941,
+        "total_ms": 2054
+      },
+      "status": "ok"
+    },
+    {
+      "provider": "serpapi",
+      "model": "serpapi",
+      "kind": "retrieval",
+      "tier": "core",
+      "usage": {},
+      "cost_micros": 0,
+      "latency": {
+        "ttfb_ms": 0,
+        "total_ms": 0
+      },
+      "status": "pending",
+      "error": "still running: this arm is off the request path and lands on the trace later"
+    },
+    {
+      "provider": "parallel-search",
+      "model": "parallel",
+      "kind": "retrieval",
+      "tier": "core",
+      "citations": [
+        {
+          "url": "https://arxiv.org/abs/2506.00054",
+          "domain": "arxiv.org",
+          "title": "[2506.00054] Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers",
+          "snippet": "# Title: Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers > Abstract: Retrieval-Augmented Generation (RAG) has emerged as a powerful paradigm to enhance large language models (LLMs) by conditioning generation on external evidence retrieved at inference time. ... This survey provides a comprehensive synthesis of recent advances in RAG s\u2026",
+          "rank": 1,
+          "published": "2025-05-28T00:00:00Z"
+        },
+        {
+          "url": "https://arxiv.org/pdf/2506.00054",
+          "domain": "arxiv.org",
+          "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers",
+          "snippet": "# arXiv:2506.00054v1 [cs.IR] 28 May 2025 advances in RAG systems, offering a taxonomy that categorizes architectures into retriever-centric, generator-centric, hybrid, and robustness-oriented designs. We systematically analyze enhancements across retrieval optimization, context filtering, decoding control, research directions, including adaptive retrieval architectures, real-time retrieval integra\u2026",
+          "rank": 2,
+          "published": "2025-06-03T00:00:00Z"
+        },
+        {
+          "url": "https://arxiv.org/html/2506.00054v1",
+          "domain": "arxiv.org",
+          "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers",
+          "snippet": "# Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers ## 3. Taxonomy of RAG Architectures ### 3.1. Retriever-Based RAG Systems Relatedly, SEER (Self-Aligned Evidence Extraction for RAG) ( Zhao et al., 2024 ) focuses on post-retrieval adaptation, advancing corpus-based evidence extraction by aligning evidence selection with faithfulness, h\u2026",
+          "rank": 3
+        },
+        {
+          "url": "https://dl.acm.org/doi/abs/10.5555/3495724.3496517",
+          "domain": "acm.org",
+          "title": "Retrieval-augmented generation for knowledge-intensive ...",
+          "snippet": "# Retrieval-augmented generation for knowledge-intensive NLP tasks ## Cited By publication date: 8-Sep-2026 https://dl.acm.org/doi/10.1145/3793230.3837772 * Hanan S Carhart N Hampshire P (2026) Retrieval-Augmented Generation for Automated Planning Documentation Data Extraction Proceedings of the 2026 ACM Symposium on Document Engineering 10.1145/3820755.3832801 (1-2) Online publication date: 25-Au\u2026",
+          "rank": 4
+        },
+        {
+          "url": "https://aclanthology.org/2026.acl-long.1780",
+          "domain": "aclanthology.org",
+          "title": "CheckRLM: Effective Knowledge\u2013Thought Coherence Checking in Retrieval-Augmented Reasoning - ACL Anthology",
+          "snippet": "# Correct Metadata for ## Abstract To address this issue, we propose **CheckRLM** , a framework that improves the reliability of the reasoning process through Retrieval-Augmented Generation (RAG) by timely checking and correcting factual errors. Anthology ID: 2026.acl-long.1780 Volume: Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) M\u2026",
+          "rank": 5,
+          "published": "2026-07-01T00:00:00Z"
+        },
+        {
+          "url": "https://proceedings.neurips.cc/paper/2020/hash/6b493230205f780e1bc26945df7481e5-Abstract.html",
+          "domain": "neurips.cc",
+          "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+          "snippet": "Pre-trained models with a differentiable access mechanism to explicit non-parametric memory can overcome this issue, but have so far been only investigated for extractive downstream tasks. We explore a general-purpose fine-tuning recipe for retrieval-augmented generation (RAG) -- models which combine pre-trained parametric and non-parametric memory for language generation. We introduce RAG models \u2026",
+          "rank": 6
+        },
+        {
+          "url": "https://mdpi.com/2076-3417/16/16/8294",
+          "domain": "mdpi.com",
+          "title": "Task-Specific QLoRA Adaptation in RAG-Based Information Extraction from Research Articles",
+          "snippet": "# Task-Specific QLoRA Adaptation in RAG-Based Information Extraction from Research Articles Author to whom correspondence should be addressed. _Appl. Sci._ **2026** , _16_ (16), 8294; https://doi.org/10.3390/app16168294 Submission received: 9 June 2026 / Revised: 12 August 2026 / Accepted: 13 August 2026 / Published: 20 August 2026 ... ## Abstract Large Language Models have shown considerable pote\u2026",
+          "rank": 7,
+          "published": "2026-01-01T00:00:00Z"
+        },
+        {
+          "url": "https://aclanthology.org/2026.findings-acl.189",
+          "domain": "aclanthology.org",
+          "title": "Eval-RAR: Evaluation-Driven Retrieval-Augmented Reasoning via Reinforcement Learning - ACL Anthology",
+          "snippet": "Retrieval-augmented generation (RAG) effectively extends the knowledge boundaries of large language models (LLMs) for complex tasks, yet current paradigms typically optimize for an interleaving of reasoning and retrieval, where models fail to critically evaluate retrieved information against the target question. ... Eval-RAR introduces a \u201cSearch-then-Evaluate\u201d paradigm where the model performs\u2026",
+          "rank": 8,
+          "published": "2026-09-15T00:00:00Z"
+        }
+      ],
+      "agent": {
+        "run_id": "d081cfe6-822d-428d-80a1-4157c5b652dd",
+        "effort": "telem/extended",
+        "status": "succeeded",
+        "steps": 2,
+        "plan": [
+          {
+            "at_ms": 0,
+            "kind": "objective",
+            "text": "recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 5745,
+            "kind": "query",
+            "text": "parallel: recent advances in retrieval augmented generation research 2026"
+          }
+        ],
+        "sources": [
+          {
+            "at_ms": 5745,
+            "url": "https://arxiv.org/abs/2506.00054",
+            "title": "[2506.00054] Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://arxiv.org/pdf/2506.00054",
+            "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://arxiv.org/html/2506.00054v1",
+            "title": "Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://dl.acm.org/doi/abs/10.5555/3495724.3496517",
+            "title": "Retrieval-augmented generation for knowledge-intensive ..."
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://aclanthology.org/2026.acl-long.1780/",
+            "title": "CheckRLM: Effective Knowledge\u2013Thought Coherence Checking in Retrieval-Augmented Reasoning - ACL Anthology"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://proceedings.neurips.cc/paper/2020/hash/6b493230205f780e1bc26945df7481e5-Abstract.html",
+            "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://www.mdpi.com/2076-3417/16/16/8294",
+            "title": "Task-Specific QLoRA Adaptation in RAG-Based Information Extraction from Research Articles"
+          },
+          {
+            "at_ms": 5745,
+            "url": "https://aclanthology.org/2026.findings-acl.189/",
+            "title": "Eval-RAR: Evaluation-Driven Retrieval-Augmented Reasoning via Reinforcement Learning - ACL Anthology"
+          }
+        ],
+        "tool_calls": {
+          "parallel": 1
+        },
+        "events_seen": 1
+      },
+      "usage": {
+        "search_calls": 1
+      },
+      "cost_micros": 4000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 6973,
+        "total_ms": 7086
+      },
+      "status": "ok"
+    },
+    {
+      "provider": "you",
+      "model": "you",
+      "kind": "retrieval",
+      "tier": "core",
+      "citations": [
+        {
+          "url": "https://squirro.com/squirro-blog/state-of-rag-genai",
+          "domain": "squirro.com",
+          "title": "What is RAG? Latest Advances in Retrieval-Augmented Generation",
+          "snippet": "Is RAG still relevant in 2026? Learn exactly what Retrieval-Augmented Generation is, how it works, and the newest enterprise AI advancements.",
+          "rank": 1,
+          "published": "2026-01-18T23:15:00Z"
+        },
+        {
+          "url": "https://turingpost.com/p/ragtypes",
+          "domain": "turingpost.com",
+          "title": "20 Advanced RAG Types to Know in 2026",
+          "snippet": "TL;DR: Advanced RAG in 2026 is moving beyond simple vector search toward long-document memory, adaptive retrieval, multimodal grounding, multilingual question answering, graph reasoning, and security. These 20 approaches show how retrieval is becoming a reasoning, memory, and governance layer around LLMs. RAG, or Retrieval-Augmented Generation...",
+          "rank": 2,
+          "published": "2026-09-08T14:17:06Z"
+        },
+        {
+          "url": "https://link.springer.com/article/10.1007/s41019-025-00335-5",
+          "domain": "springer.com",
+          "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey ...",
+          "snippet": "Advancements in model algorithms, the growth of foundational models, and access to high-quality datasets have propelled the evolution of Artificial Intelligence Generated Content (AIGC). Despite its notable successes, AIGC still faces hurdles such as updating knowledge, handling long-tail data, ...",
+          "rank": 3,
+          "published": "2026-01-02T00:00:00Z"
+        },
+        {
+          "url": "https://arxiv.org/html/2501.09136v4",
+          "domain": "arxiv.org",
+          "title": "Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG",
+          "snippet": "Section 11 focuses on benchmarks and datasets, Section 12 discusses open research issues and future challenges, and Section 13 concludes with future directions for Agentic RAG systems. ... Retrieval-Augmented Generation (RAG) represents a significant advancement in the field of artificial ...",
+          "rank": 4,
+          "published": "2026-04-01T00:00:00Z"
+        },
+        {
+          "url": "https://arxiv.org/html/2506.00054v1",
+          "domain": "arxiv.org",
+          "title": "Retrieval-Augmented Generation: A Comprehensive Survey of ...",
+          "snippet": "In this survey, we first present ... explore advances in retrieval strategies, filtering, and control mechanisms (Section 4). We further analyze how RAG systems are benchmarked (Section 6), compare prominent frameworks (Section 5), and conclude with open research challenges and future directions (Section 7). Retrieval-Augmented Generation ...",
+          "rank": 5
+        },
+        {
+          "url": "https://aishwaryasrinivasan.substack.com/p/all-you-need-to-know-about-rag-in",
+          "domain": "substack.com",
+          "title": "All you need to know about RAG (in 2026) - AI with Aish",
+          "snippet": "Chunking, Re-Ranking, and Hybrid Search That Actually Work",
+          "rank": 6,
+          "published": "2026-03-21T17:03:50Z"
+        },
+        {
+          "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+          "domain": "acm.org",
+          "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences",
+          "snippet": "Graph-based Retrieval- Augmented Generation (RAG) addresses the incompleteness and hallucination issues of Large Language Models (LLMs) by retrieving ... ... Recent advances in enabling Large Language Models (LLMs) to use external tools have significantly extended their functional capabilities ...",
+          "rank": 7,
+          "published": "2026-04-12T00:00:00Z"
+        },
+        {
+          "url": "https://researchgate.net/publication/399344432_A_Review_on_Retrieval-Augmented_Generation_Architectures_Research_Challenges_and_Emerging_Frontiers",
+          "domain": "researchgate.net",
+          "title": "(PDF) A Review on Retrieval-Augmented Generation: Architectures, ...",
+          "snippet": "PDF | Retrieval-Augmented Generation (RAG) enhances the capabilities of Large Language Models (LLMs) by integrating external knowledge retrieval into... | Find, read and cite all the research you need on ResearchGate",
+          "rank": 8,
+          "published": "2026-01-02T00:00:00Z"
+        }
+      ],
+      "agent": {
+        "run_id": "61d6f730-5f36-42a9-b35e-b903bee13a8a",
+        "effort": "telem/extended",
+        "status": "succeeded",
+        "steps": 2,
+        "plan": [
+          {
+            "at_ms": 0,
+            "kind": "objective",
+            "text": "recent advances in retrieval augmented generation research 2026"
+          },
+          {
+            "at_ms": 474,
+            "kind": "query",
+            "text": "you: recent advances in retrieval augmented generation research 2026"
+          }
+        ],
+        "sources": [
+          {
+            "at_ms": 474,
+            "url": "https://squirro.com/squirro-blog/state-of-rag-genai",
+            "title": "What is RAG? Latest Advances in Retrieval-Augmented Generation"
+          },
+          {
+            "at_ms": 474,
+            "url": "https://www.turingpost.com/p/ragtypes",
+            "title": "20 Advanced RAG Types to Know in 2026"
+          },
+          {
+            "at_ms": 474,
+            "url": "https://link.springer.com/article/10.1007/s41019-025-00335-5",
+            "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey ..."
+          },
+          {
+            "at_ms": 474,
+            "url": "https://arxiv.org/html/2501.09136v4",
+            "title": "Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG"
+          },
+          {
+            "at_ms": 474,
+            "url": "https://arxiv.org/html/2506.00054v1",
+            "title": "Retrieval-Augmented Generation: A Comprehensive Survey of ..."
+          },
+          {
+            "at_ms": 474,
+            "url": "https://aishwaryasrinivasan.substack.com/p/all-you-need-to-know-about-rag-in",
+            "title": "All you need to know about RAG (in 2026) - AI with Aish"
+          },
+          {
+            "at_ms": 474,
+            "url": "https://dl.acm.org/doi/proceedings/10.1145/3774904?tocHeading=heading5",
+            "title": "Proceedings of the ACM Web Conference 2026 | ACM Conferences"
+          },
+          {
+            "at_ms": 474,
+            "url": "https://www.researchgate.net/publication/399344432_A_Review_on_Retrieval-Augmented_Generation_Architectures_Research_Challenges_and_Emerging_Frontiers",
+            "title": "(PDF) A Review on Retrieval-Augmented Generation: Architectures, ..."
+          }
+        ],
+        "tool_calls": {
+          "you": 1
+        },
+        "events_seen": 1
+      },
+      "usage": {
+        "search_calls": 1
+      },
+      "cost_micros": 5000,
+      "cost_source": "modeled",
+      "latency": {
+        "ttfb_ms": 1774,
+        "total_ms": 1886
+      },
+      "status": "ok"
+    }
+  ],
+  "signals": {
+    "referee": [
+      {
+        "provider": "exa",
+        "status": "timeout",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 0,
+        "distinct_domains": 0,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 0,
+        "recency_ok": true,
+        "dated_citations": 0,
+        "latency_ms": 0,
+        "cost_micros": 5000,
+        "score": 0
+      },
+      {
+        "provider": "tavily",
+        "status": "error",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 0,
+        "distinct_domains": 0,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 0,
+        "recency_ok": true,
+        "dated_citations": 0,
+        "latency_ms": 1398,
+        "cost_micros": 8000,
+        "score": 0
+      },
+      {
+        "provider": "linkup",
+        "status": "ok",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 8,
+        "distinct_domains": 7,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 8,
+        "recency_ok": true,
+        "dated_citations": 0,
+        "latency_ms": 2859,
+        "cost_micros": 5000,
+        "score": 1
+      },
+      {
+        "provider": "telem",
+        "status": "ok",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 15,
+        "distinct_domains": 14,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 15,
+        "recency_ok": true,
+        "dated_citations": 7,
+        "latency_ms": 2028,
+        "cost_micros": 10000,
+        "score": 1
+      },
+      {
+        "provider": "brave",
+        "status": "ok",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 8,
+        "distinct_domains": 6,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 8,
+        "recency_ok": true,
+        "dated_citations": 6,
+        "latency_ms": 2054,
+        "cost_micros": 5000,
+        "score": 1
+      },
+      {
+        "provider": "serpapi",
+        "status": "pending",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 0,
+        "distinct_domains": 0,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 0,
+        "recency_ok": true,
+        "dated_citations": 0,
+        "latency_ms": 0,
+        "cost_micros": 0,
+        "score": 0
+      },
+      {
+        "provider": "parallel-search",
+        "status": "ok",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 8,
+        "distinct_domains": 5,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 8,
+        "recency_ok": true,
+        "dated_citations": 5,
+        "latency_ms": 7086,
+        "cost_micros": 4000,
+        "score": 1
+      },
+      {
+        "provider": "you",
+        "status": "ok",
+        "has_answer": false,
+        "is_refusal": false,
+        "answer_words": 0,
+        "citation_count": 8,
+        "distinct_domains": 7,
+        "citation_density": 0,
+        "dead_citations": 0,
+        "unknown_citations": 8,
+        "recency_ok": true,
+        "dated_citations": 7,
+        "latency_ms": 1886,
+        "cost_micros": 5000,
+        "score": 1
+      }
+    ],
+    "consensus": {
+      "per_candidate": [
+        {
+          "provider": "exa",
+          "overlap": 0,
+          "coverage": 0,
+          "corroborated_citations": 0,
+          "orphan_citations": 0,
+          "outlier": false
+        },
+        {
+          "provider": "tavily",
+          "overlap": 0,
+          "coverage": 0,
+          "corroborated_citations": 0,
+          "orphan_citations": 0,
+          "outlier": false
+        },
+        {
+          "provider": "linkup",
+          "overlap": 0.0627913752913753,
+          "coverage": 0.23333333333333334,
+          "corroborated_citations": 1,
+          "orphan_citations": 7,
+          "outlier": false
+        },
+        {
+          "provider": "telem",
+          "overlap": 0,
+          "coverage": 0.4666666666666667,
+          "corroborated_citations": 0,
+          "orphan_citations": 15,
+          "outlier": false
+        },
+        {
+          "provider": "brave",
+          "overlap": 0.29067460317460314,
+          "coverage": 0.2,
+          "corroborated_citations": 7,
+          "orphan_citations": 1,
+          "outlier": false
+        },
+        {
+          "provider": "serpapi",
+          "overlap": 0,
+          "coverage": 0,
+          "corroborated_citations": 0,
+          "orphan_citations": 0,
+          "outlier": false
+        },
+        {
+          "provider": "parallel-search",
+          "overlap": 0.12828282828282828,
+          "coverage": 0.16666666666666666,
+          "corroborated_citations": 1,
+          "orphan_citations": 7,
+          "outlier": false
+        },
+        {
+          "provider": "you",
+          "overlap": 0.2835164835164835,
+          "coverage": 0.23333333333333334,
+          "corroborated_citations": 7,
+          "orphan_citations": 1,
+          "outlier": false
+        }
+      ],
+      "union_domains": 30,
+      "shared_domains": 6,
+      "agreement_ratio": 0.2,
+      "contested": false
+    },
+    "ranking": [
+      {
+        "index": 7,
+        "provider": "you",
+        "score": 3.005054945054945,
+        "base_score": 3.005054945054945
+      },
+      {
+        "index": 4,
+        "provider": "brave",
+        "score": 2.965384199134199,
+        "base_score": 2.965384199134199
+      },
+      {
+        "index": 3,
+        "provider": "telem",
+        "score": 2.4680701754385965,
+        "base_score": 2.4680701754385965
+      },
+      {
+        "index": 2,
+        "provider": "linkup",
+        "score": 2.338837412587413,
+        "base_score": 2.338837412587413
+      },
+      {
+        "index": 6,
+        "provider": "parallel-search",
+        "score": 2.2718181818181824,
+        "base_score": 2.2718181818181824
+      },
+      {
+        "index": 0,
+        "provider": "exa",
+        "score": 0,
+        "base_score": 0
+      },
+      {
+        "index": 5,
+        "provider": "serpapi",
+        "score": 0,
+        "base_score": 0
+      },
+      {
+        "index": 1,
+        "provider": "tavily",
+        "score": 0,
+        "base_score": 0
+      }
+    ]
+  }
+}

@@ -167,6 +167,39 @@ Recent agent context accompanies search to the Twilight search router as part
 of the trajectory/search product. `TOKENDROP_TRACE=off` disables trace
 transmission. Mining/AS receives metadata observations only.
 
+A host has one channel, and a search believes that one rather than whatever
+variable it finds. Cursor's session-start hook exports `TOKENDROP_HARNESS`,
+the path of its lineage file as `TOKENDROP_LINEAGE`, and the hashed id of its
+session as `TOKENDROP_SESSION`. A host that declared the file as its channel
+writes no bridge, so a search that finds `TOKENDROP_LINEAGE` set drops a
+`TOKENDROP_TRACE_BRIDGE` beside it as somebody else's, and says so on stderr.
+With a session id exported, a lineage file — the declared one, or one found by
+walking up from the working directory — is used only when it holds that
+session; a shell that exports no session id is served exactly as before. Two
+Cursor conversations open on one workspace still share one lineage file, and
+giving each its own is that defect's own fix (#109), not this rule's: the rule
+only keeps one conversation's search from going out under the other's id when
+there is a session id to compare. All of this acts on variables the search
+finds in its environment; whether Cursor passes them to the shell its agent
+runs is still being measured (#118).
+
+A host started by another host as a shell command inherits the outer host's
+declared channel, and so carries the outer session and label: Claude Code
+launched from a Cursor agent's shell searches as part of that Cursor session,
+labelled `cursor`. That is the chosen behavior, not a limitation. The exported
+environment is the declaration, and the inner host's search is work the outer
+session asked for.
+
+Cursor also loads Claude Code's hooks from `~/.claude/settings.json` and runs
+them beside its own, with its own payload. The Claude Code hooks tell a caller
+that is not Claude Code from the payload alone — it carries a `cursor_version`,
+or names an event other than the one the hook is installed under — and for
+such a caller they write nothing, start nothing, print nothing and exit 0.
+With both hosts installed, Cursor still starts those three commands each turn,
+which is its loader's doing, but each exits at once: a turn ends with one
+flush instead of two, and a Cursor command is never rewritten with a
+`claude-code` bridge.
+
 The trace is **unauthenticated metadata**, and the client treats it that way.
 A binary cannot prove where an environment variable came from, so nothing
 here is evidence of origin: a lineage adapter removes any bridge it finds
@@ -282,6 +315,15 @@ nothing has to escape it for a shell. `action` is one of `none`, `retry`,
 `fix_input`, `connect`, `login`, `check_access`, `report`; retry only when
 `retryable` is true, and honor `retry_after_ms` when it is present. Recovery is
 decided from those fields, never from the text of a message.
+
+The request may also carry `tier` (`"fast"`, the default, one provider;
+`"balanced"`, several, attributed), `recency` (`"day"`, `"week"`, `"month"` or
+`"year"`), `domain_filter` (up to 16 bare hostnames) and `max_results` (1-25),
+all optional and passed through to the router unchanged; a malformed value
+answers `fix_input` before any router call. `result.merged` is the citations of
+every candidate deduplicated across providers, each naming which providers
+found it (`found_by`) and its best rank; `view: "merged"` asks for it alone,
+dropping the per-provider `candidates` list.
 
 `connect` means the registration/setup/claim workflow needs attention — no
 registration, an unclaimed one, an expired one, or a step only a person can
@@ -595,11 +637,26 @@ refuses a development build, and a copy npm installed. The whole operation is
 bounded at three minutes, and it will not run while setup or another upgrade of
 the same binary is running. Your wallet, registration and config are not touched.
 
+**After `dropin-miner upgrade`, run `dropin-miner agents install` once.** The
+upgrade replaces the binary and touches no host file, so a fix that lives in
+the skill text or in a hook entry does not reach your agents until they are
+rendered again (#111).
+
+A new binary that has not answered its `version` check within five seconds is
+asked once more, and only on a timeout — a wrong version, or anything on
+stderr, is refused on the first answer; if it times out twice the upgrade says
+`retry`, not `release_invalid`, because a binary being scanned on its first
+run is slow, not wrong.
+
 On Windows the running binary is moved aside, the new one moved into its name,
 checked, and the old one kept as `dropin-miner.exe.previous`. If an older
 DropinMiner process is still running from that `.previous` file, the upgrade
 stops with `previous_in_use` and puts the binary you had back, as with any
-recoverable failure; close old DropinMiner or agent processes and run it again. This is tested on Windows x64 and Windows
+recoverable failure; close old DropinMiner or agent processes and run it again. The
+move aside waits about a second, in a few attempts, for a file something else
+is briefly holding — a scanner or an indexer reading the binary — and only for
+the sharing-violation and access-denied errors that means; any other error
+fails at once, as before. This is tested on Windows x64 and Windows
 arm64.
 
 When it fails, the first word after `upgrade:` says what to do: `retry` (try

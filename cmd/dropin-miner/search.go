@@ -130,13 +130,20 @@ type routerAttempt struct {
 	BodyErr error
 }
 
-// searchCall is everything one search sends.
+// searchCall is everything one search sends. Recency, DomainFilter and
+// MaxResults are absent (nil) unless the --stdin caller supplied them:
+// the router accepts their absence as "use your default", and sending a
+// zeroed value instead would silently override that default with one
+// this client chose, not one the caller or the router asked for.
 type searchCall struct {
-	Endpoint string
-	Key      string
-	Query    string
-	Tier     string
-	Trace    *traceEnvelope
+	Endpoint     string
+	Key          string
+	Query        string
+	Tier         string
+	Recency      *string
+	DomainFilter []string
+	MaxResults   *int
+	Trace        *traceEnvelope
 }
 
 // searchOutcome is the structured result of running a search. Both
@@ -202,6 +209,10 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	var query string
+	var recency *string
+	var domainFilter []string
+	var maxResults *int
+	var view string
 	if machine {
 		// No positional query in machine mode: two sources for the same
 		// value is how a caller ends up sending one and escaping the
@@ -222,6 +233,10 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 		if req.tier != "" {
 			*tier = req.tier
 		}
+		recency = req.recency
+		domainFilter = req.domainFilter
+		maxResults = req.maxResults
+		view = req.view
 	} else {
 		query = strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if query == "" {
@@ -282,12 +297,27 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	ctx, cancel := searchDeadline(*timeout)
 	defer cancel()
 
+	trace, foreignBridge := searchTrace(ops, cfg.Miner, getenv)
+	if foreignBridge {
+		// Said on stderr, and only there. `-format json` prints the router's
+		// own bytes, so there is no envelope of ours to put it in without
+		// rewriting the router's answer; and the machine envelope is what the
+		// MODEL reads, and a model that knows this variable exists is one of
+		// the ways a foreign bridge arrives (#91). A participant debugging a
+		// trace runs the search by hand in the host's terminal, where the
+		// same variables are set and this line is in front of them — the
+		// same place the trace_unsupported retry below is reported.
+		fmt.Fprintln(stderr, "dropin-miner search: ignoring "+bridgeEnv+": this session's host declared the lineage file ("+lineageEnv+") as its trace channel, so a bridge here was written by something else")
+	}
 	out := performSearch(ctx, ops.now, searchCall{
-		Endpoint: strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
-		Key:      key,
-		Query:    query,
-		Tier:     *tier,
-		Trace:    searchTrace(ops, cfg.Miner, getenv),
+		Endpoint:     strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
+		Key:          key,
+		Query:        query,
+		Tier:         *tier,
+		Recency:      recency,
+		DomainFilter: domainFilter,
+		MaxResults:   maxResults,
+		Trace:        trace,
 	})
 	if out.Retried {
 		fmt.Fprintln(stderr, "dropin-miner search: the router answered "+traceUnsupportedCode+"; retrying once without the trace")
@@ -312,7 +342,7 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	if machine {
-		env, code := searchEnvelopeOf(out, &mining)
+		env, code := searchEnvelopeOf(out, &mining, view)
 		emitMachine(stdout, env)
 		return code
 	}
@@ -471,6 +501,15 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	if call.Tier != "" {
 		body["tier"] = call.Tier
 	}
+	if call.Recency != nil {
+		body["recency"] = *call.Recency
+	}
+	if call.DomainFilter != nil {
+		body["domain_filter"] = call.DomainFilter
+	}
+	if call.MaxResults != nil {
+		body["max_results"] = *call.MaxResults
+	}
 	out := searchOutcome{Traced: call.Trace != nil}
 	if out.Traced {
 		body["trace"] = call.Trace
@@ -609,21 +648,42 @@ func postSearch(ctx context.Context, client *http.Client, call searchCall, body 
 	return attempt, nil
 }
 
-// searchTrace picks the envelope for this search: bridge, lineage file,
-// or the per-shell fallback. nil means send none.
-func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *traceEnvelope {
+// searchTrace picks the envelope for this search: the host's own channel —
+// bridge or lineage file — or the per-shell fallback. nil means send none.
+//
+// A search believes its host's channel, not whatever variable it finds (#91).
+// A host has one channel. Those that can rewrite a command hand the envelope
+// over in TOKENDROP_TRACE_BRIDGE; Cursor cannot, so its session-start hook
+// exports TOKENDROP_LINEAGE, and by that declaration says it writes no
+// bridge. For such a search a bridge variable is somebody else's — a stale
+// v0.2.9 hook entry, another host's hook run by this one (#87), a model that
+// read this repository's documentation — and it is dropped unread: not
+// decoded, not compared, not used as a fallback when the lineage file turns
+// out to be missing. foreignBridge reports that this happened, so the caller
+// can say so.
+//
+// The rule is about the channel, not about catching a wrong label: a bridge
+// naming the very harness the host declared is dropped just the same, because
+// its session, turn and text are still not this host's. What it guarantees
+// is that a search never reaches the router labeled with a harness other
+// than the one its host declared. H-R4 (an adapter replaces a bridge it did
+// not write) is untouched: it governs hosts whose channel IS the bridge.
+func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) (env *traceEnvelope, foreignBridge bool) {
 	switch strings.ToLower(getenv("TOKENDROP_TRACE")) {
 	case "off", "0", "false":
-		return nil
+		return nil, false
 	}
 	harness := getenv("TOKENDROP_HARNESS")
+	lineageDeclared := getenv(lineageEnv) != ""
 
 	if bridge := getenv(bridgeEnv); bridge != "" {
-		if env := decodeTraceBridge(bridge); env != nil {
+		if lineageDeclared {
+			foreignBridge = true
+		} else if decoded := decodeTraceBridge(bridge); decoded != nil {
 			if harness != "" {
-				env.Harness = harness
+				decoded.Harness = harness
 			}
-			return capTrace(env)
+			return capTrace(decoded), false
 		}
 	}
 
@@ -632,8 +692,26 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *tra
 		lf   *lineageFile
 		path string
 	)
+	// session is the hashed id of the session this shell was started in,
+	// when the host exported one. It is the test of ownership for the file
+	// the host declared, exactly as it is for the walk (#104).
+	//
+	// The declared path says WHERE a session's lineage lives, not WHOSE it
+	// currently holds (#109). Cursor keys the file by workspace alone, and
+	// every hook event writes the current conversation's id into it, so two
+	// conversations open on one workspace — two chat tabs on a project —
+	// share one file and take turns owning it. Both shells name that same
+	// path. Adopting it by path alone sent one conversation's search to the
+	// router under the other's id, with the other's text, advancing a counter
+	// both share. A file holding another session is therefore not adopted
+	// and not advanced; the search goes on to the walk, which refuses it for
+	// the same reason, and ends at its own per-shell identity under the
+	// declared harness. With no session exported the declared file is
+	// believed as before: every shell started before the variable existed.
+	// A file per conversation is the proper fix and is #109's, not this.
+	session := getenv(sessionEnv)
 	if p := getenv(lineageEnv); p != "" {
-		if l, ok := loadLineage(ops.hook, p); ok && now.Sub(l.UpdatedAt) <= lineageMaxAge {
+		if l, ok := loadLineage(ops.hook, p); ok && now.Sub(l.UpdatedAt) <= lineageMaxAge && (session == "" || l.SessionID == session) {
 			lf, path = l, p
 		}
 	}
@@ -642,7 +720,7 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *tra
 			// harness is what says whose search this is. Without it the walk
 			// answers nothing, because anything it found up the tree would be
 			// another session's (#97).
-			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, now)
+			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, session, now)
 		}
 	}
 	if lf != nil {
@@ -653,7 +731,7 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *tra
 				env.Harness = harness
 			}
 			_ = saveLineage(ops.hook, path, lf, now)
-			return capTrace(env)
+			return capTrace(env), foreignBridge
 		}
 	}
 
@@ -666,7 +744,7 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) *tra
 		Harness:   orString(harness, "cli"),
 		SessionID: traceHash(host + "|" + strconv.Itoa(ops.getppid())),
 		CallID:    traceRandomID(),
-	})
+	}), foreignBridge
 }
 
 // ── the router's answer, as much of it as the miner reads ───────────────
@@ -679,18 +757,56 @@ type routerResponse struct {
 	Session    *struct {
 		ID string `json:"id"`
 	} `json:"session,omitempty"`
-	Usage struct {
-		LatencyMS int64 `json:"latency_ms"`
-	} `json:"usage"`
+	// Decision and Usage are pointers, not values, so a router response
+	// that omits them decodes to nil rather than to a zeroed struct this
+	// client cannot tell apart from a genuine zero — the difference
+	// between "the router said nothing about this" and "the router said
+	// zero", which the machine envelope must preserve (omitempty on the
+	// pointer, never on a value that would print as {} or 0).
+	Decision *routerDecision `json:"decision,omitempty"`
+	Usage    *routerUsage    `json:"usage,omitempty"`
+}
+
+// routerDecision is the router's own account of which arms it ran.
+type routerDecision struct {
+	Tier      string   `json:"tier,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	// Trimmed lists providers the router dropped because the cost
+	// estimate exceeded the tier's ceiling, per the router's own contract
+	// (SKILL.md's "trimmed rather than the request refused"). Absent when
+	// nothing was trimmed.
+	Trimmed []string `json:"trimmed,omitempty"`
+}
+
+// routerUsage is the router's ledger for the whole search: what it cost,
+// whether the answer came from cache, and whether slow-lane arms are
+// still landing.
+type routerUsage struct {
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	CacheHit   bool  `json:"cache_hit,omitempty"`
+	Pending    int   `json:"pending,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type routerCandidate struct {
-	Provider  string           `json:"provider"`
-	Kind      string           `json:"kind"`
-	Status    string           `json:"status"`
-	Answer    string           `json:"answer,omitempty"`
-	Error     string           `json:"error,omitempty"`
-	Citations []routerCitation `json:"citations,omitempty"`
+	Provider   string           `json:"provider"`
+	Kind       string           `json:"kind"`
+	Status     string           `json:"status"`
+	Answer     string           `json:"answer,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Citations  []routerCitation `json:"citations,omitempty"`
+	CostMicros int64            `json:"cost_micros,omitempty"`
+	// CostSource is "reported" when it is the provider's own number, and
+	// something else (typically "modeled") otherwise. Carried through
+	// unread by this client's own logic — a participant reading -format
+	// json is the consumer, not a branch here.
+	CostSource string         `json:"cost_source,omitempty"`
+	Latency    *routerLatency `json:"latency,omitempty"`
+}
+
+type routerLatency struct {
+	TTFBMS  int64 `json:"ttfb_ms,omitempty"`
+	TotalMS int64 `json:"total_ms,omitempty"`
 }
 
 type routerCitation struct {
