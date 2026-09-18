@@ -278,6 +278,41 @@ type lifecycleExclusion struct {
 	home string
 	gate *lifecycleLock
 	ops  []*lifecycleLock
+
+	// created is the operation-lock paths hold() brought into existence,
+	// in the order it took them. Taking a lock opens its file with
+	// O_CREATE (tryLockFile, minerlock_*.go), so probing an installation
+	// that has never flushed creates a flush.lock that was not there
+	// before — #86, where an uninstall -purge-state aborted at its
+	// confirmation printed "No participant state or integrations were
+	// changed" over a new empty flush.lock it had just made.
+	created []string
+
+	// removeCreated is whether release() removes those files when the
+	// operation did not proceed. excludeLifecycle sets it: a destructive
+	// run that stops must leave the installation as it found it.
+	// excludeForUpgrade does not, and deliberately — an upgrade's lock
+	// files are installation furniture that uninstall -binary already
+	// knows how to remove (S19), and the flush lock an upgrade wants
+	// present is created on purpose one line after the exclusion is taken
+	// (ensureUpgradeFlushLock). #86 is about the destructive-abort path;
+	// widening it to upgrade needs its own evidence, not this one's.
+	removeCreated bool
+
+	// applied is set by proceeded(), once the operation has gone on to
+	// change the installation. The default is the safe direction: an
+	// exclusion released without it removes what it made, so a refusal
+	// added later cleans up without having to remember to.
+	applied bool
+}
+
+// proceeded records that the operation went past the point of deciding and
+// is changing the installation, so the lock files it took are now part of
+// that installation rather than something an abort must undo.
+func (ex *lifecycleExclusion) proceeded() {
+	if ex != nil {
+		ex.applied = true
+	}
 }
 
 // excludeLifecycle takes the gate of home, then setup.lock, then — located
@@ -290,7 +325,7 @@ func excludeLifecycle(home string, getenv func(string) string, wait time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	ex := &lifecycleExclusion{home: home, gate: gate}
+	ex := &lifecycleExclusion{home: home, gate: gate, removeCreated: true}
 	if err := ex.hold("setup", filepath.Join(home, setupLockFile)); err != nil {
 		ex.release()
 		return nil, err
@@ -351,12 +386,20 @@ func (ex *lifecycleExclusion) hold(operation, path string) error {
 	if !lockableDir(path) {
 		return nil
 	}
+	// Asked before the open, because the open is what creates it. The two
+	// outcomes that are not "held" need no record: an open that errored
+	// created nothing, and a lock held elsewhere proves the file was
+	// already there, since nobody holds one that does not exist.
+	existed := lexists(path)
 	f, held, err := tryLockFile(path)
 	if err != nil {
 		return fmt.Errorf("probe %s: %w", path, err)
 	}
 	if !held {
 		return &lifecycleActiveError{Operation: operation, Lock: path}
+	}
+	if !existed {
+		ex.created = append(ex.created, path)
 	}
 	ex.ops = append(ex.ops, &lifecycleLock{path: path, f: f})
 	return nil
@@ -374,13 +417,27 @@ func (ex *lifecycleExclusion) releaseOperation(path string) {
 	}
 }
 
-// release lets go of everything, operation locks first, then the gate.
+// release lets go of everything, operation locks first, then the gate, and
+// removes the lock files this exclusion created when the operation never
+// proceeded (#86). Every lock is let go above before any file is removed
+// below, because Windows will not delete a file that is open. A lock file
+// that already existed is never removed: the participant's own flush lock
+// is not this operation's to clean up. Nor is the gate, which is a sibling
+// of the installation and is documented as left behind and named.
 func (ex *lifecycleExclusion) release() {
 	if ex == nil {
 		return
 	}
 	for i := len(ex.ops) - 1; i >= 0; i-- {
 		ex.ops[i].release()
+	}
+	if ex.removeCreated && !ex.applied {
+		for i := len(ex.created) - 1; i >= 0; i-- {
+			// Best-effort: a purge that got as far as removing the file
+			// itself, or a directory already gone, is not a failure to
+			// report over a run that has just said nothing was changed.
+			_ = os.Remove(ex.created[i])
+		}
 	}
 	ex.gate.release()
 }

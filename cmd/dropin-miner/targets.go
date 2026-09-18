@@ -555,13 +555,19 @@ func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntr
 		removed = true
 	}
 	if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
-		switch next, had, ours := removeOurSandboxBlock(existing, entry); {
-		case had && ours:
-			planWrite(ops, t.Label(), paths.codexConfig, next, mode, "remove sandbox block", p)
+		switch r := removeOurSandboxBlock(existing, entry); {
+		case r.had && r.ours:
+			if len(r.kept) > 0 {
+				p.notes = append(p.notes, fmt.Sprintf("%s: keeping %s in %s that dropin-miner did not write: %s",
+					t.Label(), tables(len(r.kept)), paths.codexConfig, strings.Join(r.kept, ", ")))
+			}
+			if len(r.dropped) > 0 {
+				p.notes = append(p.notes, droppedKeysNote(t.Label(), paths.codexConfig, r.dropped))
+			}
+			planWrite(ops, t.Label(), paths.codexConfig, r.next, mode, "remove sandbox block", p)
 			removed = true
-		case had:
-			p.notes = append(p.notes, t.Label()+": left the sandbox block in "+paths.codexConfig+
-				": its writable roots are another installation's, not this one's")
+		case r.had:
+			p.notes = append(p.notes, t.Label()+": left the sandbox block in "+paths.codexConfig+": "+r.why)
 		}
 	}
 	if !removed {
@@ -569,47 +575,77 @@ func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntr
 	}
 }
 
-// removeOurSandboxBlock takes out the marked [sandbox_workspace_write] block
-// only when it is this installation's. The block names no binary and no
-// config — it names DIRECTORIES — so it is attributed the way it is written:
-// its writable roots are the state, intake, sessions and spool directories of
-// one installation, all of them under that installation's home. A block whose
-// roots lie elsewhere widens the sandbox for another installation, and
-// removing it would silence that installation's searches (#73).
-//
-// had says a marked block was there at all; ours says it was this one's.
-func removeOurSandboxBlock(existing []byte, entry binEntry) (next []byte, had, ours bool) {
-	next, had = removeMarkedBlock(existing)
-	if !had {
-		return existing, false, false
-	}
-	if entry.cfg == "" {
-		// Discovery: there is no installation directory to compare against,
-		// and v0.2.9 wrote the block from whatever config it found. Keep
-		// v0.2.9's behavior rather than strand a block nothing can attribute.
-		return next, true, true
-	}
-	home := filepath.Dir(entry.cfg)
-	roots := markedSandboxRoots(existing)
-	if len(roots) == 0 {
-		// A block we cannot read the roots of is one we cannot attribute.
-		return next, true, false
-	}
-	for _, r := range roots {
-		if !pathUnder(r, home) {
-			return next, true, false
-		}
-	}
-	return next, true, true
+// sandboxRemoval is what uninstall concluded about Codex's config.toml.
+type sandboxRemoval struct {
+	next []byte   // the file with our own tables gone
+	had  bool     // a marked block was there at all
+	ours bool     // it is this installation's, and next may be written
+	kept []string // tables inside the markers this client did not write
+	why  string   // why it was left, when ours is false
+	// dropped is the keys inside OUR table the renderer does not write,
+	// which go with the table and are named in the plan (keysWeDidNotWrite).
+	dropped []string
 }
 
-// markedSandboxRoots reads the writable_roots out of the marked block, in the
-// one spelling sandboxSettings writes them: a single line of %q-quoted paths.
-func markedSandboxRoots(existing []byte) []string {
-	block, ok := markedBlock(existing)
-	if !ok {
-		return nil
+// removeOurSandboxBlock takes out the marked [sandbox_workspace_write] table
+// only when it is this installation's, and only that table.
+//
+// Attribution is H5's, unchanged: the block names no binary and no config —
+// it names DIRECTORIES — so its writable roots are read, and roots that do
+// not lie under this installation's home belong to another installation
+// whose searches would go silent if this one removed them (#73).
+//
+// What is new is #82. Codex appends its own tables to the end of
+// config.toml, which put them INSIDE our markers whenever our block was last
+// — which install made it — and v0.2.9 deleted the marker-to-marker byte
+// range. The tester's uninstall left a 0-byte file: folder trust and
+// `[windows] sandbox = "unelevated"` gone, and the following setup restored
+// only our own block. So the tables inside the markers are separated by who
+// wrote them, ours go, and every other one survives in its original bytes,
+// appended below where the block was.
+func removeOurSandboxBlock(existing []byte, entry binEntry) sandboxRemoval {
+	stripped, had := removeMarkedBlock(existing)
+	if !had {
+		return sandboxRemoval{next: existing}
 	}
+	_, region, _, _ := markedRegion(existing)
+	contents, readable := splitCodexBlock(region)
+	if !readable {
+		return sandboxRemoval{next: existing, had: true,
+			why: "it cannot be read as TOML tables, so which of them are ours cannot be decided; remove it by hand"}
+	}
+	if entry.cfg != "" {
+		// Discovery (an empty cfg) has no installation directory to compare
+		// against, and v0.2.9 wrote the block from whatever config it found;
+		// keep that rather than strand a block nothing can attribute.
+		home := filepath.Dir(entry.cfg)
+		roots := markedSandboxRoots(contents.oursText())
+		if len(roots) == 0 {
+			return sandboxRemoval{next: existing, had: true,
+				why: "its writable roots cannot be read, so it cannot be attributed to this installation"}
+		}
+		for _, r := range roots {
+			if !pathUnder(r, home) {
+				return sandboxRemoval{next: existing, had: true,
+					why: "its writable roots are another installation's, not this one's"}
+			}
+		}
+	}
+	return sandboxRemoval{
+		next:    appendTables(stripped, contents.foreignText()),
+		had:     true,
+		ours:    true,
+		kept:    contents.foreignNames(),
+		dropped: keysWeDidNotWrite(contents.oursText()),
+	}
+}
+
+// markedSandboxRoots reads the writable_roots out of OUR table inside the
+// marked block, in the one spelling sandboxSettings writes them: a single
+// line of %q-quoted paths. It is given our table's text rather than the
+// whole block, so a writable_roots line in a table somebody else appended
+// into the block cannot be read as ours (#82).
+func markedSandboxRoots(block string) []string {
 	m := sandboxRootsLine.FindStringSubmatch(block)
 	if m == nil {
 		return nil
@@ -985,6 +1021,9 @@ func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 
 func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
 	removed := false
+	// noted: something of this installation's was seen and left, and said so.
+	// "not installed" beside that sentence would be false (and was printed).
+	noted := false
 	if pathExists(ops, filepath.Dir(paths.hermesSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.hermesSkill))
 		removed = true
@@ -993,9 +1032,26 @@ func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 		if next, had := hermesRemoveBlock(existing); had {
 			planWrite(ops, t.Label(), paths.hermesConfig, next, mode, "remove lineage hook", p)
 			removed = true
+		} else if own := findHermesOwnEntry(existing, refFor(entry)); own.removable() {
+			// #83: our entry under a hooks: block this client did not write.
+			// Exactly the lines the renderer writes go; every other line of
+			// the file is copied as it was read.
+			planWrite(ops, t.Label(), paths.hermesConfig, removeHermesOwnEntry(existing, own), mode,
+				"remove lineage hook from a hooks: block dropin-miner did not write; every other line is kept as it is", p)
+			removed = true
+		} else if own.found {
+			p.notes = append(p.notes, fmt.Sprintf(
+				"%s: this installation's pre_tool_call hook is in %s at %s, and was left there because it %s; remove that entry by hand, or Hermes keeps running it",
+				t.Label(), paths.hermesConfig, own.where(), own.why))
+			noted = true
+		} else if own.mention > 0 {
+			p.notes = append(p.notes, fmt.Sprintf(
+				"%s: line %d of %s names this installation's pre_tool_call hook command, in a place or a form dropin-miner cannot read reliably, so nothing there was changed; if Hermes still runs it, remove it by hand",
+				t.Label(), own.mention, paths.hermesConfig))
+			noted = true
 		}
 	}
-	if !removed {
+	if !removed && !noted {
 		p.skipped = append(p.skipped, t.Label()+": not installed")
 	}
 }

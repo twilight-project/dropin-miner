@@ -39,20 +39,28 @@ if ($env:TOKENDROP_INSTALL_BIN) {
   if (-not $asset) { throw "no release asset named $name in $tag" }
   $sums = $release.assets | Where-Object { $_.name -eq "checksums.txt" }
 
+  # The temporary directory goes on EVERY exit path, not only the happy one.
+  # The checksum branch below throws, and what a bare success-path cleanup
+  # leaves in %TEMP% is the one file the script has just called untrustworthy
+  # (#85). $tmp is named before the try so finally can always see it;
+  # SilentlyContinue covers the case where New-Item itself failed.
   $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("dropin-miner-" + [guid]::NewGuid())
-  New-Item -ItemType Directory -Path $tmp | Out-Null
-  Write-Host "==> Latest release: $tag - downloading $name"
-  Invoke-WebRequest $asset.browser_download_url -OutFile (Join-Path $tmp $name)
-  Invoke-WebRequest $sums.browser_download_url -OutFile (Join-Path $tmp "checksums.txt")
+  try {
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    Write-Host "==> Latest release: $tag - downloading $name"
+    Invoke-WebRequest $asset.browser_download_url -OutFile (Join-Path $tmp $name)
+    Invoke-WebRequest $sums.browser_download_url -OutFile (Join-Path $tmp "checksums.txt")
 
-  $expected = (Get-Content (Join-Path $tmp "checksums.txt") | Where-Object { $_ -match "\s$([regex]::Escape($name))$" }) -split "\s+" | Select-Object -First 1
-  $actual = (Get-FileHash (Join-Path $tmp $name) -Algorithm SHA256).Hash.ToLower()
-  if ($expected -ne $actual) { throw "checksum FAILED for $name - do not run what you downloaded" }
+    $expected = (Get-Content (Join-Path $tmp "checksums.txt") | Where-Object { $_ -match "\s$([regex]::Escape($name))$" }) -split "\s+" | Select-Object -First 1
+    $actual = (Get-FileHash (Join-Path $tmp $name) -Algorithm SHA256).Hash.ToLower()
+    if ($expected -ne $actual) { throw "checksum FAILED for $name - do not run what you downloaded" }
 
-  New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-  Expand-Archive -Path (Join-Path $tmp $name) -DestinationPath $tmp -Force
-  Copy-Item (Join-Path $tmp "dropin-miner.exe") (Join-Path $BinDir "dropin-miner.exe") -Force
-  Remove-Item -Recurse -Force $tmp
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    Expand-Archive -Path (Join-Path $tmp $name) -DestinationPath $tmp -Force
+    Copy-Item (Join-Path $tmp "dropin-miner.exe") (Join-Path $BinDir "dropin-miner.exe") -Force
+  } finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+  }
   $exe = Join-Path $BinDir "dropin-miner.exe"
 }
 

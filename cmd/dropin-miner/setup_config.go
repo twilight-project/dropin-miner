@@ -219,7 +219,14 @@ func renderFreshConfig(v setupValues) ([]byte, error) {
 		return nil, err
 	}
 	writeTOMLLines(&b, mining)
-	b.WriteString("# target_epoch deliberately unset — flush asks the AS which epoch to join.\n")
+	// ASCII, and every comment this client generates into a config is
+	// (asciiGeneratedConfig guards it). This line used to carry an em dash;
+	// Windows PowerShell 5.1 reads a file with no byte-order mark in the
+	// system's ANSI code page, so `Get-Content tokendrop.toml` showed the
+	// participant `\u00e2\u20ac\u201d` where the dash should be (#88). The
+	// rule is ASCII rather than "not that character": the next non-ASCII
+	// punctuation would read exactly as badly.
+	b.WriteString("# target_epoch deliberately unset - flush asks the AS which epoch to join.\n")
 	writeTOMLLines(&b, dirs)
 	b.WriteString("\n")
 

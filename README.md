@@ -31,8 +31,15 @@ dropin-miner setup
 Nothing needs removing first. Run the installer again — npm:
 `npm install -g dropin-miner@latest`, then `dropin-miner setup`. If the old
 installation used a non-default home (`TOKENDROP_HOME` was set for the old
-installer), run the installer or `setup -home` with the same one; setup has
-no other way to find it.
+installer), run the installer, or `dropin-miner setup`, with `TOKENDROP_HOME` set
+to the same one; setup has no other way to find it. `TOKENDROP_HOME` is what
+names a directory as this machine's installation. `setup -home <dir>` on its
+own, for a directory other than that, sets up a *separate* installation there
+and leaves your shell profile (Windows: user environment) and your coding
+agents alone, `-yes` or not — they belong to the machine's own installation,
+and the documented way to make a disposable installation must not repoint your
+real agents at it. It names `dropin-miner agents install -config
+<dir>/tokendrop.toml` as the way to configure agents for that one.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an
 identity is the installation, and nothing set aside is offered. Your wallet,
@@ -100,6 +107,14 @@ the command for each. A set-aside installation is reused only when a person
 says yes at a terminal, `-yes` or not, and the mining question is always
 connect's.
 `setup -dry-run` prints what it would write or move and changes nothing.
+
+Every question here counts only an answer you typed. Interrupt one, or close
+its input, and the run stops there and says so, with a non-zero exit and
+nothing recorded — an unanswered **Enable mining rewards?** leaves no mining
+decision and registers nothing, rather than taking the interrupt for the "no"
+the bare-Enter default would have been. `-yes` answers the questions it
+already answered; it never turns an interrupt into an answer.
+
 Search itself works before you ever visit the claim link — the claim only
 gates the reward, once you say yes to mining. The key never goes into a
 command line or an agent's config; `TOKENDROP_API_KEY` in the environment
@@ -190,7 +205,7 @@ is executed to find out whether it exists.
 | Codex | skill | `codex` on PATH | Bash on macOS and Linux; PowerShell on Windows | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory. A command inside the sandbox can read `credentials.json` (a search needs the key) and the state directory (a flush needs it); on Windows it cannot read the wallet, whose directory keeps its own owner-only access |
 | opencode | AGENTS.md line | `opencode` on PATH | Bash on macOS and Linux; PowerShell on Windows | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | Pi | skill | `pi` on PATH | Bash everywhere (Git Bash on Windows) | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
-| Hermes | skill | `hermes` on PATH | Bash everywhere (Git Bash on Windows) | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once) |
+| Hermes | skill | `hermes` on PATH | Bash everywhere (Git Bash on Windows) | session, call and turn only: a `pre_tool_call` hook rewrites the command. Its hook payload carries no assistant text and no compaction state, so neither is sent | `<HERMES_HOME or ~/.hermes>/skills/dropin-miner/`, a `hooks:` block in `config.yaml` (loads next session; approve the hook once). A `hooks:` section of your own is never edited on install: the entry is printed for you to paste, and once it is there install reports it already set up. Uninstall removes that entry only when it is exactly as dropin-miner writes it and names this installation; every other line of the file is kept as it is, and an entry it cannot be that sure of is left and reported with its line numbers — including the form Hermes itself rewrites the entry into when it saves `config.yaml`, which install and status still count as set up |
 | anything else | rules line | not detected; `setup -with <id>` names one | Bash | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only what belongs to the installation
@@ -204,7 +219,28 @@ rather than a config, so it is matched by its writable roots lying under this
 installation. Anything that names another installation is left in place and
 reported, the same as the shell-profile block; so is anything that names no
 installation at all, since a file uninstall cannot attribute is not one it will
-delete. In practice only the opencode plugin and the Pi extension can be in
+delete.
+
+Inside Codex's block the same question is asked one level down. Codex appends
+its own tables — a project's folder trust, a `[windows] sandbox` choice — to
+the end of `config.toml`, which puts them between our markers whenever our
+block is last, and install had made it last. So removal takes out the one table
+this client writes and keeps every other table in the block, in its original
+bytes, moved below where the block was; the plan says how many it is keeping
+and names them. Install does the same rather than rewriting over them, and
+moves any it finds inside the markers out below them, so the host's next append
+lands outside our block. A block that cannot be read as TOML tables is left
+exactly as it is and reported, because deleting a region this client cannot
+parse is how a config gets destroyed. Before anything classified as ours is
+deleted or rewritten it is decoded and must be exactly our one table, with
+nothing nested in it — so a table header the scan fails to recognize can cost a
+refusal, never a table. The one thing that does go with our table is a key you
+added inside it yourself: the table between the markers is ours to render, so
+the plan names that key before it goes and tells you to move it to a table of
+your own first. For the same reason "already installed"
+compares our own table against what the renderer would write, not the file's
+last bytes against a rebuilt file: with anything at all after our block the
+latter differed every time and planned a write on every run. In practice only the opencode plugin and the Pi extension can be in
 that state, and only if they were written before this version — every skill and
 hook command has named its config since v0.2.9 — so uninstall names the file
 and tells you that one `agents install` would stamp it, after which a later
@@ -595,9 +631,13 @@ and is left. Without that record nothing in the environment is guessed at; it
 prints what to remove by hand. Anything that runs another installation's
 binary, or a profile block naming another config, is left and reported. Your
 wallet, registration, stored key, recorded searches and config stay, and
-nothing is revoked; it ends by saying how to keep using them (`-config
-~/.tokendrop/tokendrop.toml`, or `dropin-miner setup` again). A bare `connect`
-afterwards would register this machine anew.
+nothing is revoked; it ends by saying how to keep using them. That is
+`dropin-miner setup -home ~/.tokendrop`, which finds this state and reuses it —
+the same agent, the same wallet, no new registration — or `-config
+~/.tokendrop/tokendrop.toml` passed to each command. Not a bare `dropin-miner
+connect`: uninstall has just removed the profile block (on Windows, the user
+environment) that named this installation, so with nothing naming it, connect
+would register this machine anew.
 
 `-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
 binary running and no package manager owns it, together with the
@@ -626,6 +666,10 @@ While uninstall runs it holds a lock that setup, connect and flush wait for, so
 none of them starts underneath it. A plain uninstall refuses to start while
 setup is running; `-binary` and `-purge-state` also refuse while connect or
 flush is. Those are excluded for as long as uninstall holds their locks.
+Holding a lock creates its file if it was not there yet, so a run that stops
+before it changes anything — a confirmation answered wrong, a refusal — removes
+exactly the lock files it made itself, and never one that was already there.
+"Nothing was changed" means the installation is as it was found.
 
 The wallet in `~/.tokendrop` is the only copy unless you kept the 24 words.
 Instead of purging, you can set the directory aside as
