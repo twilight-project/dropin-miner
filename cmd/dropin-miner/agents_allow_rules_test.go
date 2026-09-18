@@ -3,7 +3,7 @@ package main
 // #114: an allow rule for this installation's binary and config has one
 // current spelling. A superseded one is replaced, not added beside.
 //
-// The fixtures below are spellings ruleIsOurs recognises that the current
+// The fixtures below are spellings ruleIsOurs recognizes that the current
 // renderer does not write -- a fully bare one, and the PowerShell
 // call-operator one. They stand in for "a spelling this client has written
 // that is no longer current", which is a state the file reaches on any
@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -31,8 +32,33 @@ func seedAllow(t *testing.T, m *fakeMachine, rules ...string) {
 	m.files[claudeSettingsPath] = append(b, '\n')
 }
 
+// installedEntry is the binary and config the command itself will resolve
+// for this machine. Taken from resolveEntry rather than typed, because
+// resolveEntry puts the config through filepath.Abs: on Windows the typed
+// /home/u/.tokendrop/tokendrop.toml resolves to C:\home\u\... and a rule
+// naming the typed one is then, correctly, a rule for a different
+// installation. Both Windows runners read the first version of this file
+// that way and were right to.
+func installedEntry(t *testing.T, ops agentOps) binEntry {
+	t.Helper()
+	entry, _, err := resolveEntry(ops, testCfg, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.command == "" || entry.cfg == "" {
+		t.Fatalf("resolveEntry gave nothing to build a rule from: %+v", entry)
+	}
+	return entry
+}
+
+// foreignCfg is a second installation's config beside this one's, spelled
+// the way this OS spells a path.
+func foreignCfg(entry binEntry) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(entry.cfg)), "dm-disposable", setupConfigFile)
+}
+
 // supersededSpellings are two rules for bin and cfg that ruleIsOurs
-// recognises and claudeAllowRules does not write.
+// recognizes and claudeAllowRules does not write.
 func supersededSpellings(t *testing.T, bin, cfg string) (bare, powershell string) {
 	t.Helper()
 	bare = "Bash(" + bin + " search -config " + cfg + ":*)"
@@ -40,7 +66,7 @@ func supersededSpellings(t *testing.T, bin, cfg string) (bare, powershell string
 	ref := installationRef{bins: []string{bin}, cfg: cfg}
 	for _, r := range []string{bare, powershell} {
 		if !ruleIsOurs(r, ref) {
-			t.Fatalf("this fixture is meant to be a rule of ours in an older spelling, and is not recognised as one: %s", r)
+			t.Fatalf("this fixture is meant to be a rule of ours in an older spelling, and is not recognized as one: %s", r)
 		}
 		for _, current := range claudeAllowRules(binEntry{command: bin, cfg: cfg}) {
 			if r == current {
@@ -53,15 +79,13 @@ func supersededSpellings(t *testing.T, bin, cfg string) (bare, powershell string
 
 func TestASupersededAllowRuleIsReplacedRatherThanAddedBeside(t *testing.T) {
 	m, ops := newFakeMachine("claude")
-	const bin = "/home/u/.tokendrop/bin/dropin-miner"
-	const foreignCfg = "/home/u/dm-disposable/tokendrop.toml"
-	entry := binEntry{command: bin, cfg: testCfg}
-	bare, powershell := supersededSpellings(t, bin, testCfg)
+	entry := installedEntry(t, ops)
+	bare, powershell := supersededSpellings(t, entry.command, entry.cfg)
 
 	// The participant's own rule, two superseded spellings of ours, and one
 	// belonging to a second installation that shares this binary.
 	const mine = "Bash(git status:*)"
-	foreign := "Bash(" + bin + " search -config " + foreignCfg + ":*)"
+	foreign := "Bash(" + entry.command + " search -config " + foreignCfg(entry) + ":*)"
 	seedAllow(t, m, mine, bare, powershell, foreign)
 
 	if code, out, errOut := runAgents(t, ops, nil, "install", "-yes", "-config", testCfg, "-client", "claude"); code != exitOK {
@@ -105,11 +129,10 @@ func TestASupersededAllowRuleIsReplacedRatherThanAddedBeside(t *testing.T) {
 // records it rather than claiming it as new.
 func TestUninstallRemovesASupersededAllowRuleToo(t *testing.T) {
 	m, ops := newFakeMachine("claude")
-	const bin = "/home/u/.tokendrop/bin/dropin-miner"
-	const foreignCfg = "/home/u/dm-disposable/tokendrop.toml"
-	bare, powershell := supersededSpellings(t, bin, testCfg)
+	entry := installedEntry(t, ops)
+	bare, powershell := supersededSpellings(t, entry.command, entry.cfg)
 	const mine = "Bash(git status:*)"
-	foreign := "Bash(" + bin + " search -config " + foreignCfg + ":*)"
+	foreign := "Bash(" + entry.command + " search -config " + foreignCfg(entry) + ":*)"
 	seedAllow(t, m, mine, bare, powershell, foreign)
 
 	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-yes", "-config", testCfg, "-client", "claude"); code != exitOK {
@@ -131,8 +154,7 @@ func TestUninstallRemovesASupersededAllowRuleToo(t *testing.T) {
 // them: the set is what is current, not its arrangement.
 func TestAnAllowRuleSetAlreadyCurrentIsLeftInPlace(t *testing.T) {
 	m, ops := newFakeMachine("claude")
-	const bin = "/home/u/.tokendrop/bin/dropin-miner"
-	current := claudeAllowRules(binEntry{command: bin, cfg: testCfg})
+	current := claudeAllowRules(installedEntry(t, ops))
 	if len(current) < 3 {
 		t.Fatalf("this test interleaves the participant's rule among ours and needs at least three: %q", current)
 	}

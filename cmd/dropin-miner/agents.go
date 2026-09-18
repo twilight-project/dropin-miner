@@ -1166,7 +1166,7 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 // want, and reports whether it changed anything.
 //
 // A rule was added when its exact text was absent, and a rule whose text had
-// changed was therefore never recognised as the same rule: it stayed, beside
+// changed was therefore never recognized as the same rule: it stayed, beside
 // its replacement, for good. On the Windows machine of the 0.2.11 release
 // check that file held two rules for this binary and this config before the
 // check and three after one uninstall-and-install cycle, differing only in
@@ -1179,9 +1179,9 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 // So a rule for this installation's binary and config, in any spelling this
 // client has ever written, is the same rule. ruleIsOurs already decides that,
 // through the same commandIsOurs that tells a hook entry of ours from another
-// installation's, so an old spelling is recognised and another installation's
+// installation's, so an old spelling is recognized and another installation's
 // rule -- which shares our binary -- is not touched. This is H3b for allow
-// rules: recognising the old spelling is what makes the replacement possible,
+// rules: recognizing the old spelling is what makes the replacement possible,
 // and it is the thing exact-text matching cannot do.
 //
 // Ours are replaced as a set rather than one by one, because they ARE a set:
