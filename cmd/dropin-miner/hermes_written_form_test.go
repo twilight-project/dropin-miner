@@ -147,36 +147,49 @@ func TestAnotherInstallationsEntryInTheFormHermesWritesIsUntouched(t *testing.T)
 // It is also why a mutation switching it off left the whole package green
 // until this test existed: every path to it went through a scan that had
 // already asked. This asks the net itself.
+// Both platforms' entries on every runner, through hermesResavedEntries, as
+// the fixture tests do: the command this client writes on Windows begins with
+// the double quote of its own argv quoting, so the scalar carrying it is
+// single-quoted there and plain on POSIX. Taking the entry from the runner
+// instead means a POSIX machine never sees the Windows shape, which is how
+// the first version of this test passed here and failed on both Windows
+// runners.
 func TestTheHermesNetOnTheWidenedPathRefusesAnotherInstallationsCommand(t *testing.T) {
-	entry, cmd := ourHermesEntry(t)
-	other := strings.Replace(cmd, " hermes pre_tool_call", "", 1)
-	other = strings.Replace(other, "-config ", "-config /tmp/disposable/", 1) + " hermes pre_tool_call"
-	if hermesCommandIsOurHook(other, refFor(entry)) {
-		t.Fatalf("the other installation's command is still ours under H5, so this case tests nothing: %q", other)
-	}
+	for name, tc := range hermesResavedEntries {
+		cmd, ok := hermesHookCommand(tc.entry, tc.windows)
+		if !ok {
+			t.Fatalf("%s: could not render the command", name)
+		}
+		other, ok := hermesHookCommand(binEntry{command: tc.entry.command, cfg: "/tmp/disposable/tokendrop.toml"}, tc.windows)
+		if !ok || hermesCommandIsOurHook(other, refFor(tc.entry)) {
+			t.Fatalf("%s: the other installation's command is still ours under H5: %q", name, other)
+		}
 
-	// The same file shape either way: one entry, written the way Hermes
-	// writes it, folded over two lines.
-	fileFor := func(c string) string {
-		at := strings.LastIndex(c, " ")
-		return "hooks:\n  pre_tool_call:\n" + hermesCommandPrefix + c[:at] + "\n        " + c[at+1:] + "\n      matcher: terminal\n"
-	}
-	for name, tc := range map[string]struct {
-		cmd  string
-		want bool
-	}{
-		"ours":                      {cmd, true},
-		"another installation's":    {other, false},
-		"ours with a word appended": {cmd + " --extra", false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			lines := hermesLines([]byte(fileFor(tc.cmd)))
-			const at = 2 // the command line
-			e := hermesOwnEntry{found: true, start: 0, end: len(lines)}
-			if got := hermesRunIsOurs(lines, e, at, refFor(entry)); got != tc.want {
-				t.Fatalf("hermesRunIsOurs = %v, want %v, for:\n%s", got, tc.want, fileFor(tc.cmd))
-			}
-		})
+		// One entry, in the form Hermes leaves: the scalar in the style its
+		// dumper would choose, folded onto a second line.
+		fileFor := func(c string) string {
+			q := hermesWrittenScalar(c)
+			at := strings.LastIndex(q, " ")
+			return "hooks:\n  pre_tool_call:\n" + hermesCommandPrefix + q[:at] + "\n        " + q[at+1:] + "\n      matcher: terminal\n"
+		}
+		for sub, tt := range map[string]struct {
+			cmd  string
+			want bool
+		}{
+			"ours":                      {cmd, true},
+			"another installation's":    {other, false},
+			"ours with a word appended": {cmd + " --extra", false},
+		} {
+			t.Run(name+"/"+sub, func(t *testing.T) {
+				file := fileFor(tt.cmd)
+				lines := hermesLines([]byte(file))
+				const at = 2 // the command line
+				e := hermesOwnEntry{found: true, start: 0, end: len(lines)}
+				if got := hermesRunIsOurs(lines, e, at, refFor(tc.entry)); got != tt.want {
+					t.Fatalf("hermesRunIsOurs = %v, want %v, for:\n%s", got, tt.want, file)
+				}
+			})
+		}
 	}
 }
 

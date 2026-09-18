@@ -93,7 +93,7 @@ func TestHermesDifferential(t *testing.T) {
 	}
 	postZero := "  post_tool_call:\n  - command: 'zero-indented'\n    matcher: y\n"
 	head := "hooks:\n  pre_tool_call:\n"
-	plain := "    - command: " + cmd + "\n      matcher: terminal\n"
+	plain := hermesCommandPrefix + hermesWrittenScalar(cmd) + "\n      matcher: terminal\n"
 
 	// #106 and #125: the same generator, with our own markers around the body.
 	// A marked block is removed only when it is provably ours and provably
@@ -319,6 +319,47 @@ func TestHermesDifferential(t *testing.T) {
 	}
 }
 
+// hermesWrittenScalar is cmd in the style a dumper would give it: plain when
+// a plain scalar reads back as itself, single-quoted otherwise — the simplest
+// form that round-trips, which is the rule PyYAML follows and which
+// testdata/hermes shows it following (POSIX plain, Windows single-quoted,
+// because a Windows command begins with the double quote of its own argv
+// quoting and a scalar that begins with one is a double-quoted scalar).
+//
+// Typing the command bare instead is what made two Windows-only CI failures
+// on this PR: the generated file was not the YAML it was meant to be, the
+// reader read a double-quoted scalar and refused it exactly as it should, and
+// only the runners that quote paths that way could see it.
+func hermesWrittenScalar(cmd string) string {
+	if got, ok := hermesDecodeScalar(cmd); ok && got == cmd {
+		return cmd
+	}
+	return hermesYAMLSingleQuoted(cmd)
+}
+
+// The rule above, on every runner, for both platforms' commands — the
+// generator takes its own command from the runner it is on, so without this
+// the Windows shape is only ever seen by a Windows runner.
+func TestTheGeneratorWritesAScalarThatReadsBackAsTheCommand(t *testing.T) {
+	for name, tc := range hermesResavedEntries {
+		cmd, ok := hermesHookCommand(tc.entry, tc.windows)
+		if !ok {
+			t.Fatalf("%s: could not render the command", name)
+		}
+		scalar := hermesWrittenScalar(cmd)
+		quoted := strings.HasPrefix(scalar, "'")
+		if quoted == !tc.windows {
+			// POSIX commands are plain, Windows commands single-quoted,
+			// exactly as testdata/hermes shows the dumper writing them.
+			t.Errorf("%s: single-quoted = %v for a windows = %v command: %s", name, quoted, tc.windows, scalar)
+		}
+		got, ok := hermesDecodeScalar(scalar)
+		if !ok || got != cmd {
+			t.Errorf("%s: the scalar does not read back as the command\n got %q, %v\nwant %q", name, got, ok, cmd)
+		}
+	}
+}
+
 // hermesWrittenEntry is our entry as Hermes' PyYAML re-dump leaves it: the
 // command a plain scalar broken at a space before column 80 with each
 // continuation indented under the key, and the matcher unquoted. An emulation
@@ -329,7 +370,7 @@ func hermesWrittenEntry(cmd string) string {
 		width = 80
 		cont  = "        " // PyYAML indents a folded scalar under its key
 	)
-	line := hermesCommandPrefix + cmd
+	line := hermesCommandPrefix + hermesWrittenScalar(cmd)
 	var out []string
 	for len(line) > width {
 		brk := strings.LastIndex(line[:width+1], " ")
