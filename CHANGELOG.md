@@ -149,17 +149,24 @@ apply first.
   inside a nested workspace, and a leftover temporary file: #104, #100, in
   PR #107. Two Cursor conversations on one workspace sharing a lineage file
   and relabelling each other's searches: #109, whose immediate guard is in
-  PR #107 and whose proper fix is its own. Self-update timing on a loaded or
-  scanned machine: #95, #78, in PR #107. Cursor CLI launched from Git Bash
-  on Windows: #101. Codex config order after a reinstall: #99. The empty
-  update lock left after an upgrade: #103. An upgrade leaving the host skill
-  and hook files as the previous version rendered them, which is why the
-  step above exists, and a second installation's `agents install` overwriting
-  the machine installation's skills: #111, #112. Hermes once Hermes has saved
-  its own config — status, the marked block's ownership check, and
-  uninstall's by-hand step: #105, #106, #108. The Claude Code PowerShell tool
-  and text written in the same message as the search, which are host limits:
-  #77, #93.
+  PR #107 and whose proper fix is its own. Cursor searches reaching the
+  router without their session, because the hook's exported environment does
+  not reach the shell: #118. On a Cursor PowerShell terminal profile on
+  Windows, the query and the stored assistant text both reaching the router
+  double-encoded — inherited from 0.2.10, not a regression of this release:
+  #117, #113. Self-update timing on a loaded or scanned machine: #95, #78,
+  in PR #107. Cursor CLI launched from Git Bash on Windows: #101. Codex
+  config order after a reinstall: #99. The empty update lock left after an
+  upgrade, and a `connect.lock` left behind by a setup interrupted at the
+  mining question: #103, #115. An upgrade leaving the host skill and hook
+  files as the previous version rendered them, which is why the step above
+  exists, a second installation's `agents install` overwriting the machine
+  installation's skills, and `agents install` accumulating superseded allow
+  rules for the same binary and config instead of replacing them: #111,
+  #112, #114. Hermes once Hermes has saved its own config — status, the
+  marked block's ownership check, and uninstall's by-hand step: #105, #106,
+  #108. The Claude Code PowerShell tool and text written in the same message
+  as the search, which are host limits: #77, #93.
 
 - **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
   exercise of the replacement transaction, promised in v0.2.9 and again in
