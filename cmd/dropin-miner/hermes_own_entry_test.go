@@ -179,11 +179,16 @@ var hermesLeftAlone = []hermesCase{
 		note: "does not have the matcher line",
 	},
 	{
-		name: "a double-quoted scalar: not how the renderer writes it",
+		// Still left after #108 widened removal to the form Hermes writes:
+		// that form is a plain or single-quoted scalar, which is what its
+		// dumper produces. A double-quoted one decodes to the same command and
+		// is written by neither, so deleting on its say-so would go past the
+		// evidence. Left, and the plan says so.
+		name: "a double-quoted scalar: written by neither the renderer nor Hermes",
 		config: func(c string) string {
 			return "hooks:\n  pre_tool_call:\n    - command: " + strconv.Quote(c) + "\n      matcher: \"terminal\"\n" + hermesAfter
 		},
-		note: "Hermes rewrites config.yaml in its own style",
+		note: "nor as Hermes rewrites it when it saves config.yaml",
 	},
 	{
 		name: "a trailing comment on the command line",
@@ -605,7 +610,7 @@ func TestACommandQuotedInABlockScalarIsNotAHook(t *testing.T) {
 // The net on its own, handed a run the scan would never produce: whatever
 // the scan concluded, lines that are not the renderer's do not go.
 func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
-	_, cmd := ourHermesEntry(t)
+	entry, cmd := ourHermesEntry(t)
 	file := "hooks:\n  pre_tool_call:\n" + foreignEntry + entryLines(cmd)
 	lines := hermesLines([]byte(file))
 	const at = 4 // our command line
@@ -622,8 +627,8 @@ func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
 		{"more lines than the renderer writes", 0, 6, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, at); got != tc.want {
-				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v", tc.start, tc.end, got, tc.want)
+			if got := hermesRunIsOurs(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, at, refFor(entry)); got != tc.want {
+				t.Fatalf("hermesRunIsOurs[%d,%d) = %v, want %v", tc.start, tc.end, got, tc.want)
 			}
 		})
 	}
@@ -635,7 +640,7 @@ func TestTheHermesNetRefusesARunThatIsNotRendered(t *testing.T) {
 // scan's own check for this left the net silent and an orphaned `timeout:`
 // in the participant's config, which is how the half came to exist.
 func TestTheHermesNetRefusesARunThatLeavesSomethingOfItsOwnBehind(t *testing.T) {
-	_, cmd := ourHermesEntry(t)
+	entry, cmd := ourHermesEntry(t)
 	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
 	for _, tc := range []struct {
 		name       string
@@ -654,8 +659,8 @@ func TestTheHermesNetRefusesARunThatLeavesSomethingOfItsOwnBehind(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lines := hermesLines([]byte(tc.file))
-			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, 2); got != tc.want {
-				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
+			if got := hermesRunIsOurs(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, 2, refFor(entry)); got != tc.want {
+				t.Fatalf("hermesRunIsOurs[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
 			}
 		})
 	}
@@ -665,7 +670,7 @@ func TestTheHermesNetRefusesARunThatLeavesSomethingOfItsOwnBehind(t *testing.T) 
 // own, so every line in it can be the renderer's while it sits under somebody
 // else's event. The run must begin under what the renderer puts above it.
 func TestTheHermesNetRefusesARunThatIsNotUnderTheRenderersHeadings(t *testing.T) {
-	_, cmd := ourHermesEntry(t)
+	entry, cmd := ourHermesEntry(t)
 	ours := entryLines(cmd)
 	for _, tc := range []struct {
 		name       string
@@ -683,8 +688,8 @@ func TestTheHermesNetRefusesARunThatIsNotUnderTheRenderersHeadings(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lines := hermesLines([]byte(tc.file))
-			if got := hermesRunIsRendered(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, tc.at); got != tc.want {
-				t.Fatalf("hermesRunIsRendered[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
+			if got := hermesRunIsOurs(lines, hermesOwnEntry{found: true, start: tc.start, end: tc.end}, tc.at, refFor(entry)); got != tc.want {
+				t.Fatalf("hermesRunIsOurs[%d,%d) = %v, want %v, in:\n%s", tc.start, tc.end, got, tc.want, tc.file)
 			}
 		})
 	}

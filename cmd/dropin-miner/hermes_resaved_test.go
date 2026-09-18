@@ -119,6 +119,19 @@ func TestTheHermesResavedFixturesAreNotStale(t *testing.T) {
 	}
 }
 
+// hermesBeforeTheHooksKey is everything above the one `hooks:` line: for a
+// fixture holding our entry and nothing else under it, exactly what uninstall
+// must leave. Taken from the fixture rather than from what install was handed,
+// because Hermes' dumper rewrote the whole file on its way here.
+func hermesBeforeTheHooksKey(t *testing.T, fixture string) string {
+	t.Helper()
+	at := strings.Index(fixture, "hooks:\n")
+	if at < 0 || strings.Count(fixture, "\nhooks:\n") > 1 {
+		t.Fatalf("not one hooks: line in:\n%s", fixture)
+	}
+	return fixture[:at]
+}
+
 // hermesAroundOurBlock is the fixture with our block taken out by LINE — the
 // markers, what is between them, and the one blank line install puts in front
 // — which is what uninstall must leave. Derived from the fixture rather than
@@ -286,17 +299,37 @@ func TestOurHookIsFoundInTheFormHermesWrites(t *testing.T) {
 			if !own.found {
 				t.Fatalf("not found in the form Hermes writes:\n%s", resaved)
 			}
-			if own.removable() {
-				t.Fatalf("removal by line is limited to the renderer's own form; this is Hermes':\n%s", resaved)
+			// #108: removal is no longer limited to the renderer's own form.
+			// Until this commit the two lines below read "removal by line is
+			// limited to the renderer's own form; this is Hermes'" and
+			// required own.why to name that, which is the deferral #108 was
+			// filed against: for every participant whose Hermes has saved once
+			// — all of them, eventually — uninstall ended in a manual step.
+			if !own.removable() {
+				t.Fatalf("not removable in the form Hermes writes (%s):\n%s", own.why, resaved)
 			}
-			if !strings.Contains(own.why, "Hermes rewrites config.yaml") {
-				t.Errorf("why = %q", own.why)
+			if own.why != "" {
+				t.Errorf("removable and yet left because it %q", own.why)
 			}
 			// The lines it names are the entry's: from `- command:` through
 			// `matcher:`, and nothing of the participant's.
 			lines := strings.Split(resaved, "\n")
 			if !strings.Contains(lines[own.first-1], "- command:") || !strings.Contains(lines[own.last-1], "matcher:") {
 				t.Errorf("named %s, which is not the entry:\n%s", own.where(), resaved)
+			}
+			// And what goes is the entry and its heading lines, never a line
+			// of the participant's: this fixture is our entry alone under
+			// hooks:, so the whole of both goes and what came above it stays.
+			//
+			// Which, for the fixture whose original had no final newline, is
+			// `model: gpt` WITH one: Hermes re-dumped the file, its dumper
+			// ends every file with a newline, and the note that recorded the
+			// original state was a comment PyYAML dropped. There is nothing
+			// left on disk that says the file once ended without one, and
+			// inventing it back would be an edit nobody asked for.
+			want := hermesBeforeTheHooksKey(t, resaved)
+			if got := string(removeHermesOwnEntry([]byte(resaved), own)); got != want {
+				t.Errorf("uninstall left\n%q\nwant\n%q", got, want)
 			}
 
 			m, ops := newFakeMachine("hermes")
@@ -318,21 +351,18 @@ func TestOurHookIsFoundInTheFormHermesWrites(t *testing.T) {
 			}
 
 			var uninstall agentPlan
-			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: "/home/u/.hermes/skills/dropin-miner/SKILL.md"}, tc.entry, &uninstall)
-			if len(uninstall.writes) != 0 {
-				t.Fatalf("uninstall edited a form it must only report: %+v", uninstall.writes)
+			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, &uninstall)
+			if len(uninstall.writes) != 1 {
+				t.Fatalf("uninstall planned %d writes, want the one that removes the entry; notes: %v", len(uninstall.writes), uninstall.notes)
 			}
-			notes := strings.Join(uninstall.notes, "\n")
-			for _, want := range []string{"this installation's pre_tool_call hook", own.where(), "remove that entry by hand"} {
-				if !strings.Contains(notes, want) {
-					t.Errorf("uninstall did not say %q:\n%s", want, notes)
-				}
+			if got := string(uninstall.writes[0].contents); got != want {
+				t.Errorf("uninstall left\n%q\nwant the participant's file\n%q", got, want)
+			}
+			if notes := strings.Join(uninstall.notes, "\n"); strings.Contains(notes, "remove that entry by hand") {
+				t.Errorf("uninstall still asks for the manual step #108 is about:\n%s", notes)
 			}
 			if got := strings.Join(uninstall.skipped, "\n"); strings.Contains(got, "not installed") {
-				t.Errorf("uninstall says both that our hook is there and that Hermes is not installed:\n%s\n%s", notes, got)
-			}
-			if got := string(m.files[hermesConfigPath]); got != resaved {
-				t.Errorf("the file was changed:\n%s", got)
+				t.Errorf("uninstall says both that our hook is there and that Hermes is not installed:\n%s", got)
 			}
 		})
 	}
@@ -424,11 +454,13 @@ func TestTheRealCommandsFindOurHookInTheFormHermesWrites(t *testing.T) {
 	if !strings.Contains(status, "installed (skill+hook)") {
 		t.Errorf("status:\n%s", status)
 	}
+	// #108: uninstall takes it out, where it used to name lines 4-6 and ask
+	// the participant to delete them.
 	code, out, errOut = runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
-	if code != exitOK || !strings.Contains(out, "remove that entry by hand") || !strings.Contains(out, "lines 4-6") {
+	if code != exitOK || strings.Contains(out, "remove that entry by hand") {
 		t.Errorf("uninstall: exit %d\n%s%s", code, out, errOut)
 	}
-	if got := string(m.files[hermesConfigPath]); got != resaved {
-		t.Errorf("the file was changed:\n%s", got)
+	if got, want := string(m.files[hermesConfigPath]), "model: gpt\n"; got != want {
+		t.Errorf("uninstall left\n%q\nwant the participant's own file\n%q", got, want)
 	}
 }
