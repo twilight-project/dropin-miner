@@ -13,9 +13,14 @@ package main
 // on the router's prose.
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/url"
+	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
@@ -33,15 +38,19 @@ const (
 // them are exit 2 / usage_error / fix_input: the caller has something to
 // correct, and no amount of retrying corrects it.
 const (
-	codeInputTooLarge      = "input_too_large"
-	codeInvalidUTF8        = "invalid_utf8"
-	codeInvalidJSON        = "invalid_json"
-	codeUnsupportedVersion = "unsupported_version"
-	codeUnknownField       = "unknown_field"
-	codeMissingQuery       = "missing_query"
-	codeEmptyQuery         = "empty_query"
-	codeUnexpectedArgument = "unexpected_argument"
-	codeInvalidFlags       = "invalid_flags"
+	codeInputTooLarge       = "input_too_large"
+	codeInvalidUTF8         = "invalid_utf8"
+	codeInvalidJSON         = "invalid_json"
+	codeUnsupportedVersion  = "unsupported_version"
+	codeUnknownField        = "unknown_field"
+	codeMissingQuery        = "missing_query"
+	codeEmptyQuery          = "empty_query"
+	codeUnexpectedArgument  = "unexpected_argument"
+	codeInvalidFlags        = "invalid_flags"
+	codeInvalidRecency      = "invalid_recency"
+	codeInvalidDomainFilter = "invalid_domain_filter"
+	codeInvalidMaxResults   = "invalid_max_results"
+	codeInvalidView         = "invalid_view"
 )
 
 // inputError is a local refusal with a stable machine code. It is a type
@@ -55,19 +64,37 @@ func (e *inputError) Error() string { return e.Msg }
 
 func inputErrorf(code, msg string) *inputError { return &inputError{Code: code, Msg: msg} }
 
-// machineSearchRequest is the v1 request, after validation.
+// machineSearchRequest is the v1 request, after validation. The three
+// router options are pointers/slices left nil when the caller's request
+// did not carry them, so the body this client sends can tell "absent"
+// from "present and empty" the same way the wire request does.
 type machineSearchRequest struct {
-	query string
-	tier  string
+	query        string
+	tier         string
+	recency      *string
+	domainFilter []string
+	maxResults   *int
+	// view is "" (absent, meaning "full") or the caller's validated
+	// choice of "full" or "merged" — never any other string, since
+	// validateView refuses anything else before this is ever set.
+	view string
 }
 
 // wireSearchRequest is the decoded shape. Pointers distinguish an absent
 // field from a present empty one, which is the difference between
-// missing_query and empty_query.
+// missing_query and empty_query. recency, domainFilter and maxResults are
+// decoded as raw JSON first so a type mismatch (a number where a string
+// was expected, and so on) can be answered with a message naming the
+// field, rather than the generic "unknown field" a struct-typed decode
+// failure would give no matter which field caused it.
 type wireSearchRequest struct {
-	Version *int    `json:"version"`
-	Query   *string `json:"query"`
-	Tier    *string `json:"tier"`
+	Version      *int            `json:"version"`
+	Query        *string         `json:"query"`
+	Tier         *string         `json:"tier"`
+	Recency      json.RawMessage `json:"recency"`
+	DomainFilter json.RawMessage `json:"domain_filter"`
+	MaxResults   json.RawMessage `json:"max_results"`
+	View         json.RawMessage `json:"view"`
 }
 
 // decodeMachineSearchRequest reads exactly one v1 request from r.
@@ -132,7 +159,163 @@ func decodeMachineSearchRequest(r io.Reader) (machineSearchRequest, error) {
 	if wire.Tier != nil {
 		req.tier = *wire.Tier
 	}
+	if len(wire.Recency) > 0 {
+		recency, err := validateRecency(wire.Recency)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.recency = &recency
+	}
+	if len(wire.DomainFilter) > 0 {
+		domainFilter, err := validateDomainFilter(wire.DomainFilter)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.domainFilter = domainFilter
+	}
+	if len(wire.MaxResults) > 0 {
+		maxResults, err := validateMaxResults(wire.MaxResults)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.maxResults = &maxResults
+	}
+	if len(wire.View) > 0 {
+		view, err := validateView(wire.View)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.view = view
+	}
 	return req, nil
+}
+
+// isJSONNull reports whether raw is the literal JSON null, distinct from
+// an absent field (wire.Recency etc. is empty, not "null", when the
+// caller never wrote the key at all) and distinct from a present zero
+// value. Checked explicitly, ahead of every option's own unmarshal: for a
+// pointer-shaped field like recency and max_results, json.Unmarshal of
+// null into the destination happens to leave it at its Go zero value with
+// no error, which coincidentally fails the bounds check below and gets
+// refused anyway — but "domain_filter" unmarshals null into a nil slice
+// exactly as it would for an absent field, so relying on the coincidence
+// would silently treat a caller's explicit null as "say nothing". A
+// caller who writes the key with a null value has said something, even
+// if that something is "I don't know" — never the same as not asking.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// validRecencyWords is the router's own closed vocabulary for "recency",
+// mirrored here so a bad value costs the caller no router call.
+var validRecencyWords = map[string]bool{"day": true, "week": true, "month": true, "year": true}
+
+func validateRecency(raw json.RawMessage) (string, *inputError) {
+	if isJSONNull(raw) {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must not be null`)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must be a string`)
+	}
+	if !validRecencyWords[s] {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must be one of "day", "week", "month", "year"`)
+	}
+	return s, nil
+}
+
+// domainFilterMax is the router's own cap on the "domain_filter" array,
+// mirrored here so an oversized list costs the caller no router call.
+const domainFilterMax = 16
+
+func validateDomainFilter(raw json.RawMessage) ([]string, *inputError) {
+	if isJSONNull(raw) {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must not be null`)
+	}
+	var hosts []string
+	if err := json.Unmarshal(raw, &hosts); err != nil {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must be an array of strings`)
+	}
+	// An explicit [] is a caller sending a filter that excludes every
+	// hostname, which is not a request this client can send meaningfully
+	// — the router does not document what an empty domain_filter does,
+	// and silently forwarding it is far more likely to be a caller
+	// mistake than a deliberate "no domains" request. Refused the same
+	// way a bad entry is, rather than passed through as "no filter."
+	if len(hosts) == 0 {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must not be empty`)
+	}
+	if len(hosts) > domainFilterMax {
+		return nil, inputErrorf(codeInvalidDomainFilter,
+			fmt.Sprintf(`"domain_filter" accepts at most %d hostnames`, domainFilterMax))
+	}
+	for _, h := range hosts {
+		if !bareHostname(h) {
+			return nil, inputErrorf(codeInvalidDomainFilter,
+				fmt.Sprintf(`"domain_filter" entry %q must be a bare hostname: no scheme, path, port or whitespace`, h))
+		}
+	}
+	return hosts, nil
+}
+
+// bareHostname is deliberately strict rather than a URL parse: a scheme
+// or a path both put a "/" in the string, and a port puts a ":" in it, so
+// refusing both catches every shape the router's own rule names without
+// needing to parse the entry as a URL first (which would accept things a
+// bare hostname is not, such as a scheme-relative "//host").
+func bareHostname(h string) bool {
+	if h == "" {
+		return false
+	}
+	if strings.ContainsAny(h, ":/") {
+		return false
+	}
+	for _, r := range h {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateMaxResults(raw json.RawMessage) (int, *inputError) {
+	if isJSONNull(raw) {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must not be null`)
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must be an integer`)
+	}
+	if n < 1 || n > 25 {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must be between 1 and 25`)
+	}
+	return n, nil
+}
+
+// validateView refuses anything but the two shapes this client renders.
+// An absent "view" never reaches here — wire.View is empty and
+// decodeMachineSearchRequest leaves req.view at its zero value, which
+// means "full" everywhere it is read. Decoded as raw JSON first, like
+// recency, domain_filter and max_results: a plain *string field would let
+// an explicit "view": null decode to the same nil the field has when the
+// caller never wrote the key at all, silently treating a stated null as
+// absent instead of refusing it — the same gap already closed for
+// domain_filter. An explicit "" is not "full" either: a caller who wrote
+// the key owes a real value, the same as any other option here.
+func validateView(raw json.RawMessage) (string, *inputError) {
+	if isJSONNull(raw) {
+		return "", inputErrorf(codeInvalidView, `"view" must not be null`)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", inputErrorf(codeInvalidView, `"view" must be a string`)
+	}
+	switch s {
+	case "full", "merged":
+		return s, nil
+	default:
+		return "", inputErrorf(codeInvalidView, `"view" must be "full" or "merged"`)
+	}
 }
 
 // ── the envelope ────────────────────────────────────────────────────────
@@ -156,11 +339,54 @@ type searchEnvelope struct {
 // bytes and puts the one piece of model-influenceable text in this
 // envelope somewhere it serves no purpose.
 type machineResult struct {
-	RequestID  string             `json:"request_id"`
-	Chosen     int                `json:"chosen"`
-	SessionID  string             `json:"session_id,omitempty"`
-	LatencyMS  int64              `json:"latency_ms,omitempty"`
-	Candidates []machineCandidate `json:"candidates"`
+	RequestID string `json:"request_id"`
+	Chosen    int    `json:"chosen"`
+	SessionID string `json:"session_id,omitempty"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	// Decision and Usage are nil, and so absent from the envelope, exactly
+	// when the router's own response omitted them — never a zeroed struct
+	// standing in for "the router didn't say."
+	Decision *machineDecision `json:"decision,omitempty"`
+	Usage    *machineUsage    `json:"usage,omitempty"`
+	// Merged is present in every view: it is the whole reason the option
+	// exists, so an agent that asked for "merged" still gets it, and one
+	// that didn't ask gets it anyway ("an agent may always read merged
+	// first" — S3).
+	Merged []machineMergedPage `json:"merged"`
+	// Candidates is a pointer so "view":"merged" can omit the key
+	// entirely (a nil pointer with omitempty) while "full" — the
+	// default — always carries it, even on the (real-router-never-sends-
+	// this) edge case of zero candidates: a non-nil pointer to an empty
+	// slice is not "empty" to encoding/json, only a nil pointer is.
+	Candidates *[]machineCandidate `json:"candidates,omitempty"`
+}
+
+// machineMergedPage is one page after S3's cross-provider merge: the
+// citations of every "ok" candidate, deduplicated by normalized URL.
+type machineMergedPage struct {
+	URL      string   `json:"url"`
+	Title    string   `json:"title,omitempty"`
+	Snippet  string   `json:"snippet,omitempty"`
+	FoundBy  []string `json:"found_by"`
+	BestRank int      `json:"best_rank"`
+}
+
+// machineDecision is the router's decision block, carried through: which
+// tier ran, which providers it dispatched, and which it dropped for cost.
+type machineDecision struct {
+	Tier      string   `json:"tier,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	Trimmed   []string `json:"trimmed,omitempty"`
+}
+
+// machineUsage is the router's cost and cache ledger for the whole
+// search. The maintainer's call, 2026-09-18: a participant should see
+// what a search costs the network even though it is free to them.
+type machineUsage struct {
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	CacheHit   bool  `json:"cache_hit,omitempty"`
+	Pending    int   `json:"pending,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type machineCandidate struct {
@@ -171,6 +397,12 @@ type machineCandidate struct {
 	Answer    string            `json:"answer,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	Citations []machineCitation `json:"citations,omitempty"`
+	// CostMicros and LatencyMS are per-candidate, unlike the search-wide
+	// Usage above: each arm has its own cost and its own clock. LatencyMS
+	// is the candidate's total latency (latency.total_ms on the wire),
+	// not its time to first byte.
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type machineCitation struct {
@@ -185,25 +417,45 @@ type machineCitation struct {
 // prettier would corrupt the thing the caller asked for. The terminal
 // sanitizing belongs to the human renderer, where a control byte would
 // actually do something.
-func machineResultOf(s routerSuccess) *machineResult {
+func machineResultOf(s routerSuccess, view string) *machineResult {
 	r := s.Response
 	out := &machineResult{
-		RequestID:  s.RequestID,
-		Chosen:     r.Chosen,
-		LatencyMS:  r.Usage.LatencyMS,
-		Candidates: make([]machineCandidate, 0, len(r.Candidates)),
+		RequestID: s.RequestID,
+		Chosen:    r.Chosen,
+		Merged:    mergedPagesOf(r),
 	}
 	if r.Session != nil {
 		out.SessionID = r.Session.ID
 	}
+	if r.Usage != nil {
+		out.LatencyMS = r.Usage.LatencyMS
+		out.Usage = &machineUsage{
+			CostMicros: r.Usage.CostMicros,
+			CacheHit:   r.Usage.CacheHit,
+			Pending:    r.Usage.Pending,
+			LatencyMS:  r.Usage.LatencyMS,
+		}
+	}
+	if r.Decision != nil {
+		out.Decision = &machineDecision{
+			Tier:      r.Decision.Tier,
+			Providers: r.Decision.Providers,
+			Trimmed:   r.Decision.Trimmed,
+		}
+	}
+	candidates := make([]machineCandidate, 0, len(r.Candidates))
 	for i, c := range r.Candidates {
 		mc := machineCandidate{
-			Provider: c.Provider,
-			Kind:     c.Kind,
-			Status:   c.Status,
-			Chosen:   i == r.Chosen,
-			Answer:   c.Answer,
-			Error:    c.Error,
+			Provider:   c.Provider,
+			Kind:       c.Kind,
+			Status:     c.Status,
+			Chosen:     i == r.Chosen,
+			Answer:     c.Answer,
+			Error:      c.Error,
+			CostMicros: c.CostMicros,
+		}
+		if c.Latency != nil {
+			mc.LatencyMS = c.Latency.TotalMS
 		}
 		for _, cit := range c.Citations {
 			// A conversion, not a field-by-field copy, on purpose: if the
@@ -212,9 +464,119 @@ func machineResultOf(s routerSuccess) *machineResult {
 			// carry it. A literal would silently drop it instead.
 			mc.Citations = append(mc.Citations, machineCitation(cit))
 		}
-		out.Candidates = append(out.Candidates, mc)
+		candidates = append(candidates, mc)
+	}
+	// "merged" is the one view that omits candidates; every other value
+	// validateView accepts ("full") or leaves absent keeps them.
+	if view != "merged" {
+		out.Candidates = &candidates
 	}
 	return out
+}
+
+// mergePage accumulates one merged page while r.Candidates is walked in
+// order. foundBy is tracked in a set alongside the ordered slice so a
+// provider whose own citation list somehow repeats a URL is not counted
+// twice.
+type mergePage struct {
+	page     machineMergedPage
+	foundSet map[string]bool
+}
+
+// normalizeMergeKey is S3's URL identity rule: scheme dropped, host
+// lowercased WITH its port kept (u.Host, not u.Hostname() — ":8080" and no
+// port are different endpoints, not the same page twice), one leading
+// "www." dropped, a trailing slash dropped, fragment dropped (url.Parse
+// never puts it in Path or RawQuery, so nothing further is needed to drop
+// it) — the query string is kept, because two pages differing only in
+// query are, by the spec, distinct pages, not the same one. The path is
+// EscapedPath(), not Path: Path is already percent-decoded, so "/a%2Fb"
+// and "/a/b" would collide on it even though they name different
+// resources (a literal "/" inside one path segment versus a second
+// segment).
+//
+// ok is false, and the citation must be dropped from merged entirely
+// rather than keyed to "", when the URL is not a fetchable page at all:
+// an opaque URL (mailto:, tel:, javascript: — Host and Path both empty
+// because there is no "//authority/path" to have one), the empty string,
+// or anything that fails to parse. Keying these to "" would merge a
+// mailto: link from one provider with a tel: link from another, and with
+// every other citation that also failed to name a page.
+func normalizeMergeKey(raw string) (key string, ok bool) {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false
+	}
+	if u.Host == "" && u.Path == "" {
+		return "", false
+	}
+	host := strings.ToLower(u.Host)
+	host = strings.TrimPrefix(host, "www.")
+	path := strings.TrimSuffix(u.EscapedPath(), "/")
+	key = host + path
+	if u.RawQuery != "" {
+		key += "?" + u.RawQuery
+	}
+	return key, true
+}
+
+// mergedPagesOf builds S3's result.merged: the citations of every "ok"
+// candidate, deduplicated by normalizeMergeKey, ordered by how many
+// providers found a page (most first), then by the best (smallest)
+// 0-based rank any one of them gave it, then by which page this walk saw
+// first. sort.SliceStable is what makes that last rule free: accs starts
+// in first-appearance order, and a stable sort never reorders equal keys.
+func mergedPagesOf(r routerResponse) []machineMergedPage {
+	byKey := make(map[string]*mergePage)
+	var accs []*mergePage
+	for _, c := range r.Candidates {
+		if c.Status != "ok" {
+			continue
+		}
+		for rank, cit := range c.Citations {
+			key, keyable := normalizeMergeKey(cit.URL)
+			if !keyable {
+				continue
+			}
+			acc, ok := byKey[key]
+			if !ok {
+				acc = &mergePage{
+					page: machineMergedPage{
+						URL:      cit.URL,
+						Title:    cit.Title,
+						Snippet:  cit.Snippet,
+						BestRank: rank,
+					},
+					foundSet: map[string]bool{},
+				}
+				byKey[key] = acc
+				accs = append(accs, acc)
+			}
+			if len(cit.Snippet) > len(acc.page.Snippet) {
+				acc.page.Snippet = cit.Snippet
+			}
+			if rank < acc.page.BestRank {
+				acc.page.BestRank = rank
+			}
+			if !acc.foundSet[c.Provider] {
+				acc.foundSet[c.Provider] = true
+				acc.page.FoundBy = append(acc.page.FoundBy, c.Provider)
+			}
+		}
+	}
+	sort.SliceStable(accs, func(i, j int) bool {
+		a, b := accs[i], accs[j]
+		if len(a.page.FoundBy) != len(b.page.FoundBy) {
+			return len(a.page.FoundBy) > len(b.page.FoundBy)
+		}
+		return a.page.BestRank < b.page.BestRank
+	})
+	pages := make([]machineMergedPage, 0, len(accs))
+	for _, acc := range accs {
+		pages = append(pages, acc.page)
+	}
+	return pages
 }
 
 // machineMining is the economic half of the answer, and it is separate
@@ -385,7 +747,7 @@ func machineCodeLike(s string) (string, bool) {
 // It reads the normalized request id off the outcome rather than the raw
 // body, so the identity in the envelope is the identity the observation
 // was recorded against.
-func searchEnvelopeOf(out searchOutcome, mining *machineMining) (searchEnvelope, int) {
+func searchEnvelopeOf(out searchOutcome, mining *machineMining, view string) (searchEnvelope, int) {
 	c := classifySearch(out)
 	env := searchEnvelope{
 		machineHeader: newMachineHeader("search", c.ExitCode, c.Code, c.Retryable, c.Action),
@@ -398,7 +760,7 @@ func searchEnvelopeOf(out searchOutcome, mining *machineMining) (searchEnvelope,
 	}
 	if out.ok() {
 		env.RequestID = out.Success.RequestID
-		env.Result = machineResultOf(out.Success)
+		env.Result = machineResultOf(out.Success, view)
 		return env, c.ExitCode
 	}
 	if out.HasRouterErr {

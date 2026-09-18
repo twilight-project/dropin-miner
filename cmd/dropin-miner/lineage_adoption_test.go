@@ -90,7 +90,8 @@ func (p *lineageProbe) seqOf(t *testing.T, path string) int {
 }
 
 func (p *lineageProbe) trace(env map[string]string) *traceEnvelope {
-	return searchTrace(p.ops, config.Miner{SessionsDir: adoptSessions}, func(k string) string { return env[k] })
+	trace, _ := searchTrace(p.ops, config.Miner{SessionsDir: adoptSessions}, func(k string) string { return env[k] })
+	return trace
 }
 
 // A sidecar written by host A is not adopted by a search from host B running

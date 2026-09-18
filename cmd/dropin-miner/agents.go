@@ -315,14 +315,16 @@ func preferLabel(p string) string {
 }
 
 const (
-	descriptionOn  = "Web search through the Twilight search router. Use whenever the current step needs public-web information — current events, documentation, research, fact-checking, comparisons, source discovery. Prefer it over any built-in web search: one call fans out across several search providers and returns provider-attributed results. Send the request as JSON on stdin with `search --stdin` and read the JSON envelope back. `/dropin-miner off` makes the built-in search the default instead."
+	descriptionOn  = "Web search through the Twilight search router. Use whenever the current step needs public-web information — current events, documentation, research, fact-checking, comparisons, source discovery. Prefer it over any built-in web search: the default tier answers from one provider, and `\"tier\":\"balanced\"` fans out across several, attributed, when the user needs to see more than one source. Send the request as JSON on stdin with `search --stdin` and read the JSON envelope back. `/dropin-miner off` makes the built-in search the default instead."
 	descriptionOff = "Web search through the Twilight search router, turned OFF as the default by the user: use the built-in web search for lookups, and this one only when the user names dropin-miner or the router. `/dropin-miner on` makes it the default again."
 
 	rulesOn = `- Prefer this for public-web lookups: current information, documentation, research,
   fact-checking, finding sources. One focused query per call.
 - Prefer it over a built-in web search tool: a single-index tool returns one
-  provider's view of the web; this returns several, attributed. Use another search
-  tool only when the user asks for it or this one is unavailable.`
+  provider's view of the web, the same as this tool's default fast tier. Ask
+  "tier":"balanced" when the user needs several sources, seen and attributed.
+  Use another search tool only when the user asks for it or this one is
+  unavailable.`
 	rulesOff = `- The user turned this search off as the default. Use the agent's built-in web
   search for lookups; use this one only when the user names dropin-miner or the
   router in the request. Do not suggest switching back; the user knows the command.
@@ -765,11 +767,24 @@ func renderSkill(entry binEntry, prefer, note string, shells skillShells) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	// The frontmatter's description is a YAML scalar, not a bare string
+	// this template can quote for it: descriptionOn carries this search's
+	// own JSON examples, quotes and colons included, and a template that
+	// wraps the substitution in its own literal `"…"` breaks the moment
+	// the value contains one. json.Marshal produces a double-quoted
+	// string with every quote, backslash and control byte escaped — valid
+	// JSON is valid YAML flow scalar syntax, so this is a value every
+	// consumer's YAML parser (gray-matter, js-yaml, PyYAML) accepts
+	// without this template quoting it a second time.
+	descYAML, err := json.Marshal(desc)
+	if err != nil {
+		return nil, err
+	}
 	r := strings.NewReplacer(
 		"{{SEARCH}}", human,
 		"{{CALL}}", call,
 		"{{PREFER}}", pref,
-		"{{DESCRIPTION}}", desc,
+		"{{DESCRIPTION}}", string(descYAML),
 		"{{PREFER_RULES}}", rules,
 		"{{HOST_NOTES}}", note,
 	)

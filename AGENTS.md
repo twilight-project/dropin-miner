@@ -142,7 +142,18 @@ govulncheck.
     prove standalone in a declared shell's syntax and writes its own, and leaves a command carrying
     one it cannot remove exactly as it found it. The trace is unauthenticated metadata either way:
     the binary cannot prove where an environment variable came from, and nothing treats a harness
-    value as evidence of origin.
+    value as evidence of origin. **A search believes its host's channel, not whatever variable it
+    finds** (`searchTrace`): a host that exported `TOKENDROP_LINEAGE` has declared the lineage file
+    as its channel and writes no bridge, so a bridge beside it is dropped unread — never decoded,
+    never a fallback when the declared file is missing — and reported on stderr only, because the
+    machine envelope is what the model reads and a model that knows the variable is one of the ways
+    a foreign bridge arrives (#91). With `TOKENDROP_SESSION` exported, a lineage file — declared, or
+    found by the walk — is used only when it holds that session; a shell that exports none is
+    served exactly as before, and two Cursor conversations sharing one workspace file is #109's own
+    fix, not this rule's. **A host started by another host as a shell command inherits the outer
+    host's declared channel, and so carries the outer session and label.** That is chosen, not a
+    gap: the exported environment is the declaration, and the inner search is work the outer
+    session asked for.
 17. **Verified replacement and explicit destruction.** `dropin-miner upgrade` fetches only from the
     compiled-in canonical `twilight-project/dropin-miner` GitHub release origin — the one exception
     to invariant 5 — over HTTPS, with no participant credential, following only its bounded GitHub
@@ -321,6 +332,29 @@ each line names the file that owns the rule and the test that proves it.
   `hermes_hook.go` is Hermes' own, and sends less because its host payload carries less.
   `trace_boundaries_test.go`'s `TestEveryJSHostRendersTheSharedTraceSource` keeps the splice
   honest; `pi_extension_test.go` and `hermes_hook_test.go` guard the two adapters.
+- **Who is calling a Claude-format hook** — `hook.go` owns it: `claudeEntryEvent` names the five
+  entry points `agents install` writes for Claude Code and the event each is installed under, and
+  `runByAnotherHost` decides from the **payload**, never the environment. Cursor loads
+  `~/.claude/settings.json` and runs those hooks with its own payload (#87); a payload carrying
+  `cursor_version`, or a `hook_event_name` that is not byte for byte the installed event, gets
+  nothing written, nothing spawned, nothing printed and exit 0 — one flush per Cursor turn
+  instead of two, and no Cursor command rewritten with a `claude-code` bridge. A payload that
+  names no event is not evidence and is served as before. The three real Cursor payloads are in
+  `testdata/hook/`. `hook_caller_test.go`'s
+  `TestOneCursorEventStartsOneFlushWithBothHostsInstalled` is the double flush,
+  `TestLineageStandsDownForCursorWhateverTheToolName` is the accident the tool-name rule used to
+  hide, and `TestTheCallerGateNamesExactlyTheEventsTheInstallWrites` holds the event table to
+  `claudeHooks`' own output so a wrong entry cannot silence a hook inside Claude Code itself.
+- **Whose lineage file a search may use** — `search.go`'s `searchTrace` owns the channel rule and
+  the declared file's session guard; `miner.go`'s `lineageForCwd` owns the walk, which with a
+  session exported climbs past a file of another session to the searching session's own, and
+  without one is exactly #97's harness rule. `miner.go`'s `replaceViaTemp` is the one writer
+  behind the lineage files, the window state and the flush stamp: a failed write or rename removes
+  its temporary file, and the sweep takes only `<file>.<pid>.tmp` of another pid older than
+  `lineageMaxAge` — any lineage file's for a lineage write, only its own for the other two, since
+  the stamp's directory is shared and the window state can live in TMPDIR. Guards:
+  `search_channel_test.go`, `lineage_session_test.go`, `lineage_declared_session_test.go` and
+  `temp_cleanup_test.go`, all asserted on the bytes the router receives or the files left behind.
 - **Setup and the installers' bridge** — `setup.go` owns the order (binary, previous
   installation, owner-only directories, adoption, config, connect, environment, agents) and
   the rule that the mining question stays connect's: `-yes` never answers it, and
@@ -470,7 +504,19 @@ each line names the file that owns the rule and the test that proves it.
   `TestRollbackReRendersWithTheBinaryRolledBackTo`. `replace_test.go`'s
   `TestAFailedSecondUpgradeLeavesPreviousByteIdentical` and `acceptance_test.go`'s
   `TestReplacementAcceptanceWithTheRunningImage` (real processes, on every CI runner including
-  Windows arm64) guard them.
+  Windows arm64) guard them. Two bounded retries, and no others. `candidate.go`: a candidate that
+  has not answered `version` is asked once more, and only on a timeout decided by the package's
+  own clock — a wrong version, a malformed line, a byte on stderr or a failure to start is
+  evidence and is refused on one call — the frozen five-second budget is not raised, and two
+  timeouts are `replacement_failed` (`retry`), never `candidate_invalid` (#95;
+  `candidate_retry_test.go`, whose evidence rows answer correctly on their second call so a retry
+  would show as an acceptance). `replace.go`'s `moveAside`: the Windows move-aside waits about a
+  second, five attempts, only for the sharing-violation and access-denied errors of a file
+  something else is briefly holding (`transientlyHeld`, constant false off Windows); a read-only
+  directory fails earlier, at `reserve` (#78; `move_aside_test.go` for the policy on every OS,
+  `rename_windows_test.go` for a real forced hold on the Windows runners, which CI runs without
+  `-v` — to see them run, push a throwaway branch with a verbose step as a draft PR inside the
+  fork, never against upstream).
 
 ## Testing discipline — learned the hard way; hold them
 - **A test's name is not its assertion.** A green test can encode the bug.
