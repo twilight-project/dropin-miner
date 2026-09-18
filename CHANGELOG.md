@@ -13,6 +13,148 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.11 — 2026-09-18
+
+0.2.11 carries the rest of the fixes from 0.2.9's field validation. Two of
+them reach installations that are working today: the one regression 0.2.10
+shipped, where Cursor on Windows with a Git Bash terminal was taught a
+command that mangled a non-ASCII query instead of failing on it, and a
+permission fix for every Claude Code participant on default settings, whose
+searches were prompted one at a time or refused outright. The advisory
+v0.2.10 promised for its Windows wallet fix is published as
+GHSA-w246-j75w-wh8g.
+
+Coming from 0.2.10 or 0.2.9: run `dropin-miner upgrade` on a native install,
+or `npm install -g dropin-miner@latest` on an npm install. There is nothing
+else to do — wallet, identity, credential, recorded searches and config are
+all kept. `upgrade -rollback` puts the previous version back with no network.
+Coming from earlier: the older entries below apply first.
+
+- **Claude Code: a search no longer prompts or is refused.** The hook that
+  rewrites a search to carry the trace bridge now answers the permission
+  question for exactly the command the skill renders — the rendered search
+  rebuilt and compared, naming this installation's own binary and config,
+  nothing looser. Because the rewrite puts the bridge before the binary, no
+  installed allow rule could match what actually ran: an interactive session
+  asked on every search, and a session on default settings refused it as
+  obfuscated. The allow rules are still installed, for hosts and versions
+  that do not run this hook, and a search this installation never rendered
+  is still left to the permission system.
+
+- **Cursor on Windows: the terminal is yours, so the skill teaches both
+  forms.** Which shell Cursor runs is whatever the participant's terminal
+  profile says, so the skill now teaches a runnable form for each and labels
+  them by terminal — "If your terminal is PowerShell", "If your terminal is
+  Git Bash". 0.2.10 declared that cell PowerShell alone, which is true of a
+  default install and of the Agent CLI and false of an editor set to Git
+  Bash: there bash expanded the PowerShell form's encoding line before
+  PowerShell ever saw it, and `café 東京` arrived as `caf? ??`. The search
+  succeeded and answered a different question, which is worse than one that
+  cannot run at all.
+
+- **A search carries only its own host's lineage.** The walk that looks up
+  the directory tree for a session's trace file now adopts one only when the
+  searching host has said what it is and the file names that same host. A
+  host that writes no lineage of its own used to take whichever file it
+  found above it: a Cursor CLI search in a subdirectory, and a plain
+  terminal search in the same tree, both reached the router as Claude Code,
+  carrying that session's id and its assistant text, and advancing its
+  counter. Present identically in 0.2.9, on every platform.
+
+- **Uninstall removes only this installation's integrations.** An agent
+  integration is this installation's when it runs one of this installation's
+  binaries *and* names this installation's config — both, not either. Two
+  installations sharing one binary, which is what `setup -home` makes, each
+  planned the removal of the other's hooks, skills and allow rules. What is
+  not this installation's is now left in place and reported, saying whose it
+  is.
+
+- **Cursor is found however it was installed.** Detection answers with
+  `cursor`, `cursor-agent` or `~/.cursor`, so the Agent CLI and an installed
+  editor whose participant never added the shell command are both found, not
+  only a `cursor` command on PATH. `setup` and `agents status` print which
+  of the three was the evidence, and a host nobody found now reads "not
+  found" instead of a claim about PATH.
+
+- **`setup -home` no longer reaches past the installation it names.** This
+  machine's installation is `TOKENDROP_HOME`, or `~/.tokendrop`; an explicit
+  `-home` naming any other directory is a separate installation, and setup
+  now leaves the shell profile and the coding agents alone for it, `-yes` or
+  not, naming the steps it skipped and `agents install -config
+  <home>/tokendrop.toml` as the command that sets that installation's agents
+  up. Before, a disposable installation planned the real user's agents and
+  environment against the scratch config. Relocating the real installation
+  is done with `TOKENDROP_HOME`; a `-home` that names the default, however
+  it is spelled or linked, still counts as the default.
+
+- **Setup's questions abort on an interrupt.** Ctrl+C at "Enable mining
+  rewards?", or at any question the binary asks, now aborts the operation:
+  nothing recorded, nothing written, nothing sent, and a non-zero exit.
+  Before, the absence of an answer was read as an empty line, an empty line
+  is not "yes", and a mining decision the participant never made was saved
+  and reused by the next run without asking.
+
+- **Codex: uninstall keeps what Codex added inside our block.** Codex
+  appends its own tables to the end of its config, which is where our block
+  sits, so removal marker to marker took them with it — one tester's folder
+  trust and sandbox choice, on the host whose sandbox settings decide
+  whether a search records at all. Uninstall now removes only the one table
+  this client writes, keeps anything else found between the markers and
+  moves it to the end of the file, and refuses rather than cut when it
+  cannot establish what a marked block contains.
+
+- **Hermes: a hooks block that already holds our entry is not a refusal.** A
+  config whose `hooks:` block already carried our entry was refused on every
+  run, and because setup had not written it, nothing tracked it: it was
+  never listed and never removed, while Hermes went on invoking it. Install
+  now reports it as already set up and `agents status` counts it, including
+  in the form Hermes itself writes when it saves its own config; uninstall
+  removes the entry when it is exactly what this client writes, and
+  otherwise names its lines and says how to remove them by hand. A file the
+  scan cannot read reliably gets a warning and never an edit, and a `hooks:`
+  block without our entry still refuses, in the same words as before.
+
+- **Windows installer and lifecycle leftovers.** `install.ps1` now removes
+  the download on every exit, instead of leaving an archive in `%TEMP%` that
+  its own checksum step had just called untrustworthy. And an `uninstall
+  -purge-state` or `-binary` that aborts removes the lock file its own run
+  created, rather than leaving behind one that was never there; a lock the
+  participant already had is never removed.
+
+- **Output that tells the truth.** Each host's writes and removals are
+  grouped under its own heading in the setup and uninstall plans, instead of
+  a host with only removals printing its lines under the previous host's
+  name. The hint after an uninstall names `setup -home`, which finds the
+  state that was left and reuses the same agent and the same wallet, ahead
+  of the bare `connect` that would register the machine anew. Generated
+  config comments carry an ASCII dash. Setup's closing line names the steps
+  it skipped rather than reporting that everything was already in place. And
+  a flush that obtains authorization, or finds it already held, clears a
+  stale authorization failure from `status` instead of leaving it for an
+  unrelated delivery to clear.
+
+- **Documented.** The wallet directory variable the profile block sets
+  (`TOKENDROP_WALLET_DIR`), and the keyfile passphrase the wallet prompt
+  asks for and what it protects.
+
+- **Deferred to 0.2.12.** Hosts running each other's hooks, and a
+  model-written trace prefix: #87, #91, in PR #107. Lineage inside a nested
+  workspace, and a leftover temporary file: #104, #100, in PR #107.
+  Self-update timing on a loaded or scanned machine: #95, #78, in PR #107.
+  Cursor CLI launched from Git Bash on Windows: #101. Codex config order
+  after a reinstall: #99. The empty update lock left after an upgrade: #103.
+  Hermes once Hermes has saved its own config — status, the marked block's
+  ownership check, and uninstall's by-hand step: #105, #106, #108. The
+  Claude Code PowerShell tool and text written in the same message as the
+  search, which are host limits: #77, #93.
+
+- **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
+  exercise of the replacement transaction, stated in v0.2.9 and again in
+  v0.2.10, still has not run — no such machine has been available. Pi and
+  Hermes have been run live on Windows; on macOS and Linux they still rest
+  on reading each host's own source, not a live run. The upgrade acceptance
+  from 0.2.10 runs after this tag, so this entry does not claim it.
+
 ## v0.2.10 — 2026-09-17
 
 0.2.10 is the stabilization release: the fixes from 0.2.9's field validation
