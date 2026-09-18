@@ -19,10 +19,10 @@ rewritten to match newer behaviour; the newer entry says what changed.
 them reach installations that are working today: the one regression 0.2.10
 shipped, where Cursor on Windows with a Git Bash terminal was taught a
 command that mangled a non-ASCII query instead of failing on it, and a
-permission fix for every Claude Code participant on default settings, whose
-searches were prompted one at a time or refused outright. The advisory
-v0.2.10 promised for its Windows wallet fix is published as
-GHSA-w246-j75w-wh8g.
+permission fix for every Claude Code participant in manual permission mode,
+or in a headless run, whose searches were prompted one at a time or refused
+outright. The advisory v0.2.10 promised for its Windows wallet fix is
+published as GHSA-w246-j75w-wh8g.
 
 Coming from 0.2.10 or 0.2.9: run `dropin-miner upgrade` on a native install,
 or `npm install -g dropin-miner@latest` on an npm install, and then run
@@ -40,11 +40,13 @@ apply first.
   question for exactly the command the skill renders — the rendered search
   rebuilt and compared, naming this installation's own binary and config,
   nothing looser. Because the rewrite puts the bridge before the binary, no
-  installed allow rule could match what actually ran: an interactive session
-  asked on every search, and a session on default settings refused it as
-  obfuscated. The allow rules are still installed, for hosts and versions
-  that do not run this hook, and a search this installation never rendered
-  is still left to the permission system.
+  installed allow rule could match what actually ran: in manual permission
+  mode every search asked, and a headless run refused it outright as
+  obfuscated. Automatic mode was never affected — its classifier allows what
+  the heuristic refused — which is why this went unseen for a release. The
+  allow rules are still installed, for hosts and versions that do not run
+  this hook, and a search this installation never rendered is still left to
+  the permission system.
 
 - **Cursor on Windows: the terminal is yours, so the skill teaches both
   forms.** Which shell Cursor runs is whatever the participant's terminal
