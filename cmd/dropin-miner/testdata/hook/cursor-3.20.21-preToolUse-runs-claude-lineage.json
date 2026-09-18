@@ -1,0 +1,19 @@
+{
+  "conversation_id": "00000000-0000-4000-8000-000000000000",
+  "generation_id": "00000000-0000-4000-8000-000000000000",
+  "model": "grok-4.6",
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "\"/Users/u/.tokendrop/bin/dropin-miner\" search -config \"/Users/u/.tokendrop/tokendrop.toml\" --stdin <<'JSON'\n{\"version\":1,\"query\":\"example query\"}\nJSON",
+    "cwd": "",
+    "timeout": 30000
+  },
+  "tool_use_id": "00000000-0000-4000-8000-000000000000",
+  "cwd": "",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [],
+  "user_email": "redacted",
+  "transcript_path": "/Users/u/.cursor/projects/empty-window/agent-transcripts/00000000-0000-4000-8000-000000000000/00000000-0000-4000-8000-000000000000.jsonl"
+}

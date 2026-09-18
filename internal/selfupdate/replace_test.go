@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A replacement fixture: files whose content is the version they "report".
@@ -98,6 +99,10 @@ func (x *txn) ops(injectSteps string, injectErr error) replaceOps {
 	syncs := 0
 	var snapshot, displaced string
 	return replaceOps{
+		// No error is transient and no pause is real unless a test says so:
+		// every transaction test below sees exactly one move-aside attempt.
+		transient: func(error) bool { return false },
+		pause:     func(time.Duration) {},
 		snapshot: func(exe string) (string, error) {
 			if inject("snapshot") {
 				return "", injectErr

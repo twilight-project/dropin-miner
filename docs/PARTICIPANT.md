@@ -288,7 +288,22 @@ subdirectory, the second one's searches carry its own identity, not the
 first's — a search that cannot say which agent it belongs to gets a plain
 per-shell identity instead of borrowing the nearest session above it. Before
 0.2.11 it borrowed, which meant one agent's narration could be sent as
-another's. To send no trace at all:
+another's.
+
+Cursor's session-start hook also tells its shell which session it belongs to.
+When that session id is there, a lineage file is used only if it holds that
+same session; a shell that carries no session id is served exactly as before.
+Two Cursor chats open on the same project still share one lineage file, and
+giving each its own is a separate fix that is not made yet (#109) — what this
+does is keep one chat's search from going out under the other's id whenever
+there is an id to compare.
+
+If one agent starts another as a shell command — Claude Code launched from a
+Cursor agent's terminal, say — the inner one inherits the outer one's channel,
+and its searches carry the outer session and the outer agent's label. That is
+deliberate: the inner agent's search is work the outer session asked for.
+
+To send no trace at all:
 
 ```bash
 export TOKENDROP_TRACE=off
@@ -322,6 +337,13 @@ prefixed command no longer matches the rule that was installed for it. Without
 that answer every search waits for approval — and in a headless session it is
 refused outright, since there is nobody to ask. The rules stay for versions
 and hosts that do not run the hook.
+
+If you have Cursor as well: Cursor loads Claude Code's hooks from
+`~/.claude/settings.json` and runs them beside its own. Those hooks recognize
+that the caller is not Claude Code and do nothing at all, so a Cursor turn
+ends with one flush instead of two and Cursor's command is never rewritten as
+though Claude Code had sent it. Cursor still starts the three commands each
+turn — that part is Cursor's — and each exits immediately.
 
 **Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
 cannot rewrite a command, so its hooks maintain the lineage file and the
@@ -547,9 +569,21 @@ it again swaps back. `-version X.Y.Z` picks an exact release, but never an older
 one than you have. Installed with npm? Use `npm install -g dropin-miner@latest`
 instead; `upgrade` will tell you so.
 
+**After an upgrade, run `dropin-miner agents install` once.** The upgrade
+replaces the program and nothing else, so a fix that lives in the skill your
+agent reads, or in a hook entry, does not reach your agents until they are set
+up again (#111).
+
+If the new program is slow to answer the first time it is run — a virus
+scanner inspecting a file it has never seen — the upgrade asks it once more
+before giving up, and then says `retry` rather than calling the release bad.
+It never asks twice about a wrong answer.
+
 On Windows, if an older DropinMiner or agent process is still running, the
 upgrade may stop with `previous_in_use` and put the binary you had back; close
-those programs and run it again.
+those programs and run it again. If something only briefly holds the program
+file — a scanner, an indexer — the upgrade waits about a second for it before
+reporting a failure.
 
 ## Removing it, and coming back
 

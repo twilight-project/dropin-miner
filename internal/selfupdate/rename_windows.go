@@ -41,3 +41,17 @@ func moveFileEx(from, to string, flags uint32) error {
 func fileInUse(err error) bool {
 	return errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
+
+// transientlyHeld: the move-aside failed because something else holds the
+// file at this moment — a sharing violation (a handle opened without delete
+// sharing: a scanner, an indexer) or access denied (what Windows answers
+// while such a holder's delete or scan is pending). These are the same two
+// codes fileInUse reads, and they mean something different here: there the
+// holder is a process running from .previous and will not let go, so the
+// answer is previous_in_use; here nothing of ours holds the installed binary,
+// so the holder is passing and the answer is to try again shortly. A missing
+// file, a missing path, an existing target and a write-protected volume are
+// none of them transient, and none is retried.
+func transientlyHeld(err error) bool {
+	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_ACCESS_DENIED)
+}
