@@ -50,6 +50,23 @@ type Search struct {
 	RequestIDs []string
 	// Loss is set exactly when RequestIDs is empty.
 	Loss LossReason
+	// Citations are the pages the result offered, by position. A position is
+	// an index into a result the router already holds under the request id,
+	// so an outcome label can name a page without carrying anything of it.
+	// The URL is kept only under Options.KeepContent, to match against what
+	// the turn did next, and is never emitted.
+	Citations []Citation
+
+	// queries are the queries the command line shows, one per invocation
+	// where it shows one. They are what the model wrote: held in memory to
+	// tell a changed query from a repeated one, emitted only behind a gate.
+	queries []string
+}
+
+// Citation is one page a search result offered.
+type Citation struct {
+	Candidate, Index int
+	URL              string
 }
 
 // Anchored reports whether path 1 tied this search to a router request.
@@ -60,14 +77,25 @@ func (s *Search) Anchored() bool { return len(s.RequestIDs) > 0 }
 // router's own JSON under -format json (request_id at the top). It is decoded
 // permissively and only for these fields — the answer text is never bound.
 type searchResultDoc struct {
-	OK        *bool  `json:"ok"`
-	RequestID string `json:"request_id"`
-	Result    *struct {
-		RequestID string `json:"request_id"`
+	OK         *bool             `json:"ok"`
+	RequestID  string            `json:"request_id"`
+	Candidates []resultCandidate `json:"candidates"`
+	Result     *struct {
+		RequestID  string            `json:"request_id"`
+		Candidates []resultCandidate `json:"candidates"`
 	} `json:"result"`
 }
 
+// resultCandidate binds a candidate's citations and nothing else of it: the
+// answer and the snippets have no field here to land in.
+type resultCandidate struct {
+	Citations []struct {
+		URL string `json:"url"`
+	} `json:"citations"`
+}
+
 type scrape struct {
+	citations []Citation
 	ids       []string
 	docs      int  // JSON documents that parsed
 	notOK     bool // some parsed document said ok=false
@@ -104,6 +132,19 @@ func scrapeRequestIDs(text string) scrape {
 		if validRequestID(id) {
 			out.ids = append(out.ids, id)
 		}
+		candidates := doc.Candidates
+		if doc.Result != nil && len(doc.Result.Candidates) > 0 {
+			candidates = doc.Result.Candidates
+		}
+		// Positions are only meaningful against one result, so a call that
+		// printed several documents offers the first one's citations.
+		if out.docs == 1 {
+			for ci, c := range candidates {
+				for k, cit := range c.Citations {
+					out.citations = append(out.citations, Citation{Candidate: ci, Index: k, URL: cit.URL})
+				}
+			}
+		}
 	}
 	return out
 }
@@ -125,10 +166,16 @@ func validRequestID(id string) bool {
 }
 
 // settle records a result against the search and decides its loss reason.
-func (s *Search) settle(text string, isError, denied bool, line int) {
+func (s *Search) settle(text string, isError, denied, keepContent bool, line int) {
 	s.HasResult, s.ResultLine = true, line
 	sc := scrapeRequestIDs(text)
 	s.RequestIDs = sc.ids
+	s.Citations = sc.citations
+	if !keepContent {
+		for i := range s.Citations {
+			s.Citations[i].URL = ""
+		}
+	}
 	if len(sc.ids) > 0 {
 		s.Loss = ""
 		return

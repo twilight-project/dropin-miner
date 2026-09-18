@@ -1,6 +1,9 @@
 package trajectory
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // A search is recognized by parsing the tool call's command line, never by
 // finding the search command's text in it. The lexer below is deliberately
@@ -40,29 +43,126 @@ var commandWrappers = map[string]bool{"env": true, "command": true, "exec": true
 // runs this client's search.
 func parseSearchInvocations(line string) []SearchInvocation {
 	var found []SearchInvocation
-	for _, sc := range splitSimpleCommands(line) {
-		if inv, ok := searchInvocationOf(sc.words); ok {
-			inv.OutputElsewhere = inv.OutputElsewhere || sc.piped
-			found = append(found, inv)
-		}
+	for _, p := range parseSearches(line) {
+		found = append(found, p.inv)
 	}
 	return found
 }
 
-// simpleCommand is one command of a line: its words, and whether its output
-// was piped into the next command.
-type simpleCommand struct {
-	words []string
-	piped bool
+// parsedSearch is an invocation and, when the command line shows it, the
+// query it sent. The query is what the model wrote, so it is held only to
+// compare one search of a turn with the next and is emitted behind a gate or
+// not at all; hasQuery is false when the request came from somewhere the
+// command line does not show, such as a file.
+type parsedSearch struct {
+	inv      SearchInvocation
+	query    string
+	hasQuery bool
 }
 
-func searchInvocationOf(words []string) (SearchInvocation, bool) {
+func parseSearches(line string) []parsedSearch {
+	var found []parsedSearch
+	cmds := splitSimpleCommands(line)
+	for k, sc := range cmds {
+		inv, args, ok := searchInvocationOf(sc.words)
+		if !ok {
+			continue
+		}
+		inv.OutputElsewhere = inv.OutputElsewhere || sc.piped
+		p := parsedSearch{inv: inv}
+		if inv.Stdin {
+			if body, ok := stdinOf(cmds, k); ok {
+				p.query, p.hasQuery = queryOfRequest(body)
+			}
+		} else {
+			p.query, p.hasQuery = queryOfArgs(args)
+		}
+		found = append(found, p)
+	}
+	return found
+}
+
+// simpleCommand is one command of a line: its words, whether its output was
+// piped into the next command, and the literal text the line itself feeds it
+// — a here-document's body, or a PowerShell here-string it is made of.
+type simpleCommand struct {
+	words      []string
+	piped      bool
+	hereDoc    string
+	hasHereDoc bool
+	hereString string
+	hasHereStr bool
+}
+
+// stdinOf finds the text the command line feeds to command k: its own
+// here-document, or the here-string or echo piped into it.
+func stdinOf(cmds []simpleCommand, k int) (string, bool) {
+	if cmds[k].hasHereDoc {
+		return cmds[k].hereDoc, true
+	}
+	if k == 0 || !cmds[k-1].piped {
+		return "", false
+	}
+	prev := cmds[k-1]
+	switch {
+	case prev.hasHereStr:
+		return prev.hereString, true
+	case len(prev.words) >= 2 && (prev.words[0] == "echo" || prev.words[0] == "printf"):
+		return prev.words[len(prev.words)-1], true
+	}
+	return "", false
+}
+
+// queryOfRequest reads the query out of a version-1 stdin request.
+func queryOfRequest(body string) (string, bool) {
+	var req struct {
+		Query *string `json:"query"`
+	}
+	if json.Unmarshal([]byte(body), &req) != nil || req.Query == nil {
+		return "", false
+	}
+	return *req.Query, true
+}
+
+// searchValueFlags are the search flags that take a value (search.go).
+var searchValueFlags = map[string]bool{"config": true, "tier": true, "format": true, "timeout": true}
+
+// queryOfArgs joins the positional words after the flags, the way the flag
+// package the client uses would see them.
+func queryOfArgs(args []string) (string, bool) {
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-" && args[i] != "--" {
+		name := strings.TrimLeft(args[i], "-")
+		if !strings.Contains(name, "=") && searchValueFlags[name] {
+			i++
+		}
+		i++
+	}
+	if i < len(args) && args[i] == "--" {
+		i++
+	}
+	var words []string
+	for ; i < len(args); i++ {
+		if a := args[i]; strings.HasPrefix(a, ">") || strings.HasPrefix(a, "<") || strings.HasPrefix(a, "1>") || strings.HasPrefix(a, "2>") {
+			break
+		}
+		words = append(words, args[i])
+	}
+	if len(words) == 0 {
+		return "", false
+	}
+	return strings.Join(words, " "), true
+}
+
+// searchInvocationOf also returns the search's own arguments, after the
+// subcommand, for the query to be read from.
+func searchInvocationOf(words []string) (SearchInvocation, []string, bool) {
 	i := 0
 	for i < len(words) && (isAssignment(words[i]) || commandWrappers[words[i]]) {
 		i++
 	}
 	if i >= len(words) || !isClientBinary(words[i]) {
-		return SearchInvocation{}, false
+		return SearchInvocation{}, nil, false
 	}
 	args := words[i+1:]
 	// The only global flag that may precede the subcommand takes a value.
@@ -72,7 +172,7 @@ func searchInvocationOf(words []string) (SearchInvocation, bool) {
 		args = args[1:]
 	}
 	if len(args) == 0 || args[0] != "search" {
-		return SearchInvocation{}, false
+		return SearchInvocation{}, nil, false
 	}
 	var inv SearchInvocation
 	args = args[1:]
@@ -92,7 +192,7 @@ func searchInvocationOf(words []string) (SearchInvocation, bool) {
 			inv.OutputElsewhere = true
 		}
 	}
-	return inv, true
+	return inv, args, true
 }
 
 // isClientBinary: the word's final path element, under either separator,
@@ -127,11 +227,16 @@ func isAssignment(word string) bool {
 // with quotes removed.
 func splitSimpleCommands(line string) []simpleCommand {
 	var (
-		cmds    []simpleCommand
-		words   []string
-		cur     strings.Builder
-		inWord  bool
-		pending []string // here-document delimiters awaiting their bodies
+		cmds   []simpleCommand
+		words  []string
+		cur    strings.Builder
+		inWord bool
+		// pending are here-documents awaiting their bodies: the delimiter,
+		// and the index of the command each one feeds.
+		pending []hereDocument
+		// hereStr is a PowerShell here-string seen in the command under way.
+		hereStr    string
+		hasHereStr bool
 	)
 	endWord := func() {
 		if inWord {
@@ -143,9 +248,10 @@ func splitSimpleCommands(line string) []simpleCommand {
 	endCmd := func(piped bool) {
 		endWord()
 		if len(words) > 0 {
-			cmds = append(cmds, simpleCommand{words: words, piped: piped})
+			cmds = append(cmds, simpleCommand{words: words, piped: piped, hereString: hereStr, hasHereStr: hasHereStr})
 			words = nil
 		}
+		hereStr, hasHereStr = "", false
 	}
 	n := len(line)
 	for i := 0; i < n; {
@@ -184,6 +290,7 @@ func splitSimpleCommands(line string) []simpleCommand {
 			// PowerShell here-string: @' … '@ on its own lines. The body is data.
 			closer := "\n" + string(line[i+1]) + "@"
 			if j := strings.Index(line[i+2:], closer); j >= 0 {
+				hereStr, hasHereStr = strings.TrimPrefix(strings.TrimPrefix(line[i+2:i+2+j], "\r"), "\n"), true
 				i += 2 + j + len(closer)
 			} else {
 				i = n
@@ -204,13 +311,19 @@ func splitSimpleCommands(line string) []simpleCommand {
 				i++
 			}
 			if delim := strings.Trim(line[start:i], `'"\`); delim != "" {
-				pending = append(pending, delim)
+				// The command under way is not in cmds yet; len(cmds) is the
+				// index it takes when it ends, which it does before its body.
+				pending = append(pending, hereDocument{delim: delim, feeds: len(cmds)})
 			}
 		case c == '\n':
 			endCmd(false)
 			i++
-			for _, delim := range pending {
-				i = skipHereDocument(line, i, delim)
+			for _, h := range pending {
+				var body string
+				i, body = skipHereDocument(line, i, h.delim)
+				if h.feeds < len(cmds) {
+					cmds[h.feeds].hereDoc, cmds[h.feeds].hasHereDoc = body, true
+				}
 			}
 			pending = nil
 		case c == '|':
@@ -247,9 +360,16 @@ func inPathWord(word string, inWord bool) bool {
 		((word[0] >= 'A' && word[0] <= 'Z') || (word[0] >= 'a' && word[0] <= 'z'))
 }
 
-// skipHereDocument returns the index just past the line that equals delim,
-// or the end of input when the body is unterminated.
-func skipHereDocument(line string, i int, delim string) int {
+// hereDocument is a here-document whose body has not been reached yet.
+type hereDocument struct {
+	delim string
+	feeds int
+}
+
+// skipHereDocument returns the index just past the line that equals delim —
+// or the end of input when the body is unterminated — and the body it passed.
+func skipHereDocument(line string, i int, delim string) (int, string) {
+	start := i
 	for i < len(line) {
 		end := strings.IndexByte(line[i:], '\n')
 		var row string
@@ -259,10 +379,10 @@ func skipHereDocument(line string, i int, delim string) int {
 			row = line[i : i+end]
 			end++
 		}
-		i += end
 		if strings.TrimLeft(strings.TrimRight(row, "\r"), "\t") == delim {
-			return i
+			return i + end, line[start:i]
 		}
+		i += end
 	}
-	return i
+	return i, line[start:i]
 }

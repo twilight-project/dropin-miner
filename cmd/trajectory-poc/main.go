@@ -29,6 +29,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "scan":
 		return scan(args[1:], stdout, stderr)
+	case "emit":
+		return emit(args[1:], stderr)
 	default:
 		fmt.Fprintf(stderr, "trajectory-poc: unknown subcommand %q\n", args[0])
 		usage(stderr)
@@ -40,6 +42,12 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage: trajectory-poc scan [-lineage dir] <transcripts-dir>")
 	fmt.Fprintln(w, "  scan prints counts only. It prints no content at any setting, reads only the")
 	fmt.Fprintln(w, "  directories named, and writes nothing but this output.")
+	fmt.Fprintln(w, "usage: trajectory-poc emit [-config file] <transcripts-dir> <output-file>")
+	fmt.Fprintln(w, "  emit writes one JSON line per turn that contains a search. With no config and no")
+	fmt.Fprintln(w, "  consent record it writes level 1: hashed ids and request ids, no text. Every gate")
+	fmt.Fprintln(w, "  is closed until the compiled ceiling, the config (default ~/.trajectory-poc/config.json)")
+	fmt.Fprintln(w, "  and a consent record (~/.trajectory-poc/consent/<workspace-hash>.json) all agree to it;")
+	fmt.Fprintln(w, "  both files are written by hand, never by this tool. The output file must not exist.")
 }
 
 // scan prints counts. Content is not retained by the reader it drives

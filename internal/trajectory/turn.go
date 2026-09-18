@@ -35,6 +35,14 @@ type Turn struct {
 	Index       int
 	PromptID    string // the host's own label for the turn, when it wrote one
 	StartOrigin Origin // participant, or host for an injected start
+	// Cwd is the workspace the turn ran in, from its first entry that names
+	// one. It selects the consent record and is emitted only behind a gate,
+	// and then only as a hash.
+	Cwd string
+	// HostVersion and Model are the host's own version and the first model
+	// the turn used.
+	HostVersion string
+	Model       string
 	StartLine   int
 	EndLine     int
 	End         EndReason
@@ -164,6 +172,17 @@ func (p *turnParser) entry(raw []byte, line int, unterminated bool) {
 	if e.Version != "" {
 		p.versions[e.Version]++
 	}
+	defer func() {
+		// After dispatch, so the entry that opens a turn also describes it.
+		if p.open != nil {
+			if p.open.Cwd == "" {
+				p.open.Cwd = e.Cwd
+			}
+			if p.open.HostVersion == "" {
+				p.open.HostVersion = e.Version
+			}
+		}
+	}()
 	if p.wantSession != "" && e.SessionID != "" && e.SessionID != p.wantSession {
 		p.sessionMismatch++
 	}
@@ -313,7 +332,7 @@ func (p *turnParser) toolResults(e *rawEntry, blocks []rawBlock, line int) {
 			if stdout, ok := stdoutOf(e.ToolUseResult); ok && strings.TrimSpace(stdout) != "" {
 				scraped = stdout
 			}
-			s.settle(scraped, b.IsError, e.ToolDenialKind != "", line)
+			s.settle(scraped, b.IsError, e.ToolDenialKind != "", p.opts.KeepContent, line)
 			ev.Kind, ev.Search, ev.ToolName = KindSearchResult, s, s.Tool
 			// A result the router answered is the router's; anything else a
 			// search printed is this client's own output.
@@ -358,6 +377,9 @@ func (p *turnParser) assistant(e *rawEntry, line int) {
 	if e.Message.StopReason != nil {
 		p.open.lastStop = *e.Message.StopReason
 	}
+	if p.open.Model == "" {
+		p.open.Model = e.Message.Model
+	}
 	for _, b := range blocks {
 		ev := Event{Origin: OriginHostModel, Line: line, UUID: e.UUID, Timestamp: e.Timestamp, Model: e.Message.Model}
 		switch b.Type {
@@ -370,7 +392,7 @@ func (p *turnParser) assistant(e *rawEntry, line int) {
 			ev.Kind, ev.Bytes = KindThinking, len(b.Thinking)
 		case blockToolUse:
 			ev.Kind, ev.ToolUseID, ev.ToolName, ev.Bytes = KindToolCall, b.ID, b.Name, len(b.Input)
-			if s := searchOf(b, line); s != nil {
+			if s := searchOf(b, line, p.opts.KeepContent); s != nil {
 				ev.Kind, ev.Search = KindSearchCall, s
 				p.open.Searches = append(p.open.Searches, s)
 				p.open.results[b.ID] = s
@@ -387,7 +409,7 @@ func (p *turnParser) assistant(e *rawEntry, line int) {
 }
 
 // searchOf recognizes a search by parsing the call's command line.
-func searchOf(b rawBlock, line int) *Search {
+func searchOf(b rawBlock, line int, keepContent bool) *Search {
 	if !shellToolNames[b.Name] {
 		return nil
 	}
@@ -397,11 +419,18 @@ func searchOf(b rawBlock, line int) *Search {
 	if json.Unmarshal(b.Input, &input) != nil || input.Command == "" {
 		return nil
 	}
-	invs := parseSearchInvocations(input.Command)
-	if len(invs) == 0 {
+	parsed := parseSearches(input.Command)
+	if len(parsed) == 0 {
 		return nil
 	}
-	return &Search{ToolUseID: b.ID, Tool: b.Name, Invocations: invs, CallLine: line, Loss: LossNoResult}
+	s := &Search{ToolUseID: b.ID, Tool: b.Name, CallLine: line, Loss: LossNoResult}
+	for _, ps := range parsed {
+		s.Invocations = append(s.Invocations, ps.inv)
+		if ps.hasQuery && keepContent {
+			s.queries = append(s.queries, ps.query)
+		}
+	}
+	return s
 }
 
 func (p *turnParser) textEvent(kind Kind, origin Origin, e *rawEntry, line int, text string) Event {

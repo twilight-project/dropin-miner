@@ -11,7 +11,18 @@ host account id in the `bridge-session` entry, the attachment body and the subag
 description. That marker is how the tests prove that none of it reaches an output: a test that
 greps the output for `ZEBRA-` fails on the first leak of any of them.
 
-One file per case, so a failure names its case:
+`emit/` holds the fixtures for the levels, the gates and the scrubber, apart from `projects/`
+because the reader's counts are pinned to that directory. Same rules: synthetic, marked, one file
+per case. Session `…21` is a turn with three searches, a fetch of a page the first one offered and
+an answer that cites a page the second one offered, which between them carry all six origin
+classes; its first search's command line carries a trace bridge, which must never be emitted.
+Session `…22` plants one of everything the scrubber acts on — an email address, a credential-shaped
+string, the value of an environment secret, the machine's name, and home paths of three accounts —
+with words on either side of each so that a cut, as opposed to an omission, would show. Session
+`…23` is a search interrupted in a second workspace, for which no test writes a consent record.
+None of the planted values is a real credential, address or host.
+
+One file per case in `projects/`, so a failure names its case:
 
 | Session (last characters) | Case |
 |---|---|

@@ -107,7 +107,7 @@ func TestLossReasonIsDecidedFromStructure(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := &Search{Invocations: []SearchInvocation{c.inv}, Loss: LossNoResult}
-			s.settle(c.text, c.isError, c.denied, 7)
+			s.settle(c.text, c.isError, c.denied, false, 7)
 			if len(s.RequestIDs) != c.wantIDs || s.Loss != c.want {
 				t.Fatalf("RequestIDs = %v, Loss = %q; want %d id(s), %q", s.RequestIDs, s.Loss, c.wantIDs, c.want)
 			}

@@ -27,6 +27,7 @@ type rawEntry struct {
 	PromptSource     string          `json:"promptSource"`
 	Version          string          `json:"version"`
 	Timestamp        string          `json:"timestamp"`
+	Cwd              string          `json:"cwd"`
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
 	IsSidechain      bool            `json:"isSidechain"`
