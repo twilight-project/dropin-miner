@@ -444,7 +444,18 @@ each line names the file that owns the rule and the test that proves it.
   after the transaction commits, `Prepared.DiscardAfterInstall` as the only cleanup, and failure
   classes from typed kinds. `upgrade_test.go`'s
   `TestUpgradeCarriesOneOperationDeadlineThroughEveryStage` and
-  `TestUpgradeCommandPrintsSuccessOnlyAfterTheCanonicalPathValidates` guard the command. `replace_test.go`'s
+  `TestUpgradeCommandPrintsSuccessOnlyAfterTheCanonicalPathValidates` guard the command.
+  `cmd/dropin-miner/upgrade_rerender.go` owns what follows a committed replacement (#111): the
+  host integrations **this installation owns** — `ownedHosts`, which is `ownership_match.go`'s
+  rule read off the files through uninstall's own attribution, because `Status` calls a skill
+  installed when the file merely exists — are rendered again by a **child process, the binary now
+  at the launch path**, since the process running `upgrade` is the version being replaced and its
+  tables are the old ones. Never before the transaction commits, never as a condition of the exit
+  code, never a host that is another installation's or names none, and never a host that was not
+  set up (the child is handed `-client` per owned host). `upgrade_rerender_test.go` records which
+  version was at the path when the render was asked for — the observable that tells after-commit
+  from before — in `TestAnUpgradeThatIsRolledBackLeavesTheHostFilesAsTheyWere` and
+  `TestRollbackReRendersWithTheBinaryRolledBackTo`. `replace_test.go`'s
   `TestAFailedSecondUpgradeLeavesPreviousByteIdentical` and `acceptance_test.go`'s
   `TestReplacementAcceptanceWithTheRunningImage` (real processes, on every CI runner including
   Windows arm64) guard them.

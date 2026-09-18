@@ -553,7 +553,7 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 		}
 		switch kind {
 		case attributionForeign:
-			hold("left in place; it belongs to " + other + ", not this installation")
+			hold(leftForeign(other))
 		case attributionUnknown:
 			// #73: an uninstall that cannot attribute a file leaves it and
 			// says so. The case is narrow — every skill and hook command has
@@ -628,6 +628,13 @@ var installedCommand = regexp.MustCompile(`(` + renderedWordRe + `) (?:search|ho
 // hermesQuoteArg deliberately leaves an ordinary POSIX path unquoted because
 // the same string is the snippet a participant is asked to paste by hand.
 var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(` + renderedWordRe + `|[^\s"'\n]+)`)
+
+// leftForeign is the sentence for an integration that is another
+// installation's. One function, because every command that finds one says
+// the same thing about it: uninstall's plan, and an upgrade's re-render.
+func leftForeign(other string) string {
+	return "left in place; it belongs to " + other + ", not this installation"
+}
 
 // attribution is what the files a target would remove say about who they
 // belong to.

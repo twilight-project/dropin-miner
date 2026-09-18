@@ -595,6 +595,19 @@ refuses a development build, and a copy npm installed. The whole operation is
 bounded at three minutes, and it will not run while setup or another upgrade of
 the same binary is running. Your wallet, registration and config are not touched.
 
+Once the replacement has succeeded — and only then, so an upgrade that is put
+back leaves them as they were — `upgrade` has the new binary render again the
+skills and hooks **this installation already set up**, because that text comes
+from the binary and a fix that lives in it would otherwise wait for a second
+command. It prints what `agents install` prints. It sets up no agent that was
+not set up, and leaves, by name, anything that belongs to another installation
+or names none. If it fails, the upgrade has still succeeded: the line says so
+and gives the one command that finishes the job. `-rollback` does the same with
+the binary it restores. `dropin-miner agents status` names any file an earlier
+version rendered that this one would write differently. An upgrade *from* 0.2.11
+or earlier is run by that older binary, which does none of this: after it, run
+`dropin-miner agents install` once.
+
 On Windows the running binary is moved aside, the new one moved into its name,
 checked, and the old one kept as `dropin-miner.exe.previous`. If an older
 DropinMiner process is still running from that `.previous` file, the upgrade

@@ -433,7 +433,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	if sub == "status" {
-		printAgentStatus(ops, paths, entry, signals, stdout)
+		printAgentStatus(ops, paths, entry, signals, getenv, stdout)
 		return exitOK
 	}
 
@@ -1200,7 +1200,7 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget
 // printAgentStatus names the detection signal per host rather than the old
 // "on PATH" / "not on PATH", which was a lie for any host detected by its
 // config directory and was the line #61 was filed against.
-func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals map[string]string, stdout io.Writer) {
+func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals map[string]string, getenv func(string) string, stdout io.Writer) {
 	fmt.Fprintln(stdout, "dropin-miner agents status")
 	fmt.Fprintf(stdout, "  search default: %s\n", preferLabel(readPrefer(ops, entry)))
 	for _, t := range targetsByKind(targetHost) {
@@ -1214,7 +1214,108 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 			found = "found: " + sig
 		}
 		fmt.Fprintf(stdout, "  %-12s %-26s %s\n", t.Label(), found, state)
+		if !st.installed {
+			continue
+		}
+		for _, path := range staleRenderings(ops, paths, t, entry, getenv) {
+			fmt.Fprintf(stdout, "  %-12s %s: rendered by an earlier version; `agents install` refreshes it\n", "", tilde(ops.home, path))
+		}
 	}
+}
+
+// staleRenderings is the files of an installed host that are this
+// installation's and are not what this binary would write now.
+//
+// It is the diagnosis #111 had no command for. A skill and a hook entry are
+// rendered from the binary's own tables when `agents install` runs, so a fix
+// that lives in a rendered file ships in a release and reaches a host only
+// when something renders it again. A participant on the fixed binary whose
+// host still misbehaves needs to be told that the host is not on it.
+//
+// The question is asked of install's own plan rather than of a second
+// comparison beside it: what `agents install` would rewrite is by
+// construction what is stale, and the two cannot come to disagree. Two kinds
+// of planned write are not staleness and are left out. A file that is not
+// there yet is a missing half, which Status's detail already names ("skill
+// only"). And a file that names no command of this installation's is either
+// the host's own — a settings.json our hooks were never merged into — or
+// another installation's skill, which is not this one's to call out of date.
+func staleRenderings(ops agentOps, paths agentPaths, t installTarget, entry binEntry, getenv func(string) string) []string {
+	var probe agentPlan
+	t.PlanInstall(ops, paths, entry, getenv, &probe)
+	ref := refFor(entry)
+	var out []string
+	for _, w := range probe.writes {
+		existing, err := ops.readFile(w.path)
+		if err != nil {
+			continue
+		}
+		bins, cfgs := namedInArtifact(string(existing))
+		if len(bins) == 0 && len(cfgs) == 0 {
+			// binsInclude and configsInclude read silence as "contradicts
+			// nothing", which is right for a file already known to be ours
+			// and wrong here: a file naming nothing is not ours at all.
+			continue
+		}
+		if binsInclude(bins, ref.bins, runtime.GOOS == "windows") && configsInclude(cfgs, ref.cfg) {
+			out = append(out, w.path)
+		}
+	}
+	return out
+}
+
+// ownedHosts is the hosts whose installed integration is THIS installation's,
+// and a sentence for each host found installed and left because it is not.
+//
+// It exists for the one caller that writes into host files nobody asked it to
+// by name: an upgrade re-rendering what it finds (#111). "Installed" alone is
+// not enough of an answer there. Status says a skill is installed when the
+// file exists, and a host has one skill directory whichever installation
+// wrote into it, so a second installation upgrading would re-render the
+// machine installation's skill as its own — #112's clobber, arrived at by a
+// command the participant did not even run against that host. So what is
+// there is read and H5's rule applied to it, through the same attribution
+// uninstall uses: this installation's binary AND this installation's config.
+//
+// A host with one foreign or unattributable artifact is left whole, hook
+// entries of ours included. That is the conservative direction on purpose:
+// re-rendering is host-granular (`agents install -client`), the binary that
+// does it after a rollback may predate the skill refusal, and a host file
+// left stale is reported by `agents status`, while one overwritten is gone.
+func ownedHosts(ops agentOps, paths agentPaths, bins []string, cfg string, windows bool) (owned []installTarget, left []string) {
+	ref := installationRef{bins: bins, cfg: cfg}
+	for _, t := range targetsByKind(targetHost) {
+		installed := false
+		for _, bin := range bins {
+			if t.Status(ops, paths, binEntry{command: bin, cfg: cfg}).installed {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			continue
+		}
+		// The same agnostic plan uninstall attributes by: what a removal
+		// would take away is exactly the set of files that are wholly ours
+		// when they are ours at all. A host with none — Hermes with its hook
+		// and no skill — was found installed by a check that already reads
+		// the command's binary and config.
+		var agnostic agentPlan
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: cfg}, &agnostic)
+		if len(agnostic.removes) == 0 {
+			owned = append(owned, t)
+			continue
+		}
+		switch kind, other := attributeRemoved(ops, agnostic.removedPaths(), ref, windows); kind {
+		case attributionOurs:
+			owned = append(owned, t)
+		case attributionForeign:
+			left = append(left, t.Label()+": "+leftForeign(other))
+		default:
+			left = append(left, t.Label()+": left in place; "+unattributedPaths(ops, agnostic)+" names no installation, so this one cannot claim it")
+		}
+	}
+	return owned, left
 }
 
 // ── plan mechanics ──────────────────────────────────────────────────────

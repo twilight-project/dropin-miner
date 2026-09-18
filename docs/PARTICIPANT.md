@@ -547,6 +547,18 @@ it again swaps back. `-version X.Y.Z` picks an exact release, but never an older
 one than you have. Installed with npm? Use `npm install -g dropin-miner@latest`
 instead; `upgrade` will tell you so.
 
+When the new binary is in place, `upgrade` has it write again the skills and
+hooks you had already set up, so a fix in that text reaches your agents without
+a second command. It adds no agent you had not set up, and it leaves alone, and
+names, anything that belongs to another installation. If that step fails your
+upgrade has still succeeded, and the message gives the one command to finish
+it. Restart any agent that was open. If an agent still behaves like the old
+version, `dropin-miner agents status` names any file an earlier version wrote
+that this one would write differently, and `dropin-miner agents install`
+refreshes it. One exception: an upgrade *from* 0.2.11 or earlier is carried out
+by that older binary, which does not do this — run `dropin-miner agents
+install` once afterwards.
+
 On Windows, if an older DropinMiner or agent process is still running, the
 upgrade may stop with `previous_in_use` and put the binary you had back; close
 those programs and run it again.
