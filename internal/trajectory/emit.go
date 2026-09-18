@@ -97,14 +97,18 @@ type emitContext struct {
 	sessionID, agentID, parentTurnID string
 }
 
-// Emit writes one record per qualifying turn under dir to w, as JSON lines.
-// w is the only thing it writes to; the caller opened it.
-func Emit(dir string, policy *Policy, scrub *Scrubber, w io.Writer) (*EmitStats, error) {
-	stats := &EmitStats{
+func newEmitStats() *EmitStats {
+	return &EmitStats{
 		RecordsByLevel: map[int]int{}, Withheld: map[Gate]int{}, Blockers: map[Gate]map[string]int{},
 		Refused: map[Gate]bool{}, MeasuredBytes: map[int]int64{}, ScrubOmitted: map[ScrubClass]int{},
 		ScrubRewritten: map[ScrubClass]int{}, Labels: map[string]int{},
 	}
+}
+
+// Emit writes one record per qualifying turn under dir to w, as JSON lines.
+// w is the only thing it writes to; the caller opened it.
+func Emit(dir string, policy *Policy, scrub *Scrubber, w io.Writer) (*EmitStats, error) {
+	stats := newEmitStats()
 	if policy.Config != nil {
 		for gate, asked := range policy.Config.Gates {
 			if asked && !compiledCeiling[gate] {
@@ -162,7 +166,13 @@ func parentTurnOf(s *Session, run *SubagentRun) *Turn {
 	return turns[run.ParentTurn]
 }
 
-func emitTurn(t *Turn, ctx emitContext, gates GateSet, scrub *Scrubber, stats *EmitStats, w io.Writer) error {
+// measureTurn is everything emit does to a turn except write it: the content
+// is scrubbed, the labels derived, and the record sized at each level with
+// every buildable gate open. Emit calls it for the record it goes on to
+// write, and measure calls it for the numbers alone — so what the findings
+// say a record costs is what emit's records cost, not a second count that
+// happens to agree.
+func measureTurn(t *Turn, ctx emitContext, scrub *Scrubber, stats *EmitStats) ([]scrubbed, []Label, error) {
 	content := make([]scrubbed, len(t.Events))
 	for i, ev := range t.Events {
 		content[i] = scrubEvent(ev, scrub, stats)
@@ -176,13 +186,20 @@ func emitTurn(t *Turn, ctx emitContext, gates GateSet, scrub *Scrubber, stats *E
 			stats.SearchesNoURLs++
 		}
 	}
-
 	for level, set := range measuringGateSets() {
 		line, err := json.Marshal(buildRecord(t, ctx, set, content, labels))
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		stats.MeasuredBytes[level] += int64(len(line)) + 1
+	}
+	return content, labels, nil
+}
+
+func emitTurn(t *Turn, ctx emitContext, gates GateSet, scrub *Scrubber, stats *EmitStats, w io.Writer) error {
+	content, labels, err := measureTurn(t, ctx, scrub, stats)
+	if err != nil {
+		return err
 	}
 
 	rec := buildRecord(t, ctx, gates, content, labels)

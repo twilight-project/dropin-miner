@@ -302,6 +302,9 @@ func indexFoldASCII(text, sub string) int {
 }
 
 func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
 	for i := 0; i < len(a); i++ {
 		if lowerASCII(a[i]) != lowerASCII(b[i]) {
 			return false

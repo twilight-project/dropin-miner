@@ -96,8 +96,51 @@ func TestScanPrintsCountsAndNoContentAndChangesNothing(t *testing.T) {
 	}
 }
 
+// TestMeasurePrintsCountsAndCreatesNothing. measure takes no output path
+// because it has no output to place: the report is the whole of it. The
+// snapshot is what proves it — a command that reads a corpus and reports on
+// it must leave the corpus exactly as it found it, and the one before this
+// caught a real failure on Windows.
+func TestMeasurePrintsCountsAndCreatesNothing(t *testing.T) {
+	const measureFixtureDir = "../../internal/trajectory/testdata/measure"
+	before := snapshot(t, measureFixtureDir)
+	if len(before) < 4 {
+		t.Fatalf("the fixture tree has %d entries; this test is not looking at it", len(before))
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"measure", measureFixtureDir}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("measure exited %d: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"what a turn holds that nobody consented to share",
+		"search_result_provider_content", "turns that would produce a record         2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("measure output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "ZEBRA-") || strings.Contains(stderr.String(), "ZEBRA-") {
+		t.Fatalf("measure printed content:\n%s%s", out, stderr.String())
+	}
+	for _, leak := range []string{"req_synthetic", "toolu_", "00000000-0000-4000", "example.test", "/synthetic/"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("measure printed %q: it prints counts, not ids, urls or paths", leak)
+		}
+	}
+	after := snapshot(t, measureFixtureDir)
+	if len(after) != len(before) {
+		t.Fatalf("measure changed the directory it read: %d entries before, %d after", len(before), len(after))
+	}
+	for p, was := range before {
+		if after[p] != was {
+			t.Errorf("measure changed %s\n  before: %s\n  after:  %s", p, was, after[p])
+		}
+	}
+}
+
 func TestScanRefusesBadUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"scan"}, {"scan", "a", "b"}, {"emit", "a"}, {"scan", "-upload", "a"}} {
+	for _, args := range [][]string{nil, {"scan"}, {"scan", "a", "b"}, {"emit", "a"}, {"scan", "-upload", "a"}, {"measure"}, {"measure", "a", "b"}} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != exitUsage {
 			t.Errorf("run(%v) = %d, want %d", args, code, exitUsage)

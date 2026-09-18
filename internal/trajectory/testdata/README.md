@@ -27,6 +27,15 @@ transcript that copied `…31`'s entries verbatim — the same uuids, still carr
 they were written under — and then held a turn of its own. Two files, three turns read, two turns.
 It is apart from `emit/` because that directory's record count is pinned to it.
 
+`measure/` plants each category of unconsented material exactly once, so that a count is an
+assertion rather than a number nobody reads: the providers' content in a search result, a file read
+beside the workspace, another account's home directory, an email address in an author line, and a
+path under the second workspace. It holds two workspaces because "a path under another workspace"
+is decided against the workspaces the corpus has actually seen; the second workspace's own turn
+names a path under itself and is the negative control. Two of its tool calls read outside the
+workspace — the `Read` of a file beside it and the `ls` of `/srv/shared` — because a shell
+command's path is a path.
+
 One file per case in `projects/`, so a failure names its case:
 
 | Session (last characters) | Case |

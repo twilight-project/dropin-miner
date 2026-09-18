@@ -31,6 +31,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return scan(args[1:], stdout, stderr)
 	case "emit":
 		return emit(args[1:], stderr)
+	case "measure":
+		return measure(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "trajectory-poc: unknown subcommand %q\n", args[0])
 		usage(stderr)
@@ -48,6 +50,11 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  is closed until the compiled ceiling, the config (default ~/.trajectory-poc/config.json)")
 	fmt.Fprintln(w, "  and a consent record (~/.trajectory-poc/consent/<workspace-hash>.json) all agree to it;")
 	fmt.Fprintln(w, "  both files are written by hand, never by this tool. The output file must not exist.")
+	fmt.Fprintln(w, "usage: trajectory-poc measure [-lineage dir] <transcripts-dir>")
+	fmt.Fprintln(w, "  measure prints the numbers the findings are written from — the anchoring gap by")
+	fmt.Fprintln(w, "  reason, what a record would cost at each level, what the scrubber would catch, the")
+	fmt.Fprintln(w, "  reader's refusals, and what a turn holds that nobody consented to share, by category.")
+	fmt.Fprintln(w, "  It creates no file and writes no record: the report is the whole of its output.")
 }
 
 // scan prints counts. Content is not retained by the reader it drives
