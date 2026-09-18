@@ -36,6 +36,28 @@ const (
 	LossResultNotJSON LossReason = "result_not_json"
 )
 
+// ResultShape names an envelope shape that decides what can be read out of a
+// result, where the shape itself is the answer rather than a failure.
+type ResultShape string
+
+// ShapeMergedView is the envelope a search asking for "view":"merged"
+// returns: a merged list of pages across providers, and no per-provider
+// candidates at all — the one view that omits the key the citations live
+// under (`search_machine.go`'s `Candidates` pointer, omitted for that view).
+//
+// A search in this shape is ANCHORED: the request id is still at the top of
+// the envelope. What is unavailable is its citations, and that is a fact
+// about the shape rather than a search that offered none. The merged list is
+// deliberately NOT read as citations: it is a different list, deduplicated
+// across providers, so a position in it does not mean what a position in a
+// provider's candidate list means, and a label carrying one would name the
+// wrong page.
+//
+// It is named here so it is counted rather than parsed into silence. Nothing
+// refuses it — it is a documented shape of a contract this client owns — but
+// a corpus losing its labels must say so out loud. Client side: issue #126.
+const ShapeMergedView ResultShape = "merged_view"
+
 // Search is one tool call that runs this client's search, and what its
 // result gave back. One call may run the search more than once (a chained
 // command line), so both counts are kept.
@@ -50,6 +72,9 @@ type Search struct {
 	RequestIDs []string
 	// Loss is set exactly when RequestIDs is empty.
 	Loss LossReason
+	// Shape is set when the result's envelope shape decides what could be
+	// read out of it. Empty is the ordinary case.
+	Shape ResultShape
 	// Citations are the pages the result offered, by position. A position is
 	// an index into a result the router already holds under the request id,
 	// so an outcome label can name a page without carrying anything of it.
@@ -80,9 +105,15 @@ type searchResultDoc struct {
 	OK         *bool             `json:"ok"`
 	RequestID  string            `json:"request_id"`
 	Candidates []resultCandidate `json:"candidates"`
-	Result     *struct {
+	// Merged is bound as empty structs on purpose: the merged list's pages
+	// carry a url, a title and a snippet, and this field exists only to know
+	// whether the list is there and how long it is. Decoding into struct{}
+	// discards every field, so no merged page's content can land anywhere.
+	Merged []struct{} `json:"merged"`
+	Result *struct {
 		RequestID  string            `json:"request_id"`
 		Candidates []resultCandidate `json:"candidates"`
+		Merged     []struct{}        `json:"merged"`
 	} `json:"result"`
 }
 
@@ -97,6 +128,7 @@ type resultCandidate struct {
 type scrape struct {
 	citations []Citation
 	ids       []string
+	shape     ResultShape
 	docs      int  // JSON documents that parsed
 	notOK     bool // some parsed document said ok=false
 	jsonStart bool // the text begins like a JSON document
@@ -136,6 +168,16 @@ func scrapeRequestIDs(text string) scrape {
 		if doc.Result != nil && len(doc.Result.Candidates) > 0 {
 			candidates = doc.Result.Candidates
 		}
+		merged := len(doc.Merged) > 0
+		if doc.Result != nil && len(doc.Result.Merged) > 0 {
+			merged = true
+		}
+		// A merged list and no candidates is the merged view. Both keys
+		// present is the ordinary envelope, which carries merged pages beside
+		// the per-provider candidates the citations are read from.
+		if out.docs == 1 && merged && len(candidates) == 0 {
+			out.shape = ShapeMergedView
+		}
 		// Positions are only meaningful against one result, so a call that
 		// printed several documents offers the first one's citations.
 		if out.docs == 1 {
@@ -171,6 +213,7 @@ func (s *Search) settle(text string, isError, denied, keepContent bool, line int
 	sc := scrapeRequestIDs(text)
 	s.RequestIDs = sc.ids
 	s.Citations = sc.citations
+	s.Shape = sc.shape
 	if !keepContent {
 		for i := range s.Citations {
 			s.Citations[i].URL = ""

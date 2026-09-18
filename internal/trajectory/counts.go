@@ -41,6 +41,10 @@ type Counts struct {
 	AnchoredPath1      int
 	DistinctRequestIDs map[string]bool
 	LossByReason       map[LossReason]int
+	// SearchesByShape counts searches whose envelope shape decided what could
+	// be read out of them. A shape is not a loss: a merged-view search is
+	// anchored and simply has no citations to offer.
+	SearchesByShape map[ResultShape]int
 
 	// Path 2, against the local lineage files only. Session is the lane id,
 	// Turn and Call the finer ones; each counts searches.
@@ -68,6 +72,7 @@ func NewCounts(idx *LineageIndex) *Counts {
 	c := &Counts{
 		HostVersions: map[string]bool{}, TurnsByEnd: map[EndReason]int{}, TurnsByStart: map[Origin]int{},
 		DistinctRequestIDs: map[string]bool{}, LossByReason: map[LossReason]int{},
+		SearchesByShape:  map[ResultShape]int{},
 		RefusalsByReason: map[RefusalReason]int{}, RefusalsByShape: map[string]int{},
 		seenTurns: map[string]bool{},
 	}
@@ -171,6 +176,9 @@ func (c *Counts) addTurns(sessionID, agentID string, turns []*Turn, idx *Lineage
 			} else {
 				c.SearchesSubagent++
 			}
+			if s.Shape != "" {
+				c.SearchesByShape[s.Shape]++
+			}
 			if s.Anchored() {
 				c.AnchoredPath1++
 				for _, id := range s.RequestIDs {
@@ -236,6 +244,9 @@ func (c *Counts) WriteTo(w io.Writer) (int64, error) {
 	p("search turns anchored by path 2           session %d, turn %d\n", c.SearchTurnsPath2Session, c.SearchTurnsPath2Turn)
 	p("transcripts whose session id is in lineage %d (lineage files %d, skipped %d, distinct sessions %d)\n",
 		c.SessionsInLineage, c.LineageFiles, c.LineageSkipped, c.LineageSessions)
+	for _, shape := range sortedKeys(c.SearchesByShape) {
+		p("searches whose envelope shape was %-9s %d (anchored; citations unavailable)\n", shape, c.SearchesByShape[shape])
+	}
 	p("path 1 losses by reason                   %d\n", c.Searches-c.AnchoredPath1)
 	for _, k := range sortedKeys(c.LossByReason) {
 		p("  %-40s %d\n", k, c.LossByReason[k])

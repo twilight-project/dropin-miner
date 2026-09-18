@@ -36,6 +36,12 @@ names a path under itself and is the negative control. Two of its tool calls rea
 workspace — the `Read` of a file beside it and the `ls` of `/srv/shared` — because a shell
 command's path is a path.
 
+`mergedview/` is one search whose result is the envelope a `"view":"merged"` search returns: a
+merged list across providers and no `candidates` key at all, which is the one shape that carries no
+citations. Its request id is still at the top, so the search is anchored and the shape is named
+rather than counted as a loss. Its merged pages carry `ZEBRA-` titles and snippets so a test can
+prove none of them reaches an output.
+
 One file per case in `projects/`, so a failure names its case:
 
 | Session (last characters) | Case |

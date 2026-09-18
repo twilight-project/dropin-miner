@@ -46,6 +46,81 @@ func TestTheAccountNameIsRewrittenInsideAPathAndOmittedOutsideOne(t *testing.T) 
 	}
 }
 
+// TestWhatIsDetectedIsReadInTheTextAsItArrived is T3b's fix, and its first
+// case is the defect: at c19f854 the home directory was rewritten to a tilde
+// before detection ran, so an environment secret whose value began with the
+// home directory no longer matched its own value, and the event was kept.
+// A rewrite can only hide such a value from its rule, never reveal one, so
+// every detect-only rule now reads the original text. The account name is the
+// exception and keeps reading the rewritten text, because inside a path it is
+// meant to be replaced and the event kept.
+func TestWhatIsDetectedIsReadInTheTextAsItArrived(t *testing.T) {
+	// A secret whose value IS a path under the home directory. Synthetic, and
+	// a path rather than a credential: what is being tested is that the
+	// scrubber still recognizes its own environment's value after the home
+	// directory in it has been rewritten.
+	const plantedValue = "/Users/zebrauser/.stores/zebra-deploy-0001" // #nosec G101 -- a synthetic fixture path, not a credential
+	s := NewScrubber(
+		[]string{"ZEBRA_DEPLOY_TOKEN=" + plantedValue},
+		"zebra-host.local", "/Users/zebrauser")
+
+	got, res := s.Text("ZEBRA-TEXT before " + plantedValue + " after")
+	if res.Omit != ScrubEnvSecret || got != "" {
+		t.Errorf("Text = %q, omit %q; want the event omitted as env_secret — the value is the secret whether or not its home directory has been rewritten", got, res.Omit)
+	}
+
+	// The same scrubber, on a home path that is nobody's secret: still
+	// rewritten, and the event still kept.
+	got, res = s.Text("ZEBRA-TEXT wrote /Users/zebrauser/notes/today.md")
+	if want := "ZEBRA-TEXT wrote ~/notes/today.md"; got != want || res.Omit != "" {
+		t.Errorf("Text = %q, omit %q; want %q rewritten and kept", got, res.Omit, want)
+	}
+	if res.Rewrites[ScrubHomePath] != 1 {
+		t.Errorf("rewrites = %v, want one home_path", res.Rewrites)
+	}
+
+	// And a bare mention of the account name: still omitted, which is the
+	// rule that has to keep reading the rewritten text.
+	if got, res := s.Text("ZEBRA-TEXT the account is zebrauser here"); res.Omit != ScrubAccountName || got != "" {
+		t.Errorf("Text = %q, omit %q; want the event omitted as account_name", got, res.Omit)
+	}
+}
+
+// TestASecretNameIsMatchedBySegmentNotBySubstring. The substring rule read
+// every TOKENDROP_* variable this client asks a participant to set as a
+// secret, because TOKEN is inside TOKENDROP — so the participant's own config
+// and wallet paths counted as secret values. The product's name is not a
+// defect in the participant's environment.
+func TestASecretNameIsMatchedBySegmentNotBySubstring(t *testing.T) {
+	const value = "zebra-secret-value-12345"
+	for name, want := range map[string]bool{
+		// A segment that is one of the words.
+		"CLAUDE_CODE_MESSAGING_TOKEN": true,
+		"ZEBRA_DEPLOY_TOKEN":          true,
+		"API_KEY":                     true,
+		"AWS_SECRET_ACCESS_KEY":       true,
+		"KEY":                         true,
+		// AUTH is a whole segment here, so this still matches. It is still a
+		// false positive — a socket path is not a secret — and it is not one
+		// a rule about segments can fix.
+		"SSH_AUTH_SOCK": true,
+		// The word only as part of a longer segment.
+		"TOKENDROP_CONFIG":     false,
+		"TOKENDROP_WALLET_DIR": false,
+		"TOKENDROP_HOME":       false,
+		"MONKEYS":              false,
+		"KEYBOARD_LAYOUT":      false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := NewScrubber([]string{name + "=" + value}, "", "")
+			_, res := s.Text("ZEBRA-TEXT before " + value + " after")
+			if got := res.Omit == ScrubEnvSecret; got != want {
+				t.Errorf("%s: treated as a secret name = %v, want %v (omit %q)", name, got, want, res.Omit)
+			}
+		})
+	}
+}
+
 func TestTheHostnamesFirstLabelIsThisMachineToo(t *testing.T) {
 	s := testScrubber()
 	for _, in := range []string{

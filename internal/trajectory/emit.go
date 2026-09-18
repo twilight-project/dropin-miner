@@ -84,6 +84,11 @@ type EmitStats struct {
 	ScrubbedItems  int
 	Labels         map[string]int
 	SearchesNoURLs int // searches whose result offered no citation to label
+	// SearchesCitationsUnavailable counts searches whose envelope shape left
+	// no citations to read. Kept apart from SearchesNoURLs: a result that
+	// offered none and a result whose shape carries none in the first place
+	// are different facts, and only the second is this client's own doing.
+	SearchesCitationsUnavailable int
 }
 
 // scrubbed is an event's content after the scrubber, computed once.
@@ -182,7 +187,10 @@ func measureTurn(t *Turn, ctx emitContext, scrub *Scrubber, stats *EmitStats) ([
 		stats.Labels[l.Type]++
 	}
 	for _, s := range t.Searches {
-		if len(s.Citations) == 0 {
+		switch {
+		case s.Shape == ShapeMergedView:
+			stats.SearchesCitationsUnavailable++
+		case len(s.Citations) == 0:
 			stats.SearchesNoURLs++
 		}
 	}
@@ -412,6 +420,9 @@ func (s *EmitStats) WriteTo(w io.Writer) (int64, error) {
 		p("  %-30s %d\n", typ, s.Labels[typ])
 	}
 	p("  searches whose result offered no citation to label against: %d\n", s.SearchesNoURLs)
+	if s.SearchesCitationsUnavailable > 0 {
+		p("  searches whose envelope shape carried no citations at all:   %d\n", s.SearchesCitationsUnavailable)
+	}
 	return n, nil
 }
 

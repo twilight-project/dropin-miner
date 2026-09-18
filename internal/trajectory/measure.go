@@ -447,6 +447,7 @@ func (m *Measurement) WriteTo(w io.Writer) (int64, error) {
 		p("  %-30s %d\n", typ, m.Emit.Labels[typ])
 	}
 	p("  searches whose result offered no citation to label against: %d\n", m.Emit.SearchesNoURLs)
+	p("  searches whose envelope shape carried no citations at all:   %d\n", m.Emit.SearchesCitationsUnavailable)
 
 	p("\n== what a turn holds that nobody consented to share ==\n")
 	p("workspaces this corpus ran turns in       %d\n", m.Workspaces)

@@ -19,14 +19,23 @@ import (
 // replacing every occurrence of a known string leaves nothing of it behind.
 // A string too large to scan in one piece is omitted whole, never sliced.
 //
-// The two run in that order — rewrite first, then detect on what is left —
-// and the order is the whole reason both rules can coexist. The account name
-// is known exactly, so inside a path it is rewritten; outside one it is a
-// bare mention with no known shape around it, and the mention is omitted. If
-// detection ran first, every path holding the account name would omit its
-// event and the rewrite would never happen, which is not what a home path is
-// for. Rewriting first removes the name from every path it sits in, so what
-// the bare-mention rule then sees is a mention and nothing else.
+// Which text each rule reads is itself a rule, and it is not the same for
+// all of them.
+//
+// Everything a rule can only DETECT is detected in the text exactly as it
+// arrived. A rewrite can only hide such a value from its rule, never reveal
+// one: an environment secret whose value begins with the home directory is
+// still that secret after the home directory has been replaced by a tilde,
+// and a scrubber that looked only at the rewritten text would keep the event.
+// T3b is that fix; at c19f854 such an event was rewritten and kept.
+//
+// The account name is the one exception, and it is detected AFTER rewriting.
+// Inside a path the name is meant to be replaced and the event kept, which is
+// what a home path is for; outside one it is a bare mention with no known
+// shape around it, and the mention omits the event. Rewriting first takes the
+// name out of every path it sits in, so what the bare-mention rule then sees
+// is a mention and nothing else. Detecting it first would omit every event
+// that named a file under the home directory.
 //
 // pkg/redact was not reused: it rewrites in place where this must omit, and
 // importing it brings net/http into a package whose dependency graph is held
@@ -72,7 +81,14 @@ var (
 	// show a colleague's path as easily as the participant's.
 	unixHomePattern    = regexp.MustCompile(`(/Users/|/home/)[^/\s"']+`)
 	windowsHomePattern = regexp.MustCompile(`(?i)([A-Z]:\\Users\\)[^\\\s"']+`)
-	secretNamePattern  = regexp.MustCompile(`(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE)`)
+	// secretNamePattern matches a whole underscore-separated SEGMENT of a
+	// variable's name, not a substring of it. A substring rule read every
+	// TOKENDROP_* variable this client asks a participant to set as a secret,
+	// because TOKEN is inside TOKENDROP — so the participant's own config and
+	// wallet paths were treated as secret values, and 54 events naming them
+	// were omitted whole. The product's name is not a defect in the
+	// participant's environment; it was a defect in this pattern.
+	secretNamePattern = regexp.MustCompile(`(?i)(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE)(_|$)`)
 	// envLinePattern is one line of an environment dump. `env` and `printenv`
 	// write exactly this, and a shell that echoes its environment writes it
 	// with `export ` in front.
@@ -172,13 +188,19 @@ func (s *Scrubber) Text(in string) (string, ScrubResult) {
 	if len(in) > scrubLimit {
 		return "", ScrubResult{Omit: ScrubTooLarge}
 	}
-	out, rewrites := s.rewrite(in)
-	if class := s.detect(out); class != "" {
+	if class := s.detect(in); class != "" {
 		return "", ScrubResult{Omit: class}
+	}
+	out, rewrites := s.rewrite(in)
+	if s.namesAccount(out) {
+		return "", ScrubResult{Omit: ScrubAccountName}
 	}
 	return out, ScrubResult{Rewrites: rewrites}
 }
 
+// detect reads the text as it arrived. Every rule here is one that can only
+// detect, so nothing a rewrite would do to the text could turn one of these
+// answers from yes to no without the secret still being there.
 func (s *Scrubber) detect(in string) ScrubClass {
 	if strings.Contains(in, traceBridgeVar) {
 		return ScrubTraceBridge
@@ -204,14 +226,19 @@ func (s *Scrubber) detect(in string) ScrubClass {
 			return ScrubHostname
 		}
 	}
-	// Last, because a path holding the account name has already been
-	// rewritten by the time this runs: what reaches here is a bare mention.
+	return ""
+}
+
+// namesAccount reports a bare mention of the account name. It runs on the
+// REWRITTEN text, so a path holding the name has already had it replaced and
+// what reaches here is a mention with nothing around it.
+func (s *Scrubber) namesAccount(in string) bool {
 	for _, name := range s.accounts {
 		if containsWhole(in, name) {
-			return ScrubAccountName
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // containsWhole reports whether value occurs in text as a whole value: not
