@@ -307,7 +307,21 @@ each line names the file that owns the rule and the test that proves it.
 - **What a destructive run may leave behind** — `cmd/dropin-miner/lifecycle.go` owns the
   exclusion: which operation locks it takes, which of those files it created, and the rule that
   `release` removes exactly those and only when the operation never proceeded (`proceeded()`).
-  `excludeForUpgrade` opts out, in its own words, at its own construction. `install.sh`'s EXIT
+  `excludeForUpgrade` opts out, in its own words, at its own construction, and that opt-out
+  survived review of #103: **an ordinary operation cannot remove its own lock file.** Removing one
+  is safe only while the GATE is held, because the gate is what every contender passes before it
+  opens an operation lock — with it held nobody can be between opening that file and locking it,
+  so unlinking the name cannot strand a contender on an inode that no longer has one. An ordinary
+  operation has released the gate by the time it holds its own lock (connect gives it up before
+  its poll loop), and taking the gate back at the end is the reverse of the one lock order, which
+  `TestSetupConnectsUnderItsOwnAdmission` exists to forbid — a first attempt at removing these in
+  place tripped it on its first run. So the destructive exclusion is the only place L5's removal
+  can live, and the locks an upgrade, a setup or a connect leaves are named instead:
+  `uninstall`'s `sayLeftoverLocks` lists the gate, `setup.lock`, `connect.lock`, `flush.lock` and
+  the binary's update lock that still exist, as safe to delete, in both modes (#103, #115).
+  `lock_leftover_test.go` holds it to the invariant either way round — a lock still on disk is
+  named, one the run removed is not — and scopes its search to that section, because a purge plan
+  prints the full path of everything it removes. `install.sh`'s EXIT
   trap and `install.ps1`'s try/finally are the same rule for the download: the temporary directory
   goes on every exit path, because a checksum failure is the one case where what is left behind is
   the file just called untrustworthy. `lifecycle_created_locks_test.go` and

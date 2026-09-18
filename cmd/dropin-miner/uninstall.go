@@ -1503,6 +1503,7 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("\nTo come back, reinstall and run setup; it finds this state and uses it.\n")
 		}
 		r.printf("Nothing was revoked: uninstall without -purge-state leaves every authorization as it is.\n")
+		r.sayLeftoverLocks()
 		return
 	}
 	r.printf("\n%s\n", revocation)
@@ -1519,10 +1520,68 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("  %s\n", p)
 		}
 	}
-	r.printf("\nLeft: %s — it coordinates DropinMiner commands, holds nothing, and is safe to delete.\n",
-		lifecycleGatePath(r.home))
+	r.sayLeftoverLocks()
 	r.printf("Other commands were excluded while the locks were held; an agent session still open can\n" +
 		"recreate intake/ or sessions/ by searching, which is harmless.\n")
+}
+
+// sayLeftoverLocks names every lock file this installation still carries and
+// says it is safe to delete. The gate always said this of itself; #103 and
+// #115 are the same sentence owed by the rest of them -- the update lock an
+// upgrade leaves in bin/, and the setup.lock and connect.lock a setup or a
+// connect leaves in the installation.
+//
+// Named rather than removed, and that is a conclusion rather than an
+// omission. Removing an operation lock is only safe while the GATE is held,
+// because the gate is what every contender passes before it opens one: with
+// it held, nobody can be between opening a lock file and locking it, so
+// unlinking the name cannot strand a contender on an inode that no longer
+// has one. An ordinary operation has deliberately released the gate by the
+// time it holds its own lock -- connect gives it up before its poll loop --
+// and taking it back at the end would be the reverse of the one lock order
+// (gate, setup.lock, connect.lock, flush.lock). That reversal is not a
+// hypothetical: it is what TestSetupConnectsUnderItsOwnAdmission exists to
+// forbid, and a first attempt at removing these files in place tripped it on
+// the first run. The destructive exclusion is the one operation that holds
+// the gate throughout, which is why L5's removal lives there and only there.
+//
+// The reason recorded at excludeForUpgrade therefore still holds, and this
+// is the half of it that was missing: a reader of the installation is told.
+func (r *uninstallRun) sayLeftoverLocks() {
+	locks := r.leftoverLocks()
+	if len(locks) == 0 {
+		return
+	}
+	r.printf("\nLeft, and safe to delete — the lock files DropinMiner commands coordinate through.\n" +
+		"Each holds nothing once the command that made it has finished, and is made again by the\n" +
+		"next command that needs it:\n")
+	for _, p := range locks {
+		r.printf("  %s\n", p)
+	}
+}
+
+// leftoverLocks is the lock files that still exist for this installation, in
+// lock order: the gate, setup.lock, connect.lock, flush.lock, and the
+// binary's update lock. A path that is gone -- uninstall -binary takes the
+// update lock with the binary -- is left out rather than named.
+func (r *uninstallRun) leftoverLocks() []string {
+	candidates := []string{lifecycleGatePath(r.home), filepath.Join(r.home, setupLockFile)}
+	if connectLock, flushLock, err := operationLockPaths(r.home, r.d.getenv); err == nil {
+		candidates = append(candidates, connectLock, flushLock)
+	}
+	if owned := r.ownedBinary(); owned != "" {
+		candidates = append(candidates, owned+updateLockSuffix)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range candidates {
+		if p == "" || seen[p] || !lexists(p) {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // ── the dry-run overlay ─────────────────────────────────────────────────

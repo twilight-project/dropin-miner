@@ -725,6 +725,12 @@ would register this machine anew.
 
 `-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
 binary running and no package manager owns it, together with the
+the lock files DropinMiner commands coordinate through — the lifecycle gate beside the
+installation, `setup.lock`, `state/connect.lock`, `flush.lock` and `bin/<binary>.update.lock`.
+Each is created by the command that needs it and holds nothing once that command has finished;
+they are left rather than deleted because removing one is only safe while the lifecycle gate is
+held, and a command holding its own lock has already let the gate go. `uninstall` lists the ones
+still present and says they are safe to delete. Also
 `dropin-miner.previous` an upgrade kept and anything an interrupted upgrade left
 beside it — nothing else in that directory. A copy npm installed is refused with
 the npm command to use instead. On Windows a running binary cannot be deleted,

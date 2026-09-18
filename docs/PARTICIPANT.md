@@ -619,7 +619,10 @@ stay, nothing is revoked, and it tells you how to keep using them. Run it with
 dropin-miner` removes the binary.
 
 `-binary` also deletes `~/.tokendrop/bin/dropin-miner`, its
-`dropin-miner.previous`, and anything an interrupted upgrade left beside it. On
+`dropin-miner.previous`, and anything an interrupted upgrade left beside it. You will also find
+small `.lock` files — beside the installation, in it, and next to the binary. They are how
+DropinMiner's commands avoid running over each other, they hold nothing once a command has
+finished, and `uninstall` lists the ones still there and says they are safe to delete. On
 Windows, which cannot delete a running program, it moves the binary out of the
 way instead and tells you the file to delete later. `-purge-state` is the one that
 destroys things: the wallet, your registration and key, unsent searches and
