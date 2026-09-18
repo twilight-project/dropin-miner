@@ -364,8 +364,18 @@ func hermesIsOurMatcher(l hermesLine) bool {
 	if !ok || rest == "" || rest[0] != ' ' {
 		return false
 	}
-	v, ok := hermesDecodeScalar(strings.TrimSpace(rest))
-	return ok && v == hermesMatcher
+	// Nothing after the scalar, not even a space. Neither writer leaves one,
+	// and until the rendered comparison became a fast path this line was
+	// reached only through that byte-for-byte branch, which refused it — the
+	// `trailing-space-matcher` shape in the differential, left alone since L3.
+	// A space is not ours to delete on the same argument that refuses a
+	// double-quoted scalar: the form is not one either writer produces.
+	v := strings.TrimLeft(rest, " ")
+	if v != strings.TrimRight(v, " \t") {
+		return false
+	}
+	s, ok := hermesDecodeScalar(v)
+	return ok && s == hermesMatcher
 }
 
 const hermesMatcher = "terminal"
@@ -1407,6 +1417,40 @@ func hermesRunIsOurs(lines []hermesLine, e hermesOwnEntry, at int, ref installat
 	return true
 }
 
+// hermesLinesAre: are these lines, byte for byte, these texts?
+func hermesLinesAre(lines []hermesLine, want []string) bool {
+	if len(lines) != len(want) {
+		return false
+	}
+	for i := range want {
+		if lines[i].text != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hermesRunIsRenderedExactly: are the lines about to go, byte for byte, the
+// last lines of what the renderer writes for the command on this line?
+func hermesRunIsRenderedExactly(lines []hermesLine, e hermesOwnEntry, at int) bool {
+	cmd, ok := hermesDecodeCommandLine(lines[at].text)
+	if !ok {
+		return false
+	}
+	rendered := hermesHookLines(cmd)
+	n := e.end - e.start
+	if n < 2 || n > len(rendered) {
+		return false
+	}
+	want := rendered[len(rendered)-n:]
+	for k := 0; k < n; k++ {
+		if lines[e.start+k].text != want[k] {
+			return false
+		}
+	}
+	return true
+}
+
 // hermesEntryLinesAreOurs judges the lines of the entry itself, in whichever
 // of the two forms it is written. The heading lines above the run and what
 // follows it are the caller's.
@@ -1417,25 +1461,38 @@ func hermesEntryLinesAreOurs(lines []hermesLine, e hermesOwnEntry, at int, ref i
 	if at < e.start || e.end <= at || e.end > len(lines) {
 		return false
 	}
-	if cmd, ok := hermesDecodeCommandLine(lines[at].text); ok {
-		// The renderer's own form, on one line: byte for byte against what the
-		// renderer writes, as this file's deletion rule has been since L3.
-		rendered := hermesHookLines(cmd)
-		n := e.end - e.start
-		if n < 2 || n > len(rendered) {
-			return false
-		}
-		want := rendered[len(rendered)-n:]
-		for k := 0; k < n; k++ {
-			if lines[e.start+k].text != want[k] {
-				return false
-			}
-		}
+	// The renderer's own form, on one line: byte for byte against what the
+	// renderer writes, as this file's deletion rule has been since L3.
+	//
+	// A fast path and not a gate. On Windows the command carries the quotes
+	// and backslashes of its own argv quoting, which a plain scalar cannot
+	// hold, so BOTH writers single-quote it and the two forms' command lines
+	// are byte-identical; they differ only in the matcher, ours quoted and
+	// Hermes' not. Deciding between the two branches on the command line
+	// alone therefore sent every Windows file Hermes had saved into this one
+	// and failed it there, on a line that was never the difference. So a run
+	// that is not exactly ours falls through to the form Hermes leaves rather
+	// than being refused here.
+	if hermesRunIsRenderedExactly(lines, e, at) {
 		return true
 	}
 	// The form Hermes leaves (#108). The span is already exactly the command
 	// line, that one scalar's continuations and the matcher; what is left to
 	// establish is that each of those lines is what it is claimed to be.
+	//
+	// Whatever of the run lies ABOVE the command line first. The byte-for-byte
+	// branch compared the whole run, so it established this on the way past;
+	// this branch reads the entry from `at` onward and would otherwise take
+	// the caller's word for the rest — and a run reaching back over the entry
+	// ABOVE ours satisfies every test below while deleting somebody else's
+	// hook. Those lines can only be what the renderer puts over an entry, as
+	// many of them as the run reaches back over.
+	heading := hermesHookLines("")[:2]
+	if above := at - e.start; above < 0 || above > len(heading) {
+		return false
+	} else if want := heading[len(heading)-above:]; !hermesLinesAre(lines[e.start:at], want) {
+		return false
+	}
 	if !strings.HasPrefix(lines[at].text, hermesCommandPrefix) {
 		return false
 	}

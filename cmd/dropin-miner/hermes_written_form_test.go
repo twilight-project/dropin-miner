@@ -25,6 +25,42 @@ func hermesWrittenFixture(t *testing.T, name string) (config, above string) {
 	return config, hermesBeforeTheHooksKey(t, config)
 }
 
+// The whole path, driven with both platforms' entries on every runner —
+// findHermesOwnEntry, not just the net — because the two forms coincide on
+// Windows in the one place the reader used to decide between them.
+//
+// On Windows the command carries the quotes and backslashes of its own argv
+// quoting, so a plain scalar cannot hold it and both writers single-quote it:
+// the command lines are byte-identical and only the matcher differs, ours
+// quoted and Hermes' not. A reader that picked its branch from the command
+// line sent every Windows file Hermes had saved down the byte-for-byte branch
+// and refused it there. Every runner sees that now; before this, only the two
+// Windows ones did.
+func TestTheFormHermesWritesIsRemovableForBothPlatformsCommands(t *testing.T) {
+	for name, tc := range hermesResavedEntries {
+		t.Run(name, func(t *testing.T) {
+			cmd, ok := hermesHookCommand(tc.entry, tc.windows)
+			if !ok {
+				t.Fatal("could not render the command")
+			}
+			// What Hermes leaves: its own scalar style, its unquoted matcher.
+			file := "model: gpt\nhooks:\n  pre_tool_call:\n" +
+				hermesCommandPrefix + hermesWrittenScalar(cmd) + "\n      matcher: terminal\n"
+			if tc.windows && !strings.Contains(file, hermesHookLines(cmd)[2]) {
+				t.Fatalf("on Windows the two forms' command lines must coincide, which is the case this pins:\n%s", file)
+			}
+
+			own := findHermesOwnEntry([]byte(file), refFor(tc.entry))
+			if !own.removable() {
+				t.Fatalf("not removable (%s):\n%s", own.why, file)
+			}
+			if got, want := string(removeHermesOwnEntry([]byte(file), own)), "model: gpt\n"; got != want {
+				t.Errorf("uninstall left %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestTheFormHermesWritesIsRemovedWholeAndLeavesTheRest(t *testing.T) {
 	for name, tc := range hermesResavedEntries {
 		for eol, conv := range map[string]func(string) string{
