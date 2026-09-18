@@ -631,6 +631,44 @@ Your first reward takes an hour or two: you join an epoch two ahead, and it
 has to close and settle. One verified search per epoch makes you eligible,
 and the pot splits equally among everyone eligible.
 
+## Known limits
+
+Three things to know because you will meet them and looking for a setting to
+change would waste your time. The first two are limits of Claude Code itself,
+and this client has no workaround for either.
+
+**Claude Code: the sentence written just before a search does not travel.**
+The trace carries the assistant text of the turn a search belongs to, and
+Claude Code appends the message containing a tool call to its transcript
+*after* the `PreToolUse` hook has run. So when the model narrates and searches
+in the same message — the common shape — the hook reads a transcript that does
+not hold that text yet, and the envelope goes out identity-only. Narration in
+an earlier message of the same turn does travel. The lineage itself, the
+session, turn and call ids, is correct either way; it is the text that is one
+message stale or absent (#93). Nothing here can read a line the host has not
+written yet.
+
+**Claude Code's PowerShell tool asks for approval every time.** The skill
+renders a PowerShell form and the hook rewrites PowerShell calls, so searches
+run — but the `permissions.allow` rules `agents install` writes are Bash
+rules. What a PowerShell-tool rule must look like is not established by Claude
+Code's own documentation: the rendered command is a compound statement, and
+nothing says whether the assignment in it needs a rule of its own, nor how the
+call operator's invocation is canonicalized before matching. A rule written
+from a guess would very likely never match, which is worse than none — it
+would look installed while every search still prompted. So none is written
+(#77). Where Git for Windows is present, a search Claude Code sends through
+its Bash tool is covered by the rules that are written; which tool it uses is
+the model's choice per call, not something this client can set.
+
+**Windows, in the Cursor editor with a PowerShell terminal profile: keep
+queries ASCII.** A query containing non-ASCII characters can reach the router
+corrupted, so a search may quietly answer a different question rather than
+fail. A Git Bash terminal profile is unaffected. This is a warning and not a
+fix: the cause is still being measured (#117). What you can do today is set
+Cursor's `terminal.integrated.defaultProfile.windows` to Git Bash, or keep
+queries to ASCII.
+
 ## Upgrading
 
 ```

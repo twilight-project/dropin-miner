@@ -244,8 +244,28 @@ one right answer. A rerun of the workflow never moves the tag, never builds a di
 commit, and never invents a version to escape a failure.
 
 **Preflight failed.** Nothing was built and nothing was published. The tag is wrong, or
-the commit is. Delete the tag (`git push upstream :refs/tags/vX.Y.Z`), fix the problem
-on `main`, and tag the new merge commit.
+the commit is. **The failed version number is burned: leave the tag where it is, fix the
+problem on `main`, and tag the next patch version.**
+
+This document used to say to delete the tag and reuse the number. That cannot be done —
+the "release tag immutability" ruleset carries `deletion`, `update` and
+`non_fast_forward` with no bypass actors at all, so the deletion is refused for everyone,
+an administrator included — and it should not be. A ruleset cannot tell a published tag
+from an unpublished one, and the guarantee it buys is the one this document argues for
+fifty lines above: a published tag never moves, because `install.sh`, `install.ps1`,
+`npm/install.js` and an already-published `checksums.txt` all resolve against it. A
+version number is cheap. That guarantee is not, and it is worth strictly more than the
+number, because it is what makes every already-published tag trustworthy rather than
+merely usually-trustworthy.
+
+A tag that failed preflight is inert, not dangerous: nothing was built against it and
+nothing resolves to it. It sits in the tag list as a version that never shipped, which is
+what the CHANGELOG will also say.
+
+The mitigation is to not get here. **Every preflight check can be run locally, on the
+commit you are about to tag, before the tag exists** — that is what "Before you tag"
+above is for. Run them there and the failure costs you a minute instead of a version
+number.
 
 **The GitHub Release succeeded and something after it failed.** Re-run the workflow.
 Preflight will classify the release `complete` and goreleaser is skipped — it is not

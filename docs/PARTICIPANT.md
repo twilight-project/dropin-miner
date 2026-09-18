@@ -459,6 +459,34 @@ next search or the next agent session. If neither happens before the epoch's
 verification deadline, that epoch's evidence is late. `dropin-miner flush` by
 hand submits whatever is pending.
 
+## Known limits
+
+Three things worth knowing before you go looking for a setting that is not
+there. The first two are limits of Claude Code itself; DropinMiner cannot work
+around either.
+
+**In Claude Code, the sentence right before a search does not reach the
+trace.** If the model writes something and searches in the same message — the
+usual shape — Claude Code only records that message after the search hook has
+already run, so the hook cannot see the text. Narration in an earlier message
+of the same turn does travel. Your search, your session and your rewards are
+unaffected; it is only the text that goes with the trace (#93).
+
+**In Claude Code on Windows, a search through its PowerShell tool asks for
+approval each time.** The search itself works. The permission rules setup
+writes only cover its Bash tool, and Claude Code's documentation does not
+establish what a PowerShell rule would have to look like — a guessed one would
+look installed and never match, which is worse — so none is written (#77). If
+you have Git for Windows, the searches Claude Code sends through its Bash tool
+are approved automatically; which tool it picks is up to the model.
+
+**In the Cursor editor on Windows with a PowerShell terminal profile, keep
+your queries to plain ASCII.** A query with accented or non-Latin characters
+can arrive at the router corrupted, which means a search can quietly answer a
+different question instead of failing. A Git Bash terminal profile does not
+have the problem. We are still measuring the cause (#117); until then, set
+Cursor's terminal profile to Git Bash, or keep the query ASCII.
+
 ## When `doctor` says `recording UNKNOWN`
 
 `doctor` ends with two checks about whether searches are actually being
