@@ -665,8 +665,26 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) (env
 		lf   *lineageFile
 		path string
 	)
+	// session is the hashed id of the session this shell was started in,
+	// when the host exported one. It is the test of ownership for the file
+	// the host declared, exactly as it is for the walk (#104).
+	//
+	// The declared path says WHERE a session's lineage lives, not WHOSE it
+	// currently holds (#109). Cursor keys the file by workspace alone, and
+	// every hook event writes the current conversation's id into it, so two
+	// conversations open on one workspace — two chat tabs on a project —
+	// share one file and take turns owning it. Both shells name that same
+	// path. Adopting it by path alone sent one conversation's search to the
+	// router under the other's id, with the other's text, advancing a counter
+	// both share. A file holding another session is therefore not adopted
+	// and not advanced; the search goes on to the walk, which refuses it for
+	// the same reason, and ends at its own per-shell identity under the
+	// declared harness. With no session exported the declared file is
+	// believed as before: every shell started before the variable existed.
+	// A file per conversation is the proper fix and is #109's, not this.
+	session := getenv(sessionEnv)
 	if p := getenv(lineageEnv); p != "" {
-		if l, ok := loadLineage(ops.hook, p); ok && now.Sub(l.UpdatedAt) <= lineageMaxAge {
+		if l, ok := loadLineage(ops.hook, p); ok && now.Sub(l.UpdatedAt) <= lineageMaxAge && (session == "" || l.SessionID == session) {
 			lf, path = l, p
 		}
 	}
@@ -675,7 +693,7 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) (env
 			// harness is what says whose search this is. Without it the walk
 			// answers nothing, because anything it found up the tree would be
 			// another session's (#97).
-			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, getenv(sessionEnv), now)
+			lf, path = lineageForCwd(ops.hook, m.SessionsDir, cwd, harness, session, now)
 		}
 	}
 	if lf != nil {
