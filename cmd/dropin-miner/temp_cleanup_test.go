@@ -159,9 +159,13 @@ func TestTheSweepTakesOnlyOldForeignTempsOfItsOwnKind(t *testing.T) {
 	}
 	lineageRows := []row{
 		{hexA + ".7.tmp", lineageMaxAge + time.Minute, true},
-		{hexA + ".7.tmp", lineageMaxAge - time.Minute, false},     // fresh: possibly a write in flight
-		{hexB + ".42.tmp", lineageMaxAge + time.Minute, false},    // this process's own pid
-		{hexB + ".8.tmp", -time.Hour, false},                      // modified in the future: a clock moved, not an old file
+		{hexA + ".7.tmp", lineageMaxAge - time.Minute, false},  // fresh: possibly a write in flight
+		{hexB + ".42.tmp", lineageMaxAge + time.Minute, false}, // this process's own pid
+		{hexB + ".8.tmp", -time.Hour, false},                   // modified in the future: a clock moved, not an old file
+		// Further in the future than lineageMaxAge. The row above cannot tell
+		// "not old" from "within twelve hours either way": a sweep that took
+		// the DISTANCE from now would leave that one and take this one.
+		{hexB + ".9.tmp", -13 * time.Hour, false},
 		{"resume.json.7.tmp", lineageMaxAge + time.Minute, false}, // the right shape, not a lineage file
 		{hexA + ".tmp", lineageMaxAge + time.Minute, false},       // no pid: not a name these writers produce
 		{hexA + ".7.tmp.bak", lineageMaxAge + time.Minute, false},
