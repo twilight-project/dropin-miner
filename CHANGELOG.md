@@ -25,10 +25,15 @@ v0.2.10 promised for its Windows wallet fix is published as
 GHSA-w246-j75w-wh8g.
 
 Coming from 0.2.10 or 0.2.9: run `dropin-miner upgrade` on a native install,
-or `npm install -g dropin-miner@latest` on an npm install. There is nothing
-else to do — wallet, identity, credential, recorded searches and config are
-all kept. `upgrade -rollback` puts the previous version back with no network.
-Coming from earlier: the older entries below apply first.
+or `npm install -g dropin-miner@latest` on an npm install, and then run
+`dropin-miner agents install` once. That second step is not optional this
+time. The upgrade replaces the binary and touches no host file, and the
+Cursor fix below lives in the skill text a host reads rather than in the
+binary, so it reaches your hosts only when the skill and hook files are
+rendered again. Your wallet, identity, credential, recorded searches and
+config are kept either way, and `upgrade -rollback` still puts the previous
+version back with no network. Coming from earlier: the older entries below
+apply first.
 
 - **Claude Code: a search no longer prompts or is refused.** The hook that
   rewrites a search to carry the trace bridge now answers the permission
@@ -145,11 +150,14 @@ Coming from earlier: the older entries below apply first.
   PR #107 and whose proper fix is its own. Self-update timing on a loaded or
   scanned machine: #95, #78, in PR #107. Cursor CLI launched from Git Bash
   on Windows: #101. Codex config order after a reinstall: #99. The empty
-  update lock left after an upgrade: #103. Hermes once Hermes has saved its
-  own config — status, the marked block's ownership check, and uninstall's
-  by-hand step: #105, #106, #108. The Claude Code PowerShell tool and text
-  written in the same message as the search, which are host limits: #77,
-  #93.
+  update lock left after an upgrade: #103. An upgrade leaving the host skill
+  and hook files as the previous version rendered them, which is why the
+  step above exists, and a second installation's `agents install` overwriting
+  the machine installation's skills: #111, #112. Hermes once Hermes has saved
+  its own config — status, the marked block's ownership check, and
+  uninstall's by-hand step: #105, #106, #108. The Claude Code PowerShell tool
+  and text written in the same message as the search, which are host limits:
+  #77, #93.
 
 - **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
   exercise of the replacement transaction, promised in v0.2.9 and again in
