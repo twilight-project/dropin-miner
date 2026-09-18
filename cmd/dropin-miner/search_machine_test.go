@@ -344,27 +344,39 @@ func TestMachineOptionsRoundTripIntoTheBody(t *testing.T) {
 func TestMachineOptionsRefusedBeforeRouterCall(t *testing.T) {
 	for _, tc := range []struct {
 		name, stdin, wantCode string
+		// wantMsgContains pins the diagnostic's wording where two distinct
+		// mistakes (an explicit null vs. an explicit empty value) would
+		// otherwise share a code and be indistinguishable by code alone —
+		// a null domain_filter, left unguarded, would still be refused by
+		// the empty-array check below it (an unmarshaled null is a nil,
+		// zero-length slice), so only the message proves the null check
+		// itself is doing anything.
+		wantMsgContains string
 	}{
-		{"recency not a word", `{"version":1,"query":"q","recency":"decade"}`, codeInvalidRecency},
-		{"recency wrong type", `{"version":1,"query":"q","recency":7}`, codeInvalidRecency},
-		{"recency empty string", `{"version":1,"query":"q","recency":""}`, codeInvalidRecency},
-		{"domain_filter not an array", `{"version":1,"query":"q","domain_filter":"example.com"}`, codeInvalidDomainFilter},
-		{"domain_filter not strings", `{"version":1,"query":"q","domain_filter":[1,2]}`, codeInvalidDomainFilter},
+		{"recency not a word", `{"version":1,"query":"q","recency":"decade"}`, codeInvalidRecency, ""},
+		{"recency wrong type", `{"version":1,"query":"q","recency":7}`, codeInvalidRecency, ""},
+		{"recency empty string", `{"version":1,"query":"q","recency":""}`, codeInvalidRecency, ""},
+		{"recency null", `{"version":1,"query":"q","recency":null}`, codeInvalidRecency, "null"},
+		{"domain_filter not an array", `{"version":1,"query":"q","domain_filter":"example.com"}`, codeInvalidDomainFilter, ""},
+		{"domain_filter not strings", `{"version":1,"query":"q","domain_filter":[1,2]}`, codeInvalidDomainFilter, ""},
 		{
 			"domain_filter too many entries",
 			`{"version":1,"query":"q","domain_filter":["a0.test","a1.test","a2.test","a3.test","a4.test","a5.test","a6.test","a7.test","a8.test","a9.test","a10.test","a11.test","a12.test","a13.test","a14.test","a15.test","a16.test"]}`,
-			codeInvalidDomainFilter,
+			codeInvalidDomainFilter, "",
 		},
-		{"domain_filter empty entry", `{"version":1,"query":"q","domain_filter":[""]}`, codeInvalidDomainFilter},
-		{"domain_filter carries a scheme", `{"version":1,"query":"q","domain_filter":["https://example.com"]}`, codeInvalidDomainFilter},
-		{"domain_filter carries a path", `{"version":1,"query":"q","domain_filter":["example.com/docs"]}`, codeInvalidDomainFilter},
-		{"domain_filter carries a port", `{"version":1,"query":"q","domain_filter":["example.com:8080"]}`, codeInvalidDomainFilter},
-		{"domain_filter carries whitespace", `{"version":1,"query":"q","domain_filter":["exa mple.com"]}`, codeInvalidDomainFilter},
-		{"max_results not an integer", `{"version":1,"query":"q","max_results":"8"}`, codeInvalidMaxResults},
-		{"max_results not integral", `{"version":1,"query":"q","max_results":8.5}`, codeInvalidMaxResults},
-		{"max_results below 1", `{"version":1,"query":"q","max_results":0}`, codeInvalidMaxResults},
-		{"max_results negative", `{"version":1,"query":"q","max_results":-1}`, codeInvalidMaxResults},
-		{"max_results above 25", `{"version":1,"query":"q","max_results":26}`, codeInvalidMaxResults},
+		{"domain_filter empty entry", `{"version":1,"query":"q","domain_filter":[""]}`, codeInvalidDomainFilter, ""},
+		{"domain_filter empty array", `{"version":1,"query":"q","domain_filter":[]}`, codeInvalidDomainFilter, "empty"},
+		{"domain_filter null", `{"version":1,"query":"q","domain_filter":null}`, codeInvalidDomainFilter, "null"},
+		{"domain_filter carries a scheme", `{"version":1,"query":"q","domain_filter":["https://example.com"]}`, codeInvalidDomainFilter, ""},
+		{"domain_filter carries a path", `{"version":1,"query":"q","domain_filter":["example.com/docs"]}`, codeInvalidDomainFilter, ""},
+		{"domain_filter carries a port", `{"version":1,"query":"q","domain_filter":["example.com:8080"]}`, codeInvalidDomainFilter, ""},
+		{"domain_filter carries whitespace", `{"version":1,"query":"q","domain_filter":["exa mple.com"]}`, codeInvalidDomainFilter, ""},
+		{"max_results not an integer", `{"version":1,"query":"q","max_results":"8"}`, codeInvalidMaxResults, ""},
+		{"max_results not integral", `{"version":1,"query":"q","max_results":8.5}`, codeInvalidMaxResults, ""},
+		{"max_results below 1", `{"version":1,"query":"q","max_results":0}`, codeInvalidMaxResults, ""},
+		{"max_results negative", `{"version":1,"query":"q","max_results":-1}`, codeInvalidMaxResults, ""},
+		{"max_results above 25", `{"version":1,"query":"q","max_results":26}`, codeInvalidMaxResults, ""},
+		{"max_results null", `{"version":1,"query":"q","max_results":null}`, codeInvalidMaxResults, "null"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fr, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -385,6 +397,12 @@ func TestMachineOptionsRefusedBeforeRouterCall(t *testing.T) {
 			errMsg, _ := env["error"].(map[string]any)
 			if errMsg == nil || errMsg["message"] == "" {
 				t.Errorf("no diagnostic message: %v", env)
+			}
+			if tc.wantMsgContains != "" {
+				msg, _ := errMsg["message"].(string)
+				if !strings.Contains(msg, tc.wantMsgContains) {
+					t.Errorf("message %q does not contain %q", msg, tc.wantMsgContains)
+				}
 			}
 			if errOut != "" {
 				t.Errorf("an expected protocol error also explained itself on stderr: %q", errOut)

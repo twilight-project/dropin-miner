@@ -13,6 +13,7 @@ package main
 // on the router's prose.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -174,11 +175,30 @@ func decodeMachineSearchRequest(r io.Reader) (machineSearchRequest, error) {
 	return req, nil
 }
 
+// isJSONNull reports whether raw is the literal JSON null, distinct from
+// an absent field (wire.Recency etc. is empty, not "null", when the
+// caller never wrote the key at all) and distinct from a present zero
+// value. Checked explicitly, ahead of every option's own unmarshal: for a
+// pointer-shaped field like recency and max_results, json.Unmarshal of
+// null into the destination happens to leave it at its Go zero value with
+// no error, which coincidentally fails the bounds check below and gets
+// refused anyway — but "domain_filter" unmarshals null into a nil slice
+// exactly as it would for an absent field, so relying on the coincidence
+// would silently treat a caller's explicit null as "say nothing". A
+// caller who writes the key with a null value has said something, even
+// if that something is "I don't know" — never the same as not asking.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
 // validRecencyWords is the router's own closed vocabulary for "recency",
 // mirrored here so a bad value costs the caller no router call.
 var validRecencyWords = map[string]bool{"day": true, "week": true, "month": true, "year": true}
 
 func validateRecency(raw json.RawMessage) (string, *inputError) {
+	if isJSONNull(raw) {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must not be null`)
+	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return "", inputErrorf(codeInvalidRecency, `"recency" must be a string`)
@@ -194,9 +214,21 @@ func validateRecency(raw json.RawMessage) (string, *inputError) {
 const domainFilterMax = 16
 
 func validateDomainFilter(raw json.RawMessage) ([]string, *inputError) {
+	if isJSONNull(raw) {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must not be null`)
+	}
 	var hosts []string
 	if err := json.Unmarshal(raw, &hosts); err != nil {
 		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must be an array of strings`)
+	}
+	// An explicit [] is a caller sending a filter that excludes every
+	// hostname, which is not a request this client can send meaningfully
+	// — the router does not document what an empty domain_filter does,
+	// and silently forwarding it is far more likely to be a caller
+	// mistake than a deliberate "no domains" request. Refused the same
+	// way a bad entry is, rather than passed through as "no filter."
+	if len(hosts) == 0 {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must not be empty`)
 	}
 	if len(hosts) > domainFilterMax {
 		return nil, inputErrorf(codeInvalidDomainFilter,
@@ -232,6 +264,9 @@ func bareHostname(h string) bool {
 }
 
 func validateMaxResults(raw json.RawMessage) (int, *inputError) {
+	if isJSONNull(raw) {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must not be null`)
+	}
 	var n int
 	if err := json.Unmarshal(raw, &n); err != nil {
 		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must be an integer`)
