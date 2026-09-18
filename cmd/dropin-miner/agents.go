@@ -1637,7 +1637,7 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 	}
 
 	want := codexSandboxBlock(roots)
-	if _, region, _, ok := markedRegion(existing); ok {
+	if pre, region, post, ok := markedRegion(existing); ok {
 		have, readable := splitCodexBlock(region)
 		if !readable {
 			p.refused = append(p.refused, fmt.Sprintf(
@@ -1656,7 +1656,7 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 			p.notes = append(p.notes, fmt.Sprintf("%s: moving %s out of the dropin-miner block in %s, below it, so a later append by Codex lands outside ours: %s",
 				label, tables(len(have.foreign)), path, strings.Join(have.foreignNames(), ", ")))
 		}
-		next := appendTables(appendMarkedBlock(stripped, want), have.foreignText())
+		next := replaceBlockInPlace(pre, want, have.foreignText(), post)
 		planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
 		return
 	}
@@ -1720,6 +1720,46 @@ func codexSandboxBlock(roots []string) []byte {
 // markedRegion, which hands back the surrounding text as well — markedBlock,
 // which returned only the middle, had no callers left once #82 made every
 // one of them need the other two pieces too.
+// replaceBlockInPlace writes want where the block already is, keeping every
+// byte around it exactly as it was read (#99).
+//
+// The block used to be taken out and appended: strip, append, and -- when
+// Codex had put tables inside our markers -- append those after it. That
+// rewrote a file's ORDER for a change that was only ever to our own block,
+// so a participant diffing their own config saw their [projects] and
+// [windows] tables above a block that had been below them, and an
+// uninstall-and-install round trip could not be checked by comparing bytes.
+// Every install did it, not just a round trip: our block walked to the end
+// of the file each time anything about it changed.
+//
+// The rule now is: our block is written WHERE IT IS FOUND, appended only
+// when there is none, and no byte outside our markers ever moves. That
+// second clause is the one a person auditing a machine can actually use --
+// "nothing else changed" is a claim about their bytes, not about ours.
+//
+// Tables Codex appended inside our markers still come out and go BELOW the
+// block, which is L2's rule (#82) and unchanged: below it now means directly
+// below it rather than at the end of the file, and that serves the same
+// purpose better, since a block that is no longer last cannot collect
+// Codex's next append at all.
+//
+// What this does NOT do is make an uninstall followed by an install
+// byte-identical for a block that was not last. Uninstall removes the block,
+// and with it the only record of where it stood; a later install has nothing
+// to read and appends. Restoring that would mean keeping the position
+// somewhere outside the participant's file, which uninstall -purge-state
+// would then have to remove as well -- state invented to hold a fact that
+// only matters to a file we are asked to touch as little as possible. The
+// case that does round-trip byte for byte is the one our own writes produce,
+// a block at the end, and that is asserted.
+func replaceBlockInPlace(pre string, want []byte, foreign, post string) []byte {
+	body := pre + string(want)
+	if strings.TrimRight(foreign, "\n") != "" {
+		body = string(appendTables([]byte(body), foreign))
+	}
+	return []byte(body + post)
+}
+
 func removeMarkedBlock(b []byte) ([]byte, bool) {
 	s := string(b)
 	i := strings.Index(s, agentsMarkerBegin)
