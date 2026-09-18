@@ -458,13 +458,13 @@ func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) st
 
 func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
+	changed, left := planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
 	if spec, err := claudeHooksFor(t, entry, runtime.GOOS); err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
 	} else if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, spec) {
 		changed = true
 	}
-	if !changed {
+	if !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 }
@@ -538,7 +538,7 @@ func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) str
 
 func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	if !planSkill(ops, t, paths.codexSkill, entry, prefer, "", p) {
+	if changed, left := planSkill(ops, t, paths.codexSkill, entry, prefer, "", p); !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	if roots := codexSandboxRoots(entry, getenv); len(roots) > 0 {
@@ -785,7 +785,7 @@ func cursorConfigDir(paths agentPaths) string {
 
 func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
+	changed, left := planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
 	spec, note, err := cursorHooksFor(t, entry, runtime.GOOS)
 	switch {
 	case err != nil:
@@ -798,7 +798,7 @@ func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 			changed = true
 		}
 	}
-	if !changed {
+	if !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 }
@@ -873,7 +873,7 @@ func (opencodeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) 
 }
 
 func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
-	if !planAgentScript(ops, t, paths.opencodePlugin, opencodePluginJS, "lineage plugin", entry, p) {
+	if changed, left := planAgentScript(ops, t, paths.opencodePlugin, opencodePluginJS, "lineage plugin", entry, p); !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
@@ -930,11 +930,10 @@ func (piTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) string
 
 func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
-	if planAgentScript(ops, t, paths.piExtension, piExtensionTS, "lineage extension", entry, p) {
-		changed = true
-	}
-	if !changed {
+	changed, left := planSkill(ops, t, paths.piSkill, entry, prefer, "", p)
+	extChanged, extLeft := planAgentScript(ops, t, paths.piExtension, piExtensionTS, "lineage extension", entry, p)
+	changed, left = changed || extChanged, left || extLeft
+	if !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 }
@@ -1009,11 +1008,11 @@ func (hermesTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) st
 
 func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	changed := planSkill(ops, t, paths.hermesSkill, entry, prefer, hermesApprovalNote, p)
+	changed, left := planSkill(ops, t, paths.hermesSkill, entry, prefer, hermesApprovalNote, p)
 	if planHermesHook(ops, t.Label(), paths.hermesConfig, entry, p) {
 		changed = true
 	}
-	if !changed {
+	if !changed && !left {
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	p.notes = append(p.notes, t.Label()+": takes effect next session; Hermes asks once to approve the hook the first time it fires — approve it, or launch with --accept-hooks. Its shell tool is in the terminal/coding toolsets.")

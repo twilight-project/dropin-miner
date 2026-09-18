@@ -130,7 +130,14 @@ func renderAgentScript(template string, sh shellKind, cfg string) string {
 // planAgentScript renders a JavaScript host's artifact for the shell that
 // host runs tool calls in on this OS, or refuses in the plan rather than
 // installing an adapter that writes the wrong syntax.
-func planAgentScript(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) bool {
+func planAgentScript(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) (changed, left bool) {
+	if leaveToItsOwner(ops, t, path, entry, p) {
+		return false, true
+	}
+	return planAgentScriptWrite(ops, t, path, template, why, entry, p), false
+}
+
+func planAgentScriptWrite(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) bool {
 	shells, err := declaredShells(t, runtime.GOOS, channelTool)
 	if err != nil || len(shells) != 1 {
 		if err == nil {
@@ -773,7 +780,15 @@ func renderSkill(entry binEntry, prefer, note string, shells skillShells) ([]byt
 // refuses in the plan rather than writing a command for a shell nobody has
 // shown runs it. A host whose shell is not established keeps the Bash form
 // and the plan says so (H-R5).
-func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefer, note string, p *agentPlan) bool {
+//
+// left is the third answer, and it is not "unchanged": the file is there, it is
+// another installation's, and nothing was planned for it (leaveToItsOwner).
+// A caller that read it as unchanged would print "already installed" over a
+// host this installation's skill is not on.
+func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefer, note string, p *agentPlan) (changed, left bool) {
+	if leaveToItsOwner(ops, t, path, entry, p) {
+		return false, true
+	}
 	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
 	if shellNote != "" {
 		p.notes = append(p.notes, shellNote)
@@ -781,9 +796,79 @@ func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefe
 	skill, err := renderSkill(entry, prefer, note, shells)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+		return false, false
+	}
+	return planWrite(ops, t.Label(), path, skill, 0o600, "skill", p), false
+}
+
+// leaveToItsOwner is the rule for a file a host has exactly one of: when what
+// is there names another installation's config, it is that installation's,
+// and this one plans nothing for it and says whose it is.
+//
+// A host has one skill directory, and the skill in it names one installation's
+// config. `agents install` for a second installation — the command `setup
+// -home` names in its own closing line — used to overwrite the machine
+// installation's skill with its own, silently; the later `agents uninstall`
+// then removed a skill that did by then name its config, so the removal was
+// correct and the damage had been done here, at install time (#112). Hook
+// entries never had the problem, because a hook file holds a list and each
+// installation's entries sit beside the other's. This is the same ownership
+// rule applied to the files that cannot sit beside each other: the skill, and
+// the JavaScript adapters, which carry INSTALL_CONFIG for exactly this
+// attribution and were clobbered the same way.
+//
+// The CONFIG decides, not the binary, and deliberately. Two installations are
+// told apart by the config each names (#73); one installation whose binary
+// moved — npm to native, a reinstall somewhere else — still names the same
+// config, and its reinstall must be able to refresh its own skill. A file that
+// names no config at all is not refused either: it is a discovery
+// installation's or a hand-edited one, there is no other installation to name
+// as its owner, and refusing would strand it.
+//
+// It sits in the two planners rather than in each host because every writer
+// of these files goes through them — `agents prefer` included, which rewrites
+// every installed skill and would otherwise carry the same clobber.
+func leaveToItsOwner(ops agentOps, t installTarget, path string, entry binEntry, p *agentPlan) bool {
+	other, foreign := foreignOwner(ops, path, entry)
+	if !foreign {
 		return false
 	}
-	return planWrite(ops, t.Label(), path, skill, 0o600, "skill", p)
+	noteOnce(p, t.Label()+": "+leftForeign(other))
+	return true
+}
+
+// foreignOwner names the other installation a file, or the files directly in
+// a directory, belong to — and answers false when any of them names this
+// installation's config or none of them names a config at all. It is the one
+// reading of "whose is this" that install's refusal and `agents uninstall`'s
+// removal share, so what one leaves the other cannot then take.
+func foreignOwner(ops agentOps, path string, entry binEntry) (string, bool) {
+	other := ""
+	for _, content := range readRemoved(ops, path) {
+		_, cfgs := namedInArtifact(content)
+		if len(cfgs) == 0 {
+			continue
+		}
+		if configsInclude(cfgs, entry.cfg) {
+			return "", false
+		}
+		if other == "" {
+			other = describeOther(nil, cfgs, refFor(entry))
+		}
+	}
+	return other, other != ""
+}
+
+// noteOnce adds a note the plan does not already carry. A host with two
+// single-slot files — Pi's skill and its extension — belonging to the same
+// other installation is one fact, and uninstall's sentence says it once.
+func noteOnce(p *agentPlan, note string) {
+	for _, n := range p.notes {
+		if n == note {
+			return
+		}
+	}
+	p.notes = append(p.notes, note)
 }
 
 func buildInstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry, getenv func(string) string) agentPlan {
@@ -1181,10 +1266,31 @@ func hooksFileIsNowOnlyOurs(m map[string]any, root string) bool {
 
 // ── uninstall / status ──────────────────────────────────────────────────
 
+// buildUninstallPlan plans each host's removal and then takes out of it any
+// file that is another installation's, saying whose it is in the words
+// `uninstall` already uses for the same situation (#112). A host's
+// PlanUninstall removes its skill directory because it is there; whether it is
+// THIS installation's is decided here, once, for every host, by the reading
+// install's refusal uses (foreignOwner). Hook entries need none of this: they
+// were always removed entry by entry, by the command each one runs.
 func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry) agentPlan {
 	var p agentPlan
 	for _, t := range selected {
-		t.PlanUninstall(ops, paths, entry, &p)
+		var tp agentPlan
+		t.PlanUninstall(ops, paths, entry, &tp)
+		ours := make([]agentRemove, 0, len(tp.removes))
+		for _, r := range tp.removes {
+			if other, foreign := foreignOwner(ops, r.path, entry); foreign {
+				noteOnce(&tp, t.Label()+": "+leftForeign(other))
+				continue
+			}
+			ours = append(ours, r)
+		}
+		p.writes = append(p.writes, tp.writes...)
+		p.removes = append(p.removes, ours...)
+		p.skipped = append(p.skipped, tp.skipped...)
+		p.refused = append(p.refused, tp.refused...)
+		p.notes = append(p.notes, tp.notes...)
 	}
 	return p
 }

@@ -98,7 +98,7 @@ func TestTheInstallerWritesTheDeclaredShellIntoEveryJavaScriptAdapter(t *testing
 	t.Run("a host that declares powershell gets powershell on any runner", func(t *testing.T) {
 		_, ops := newFakeMachine()
 		var p agentPlan
-		if !planAgentScript(ops, powerShellDeclaringHost{}, "/home/u/adapter.js", opencodePluginJS, "lineage plugin", goldenEntry(), &p) {
+		if changed, _ := planAgentScript(ops, powerShellDeclaringHost{}, "/home/u/adapter.js", opencodePluginJS, "lineage plugin", goldenEntry(), &p); !changed {
 			t.Fatalf("the plan refused a host that declares exactly one tool shell: %v", p.refused)
 		}
 		if len(p.writes) != 1 {

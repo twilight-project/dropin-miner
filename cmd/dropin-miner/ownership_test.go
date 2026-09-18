@@ -153,10 +153,14 @@ func installationWithAgents(t *testing.T, s *setupSandbox, home string, with ...
 // TestUninstallingOneInstallationLeavesAnothersIntegrations is S20.
 //
 // Both installations run the SAME binary, which is what made every match
-// succeed before H5. Each host is installed by the second installation after
-// the first, so the files on disk name the second — and uninstalling the
-// FIRST must therefore leave every one of them exactly as it found it, and
-// say which ones and why.
+// succeed before H5. The machine installation sets its hosts up first and the
+// disposable one second. Until #112 the second install overwrote every
+// single-copy file, so this test uninstalled the FIRST and watched the
+// second's files survive; that premise was the defect. Now the second install
+// leaves them to their owner, so the files on disk name the first — and it is
+// uninstalling the SECOND that must leave every one of them exactly as it
+// found it, and say which ones and why. The direction changed; what is
+// asserted did not.
 func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 	for _, purge := range []bool{false, true} {
 		name := "plain"
@@ -175,8 +179,14 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 			installationWithAgents(t, s, disposable, hosts...)
 
 			// The single-copy artifacts — a skill, the plugin, the extension —
-			// belong wholly to whoever wrote them last, which is the
-			// disposable installation. They must come through untouched.
+			// belong wholly to the installation that wrote them, which since
+			// #112 is the one that got there first: the machine installation.
+			// They must come through the OTHER installation's uninstall
+			// untouched. The premise is checked rather than assumed, because
+			// it is exactly what changed: a file naming the disposable's
+			// config here would make everything below prove the opposite.
+			uninstalled, keeper := disposable, s.home
+			keeperCfg := filepath.Join(keeper, setupConfigFile)
 			paths := s.paths()
 			whole := []string{
 				paths.claudeSkill, paths.codexSkill, paths.cursorSkill,
@@ -190,20 +200,23 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 					t.Fatalf("setup wrote no %s, so leaving it would prove nothing", p)
 				}
 				before[p] = sig
+				if _, cfgs := namedInArtifact(string(s.readFile(p))); !configsInclude(cfgs, keeperCfg) || len(cfgs) == 0 {
+					t.Fatalf("%s names %v, not %s: the second install did not leave it to its owner, and this test's premise is gone", p, cfgs, keeperCfg)
+				}
 			}
 
 			var out string
 			if purge {
 				// -purge-state needs the typed confirmation at a terminal.
 				var code int
-				code, out, _ = s.uninstall(t, tty(s.home), true, nil, "-purge-state", "-home", s.home)
+				code, out, _ = s.uninstall(t, tty(uninstalled), true, nil, "-purge-state", "-home", uninstalled)
 				if code != exitOK {
 					t.Fatalf("uninstall -purge-state exited %d\n%s", code, out)
 				}
 			} else {
 				var code int
 				var errOut string
-				code, out, errOut = s.uninstall(t, nil, false, nil, "-yes", "-home", s.home)
+				code, out, errOut = s.uninstall(t, nil, false, nil, "-yes", "-home", uninstalled)
 				if code != exitOK {
 					t.Fatalf("uninstall exited %d\n%s\n%s", code, out, errOut)
 				}
@@ -212,17 +225,17 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 			for p, want := range before {
 				got, ok := snapshotTree(t, p)[p]
 				if !ok {
-					t.Errorf("uninstalling %s removed %s, which belongs to %s", s.home, p, disposable)
+					t.Errorf("uninstalling %s removed %s, which belongs to %s", uninstalled, p, keeper)
 					continue
 				}
 				if !reflect.DeepEqual(want, got) {
-					t.Errorf("uninstalling %s rewrote %s, which belongs to %s", s.home, p, disposable)
+					t.Errorf("uninstalling %s rewrote %s, which belongs to %s", uninstalled, p, keeper)
 				}
 			}
 
 			// The shared files — the two hook files, which are MERGED rather
 			// than overwritten, so each installation owns its own entries —
-			// keep the disposable's and lose this one's.
+			// keep the keeper's and lose the uninstalled one's.
 			//
 			// Asked through the production matcher, over the DECODED JSON.
 			// The bytes on disk are JSON-escaped, so on Windows a hook command
@@ -230,13 +243,12 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 			// strings.Contains against filepath.Join can only ever fail there.
 			// That is the same mistake as 79ea5ba, f97df97 and 41faaac, and it
 			// is what made this test red on both Windows runners.
-			binPath := filepath.Join(s.home, "bin", binaryNameFor())
-			mine := installationRef{bins: []string{s.exe, binPath}, cfg: s.cfgPath()}
-			theirs := installationRef{bins: []string{s.exe, filepath.Join(disposable, "bin", binaryNameFor())}, cfg: filepath.Join(disposable, setupConfigFile)}
+			mine := installationRef{bins: []string{s.exe, filepath.Join(uninstalled, "bin", binaryNameFor())}, cfg: filepath.Join(uninstalled, setupConfigFile)}
+			theirs := installationRef{bins: []string{s.exe, filepath.Join(keeper, "bin", binaryNameFor())}, cfg: keeperCfg}
 			for _, hooks := range []string{paths.claudeSettings, paths.cursorHooks} {
 				entries := allHookEntries(t, hooks)
 				if len(entries) == 0 {
-					t.Errorf("uninstalling %s left no hook entries in %s, but %s's were there", s.home, hooks, disposable)
+					t.Errorf("uninstalling %s left no hook entries in %s, but %s's were there", uninstalled, hooks, keeper)
 					continue
 				}
 				for _, e := range entries {
@@ -251,13 +263,13 @@ func TestUninstallingOneInstallationLeavesAnothersIntegrations(t *testing.T) {
 					}
 				}
 				if kept == 0 {
-					t.Errorf("%s lost every entry belonging to %s: %v", hooks, disposable, entries)
+					t.Errorf("%s lost every entry belonging to %s: %v", hooks, keeper, entries)
 				}
 			}
 
 			// And it said what it left, naming the installation it left it to
 			// — the way the profile block's refusal already read.
-			if !strings.Contains(out, "left in place; it belongs to the installation configured by "+filepath.Join(disposable, setupConfigFile)) {
+			if !strings.Contains(out, "left in place; it belongs to the installation configured by "+keeperCfg) {
 				t.Errorf("uninstall did not report what it left and to whom:\n%s", out)
 			}
 		})

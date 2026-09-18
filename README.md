@@ -39,7 +39,13 @@ and leaves your shell profile (Windows: user environment) and your coding
 agents alone, `-yes` or not — they belong to the machine's own installation,
 and the documented way to make a disposable installation must not repoint your
 real agents at it. It names `dropin-miner agents install -config
-<dir>/tokendrop.toml` as the way to configure agents for that one.
+<dir>/tokendrop.toml` as the way to configure agents for that one. That command
+adds the second installation's hook entries beside the first's, but a host has
+one skill directory (and opencode and Pi one adapter file), and it belongs to
+the installation that wrote it: `agents install` leaves it, says whose it is,
+and goes on with the rest of the host, and `agents uninstall` and `agents prefer`
+leave it the same way. So on a host the machine installation already set up,
+searches keep running under the machine installation's config.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an
 identity is the installation, and nothing set aside is offered. Your wallet,

@@ -409,6 +409,18 @@ each line names the file that owns the rule and the test that proves it.
   disposable installation's purge deleted the main installation's copy. An artifact naming no
   installation is left and reported, never deleted on the assumption it is ours — with the file
   named and the one `agents install` that would stamp it, so the dead end self-heals.
+  **The rule holds at install time too** (#112). A host has one skill directory, and opencode and
+  Pi one adapter file; a hook file holds a list, which is why hook entries never had the problem.
+  `agents install` for a second installation overwrote the first's skill silently, so the later
+  `agents uninstall` removed a skill that did by then name its config: the removal was correct
+  and the damage was done at install. `leaveToItsOwner` (`agents.go`) sits in the two planners
+  every writer of those files goes through — `agents prefer` included — and `buildUninstallPlan`
+  takes another installation's files out of a host's removal, both through one reading,
+  `foreignOwner`, and both in `uninstall`'s own sentence (`leftForeign`). Here the **config**
+  decides and the binary does not: an installation whose binary moved still names its config and
+  must be able to refresh its own skill. `agents_skill_ownership_test.go` guards it on real files;
+  `TestUninstallingOneInstallationLeavesAnothersIntegrations` changed direction with it, since
+  its old premise — the second install's files name the second — was the defect.
   **One function reads a rendered path**, `unquoteRenderedPath`, and both halves of an
   attribution go through it: the earlier pair disagreed, because the binary half's helper read a
   double-quoted word only through `strconv.Unquote`, which a cmd-rendered Windows path fails on

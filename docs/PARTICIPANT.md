@@ -80,7 +80,11 @@ machine's installation". `setup -home <dir>` by itself, for any other directory,
 a separate installation there: it leaves your shell profile and your coding agents
 alone, even with `-yes`, because those belong to the machine's own installation, and
 tells you the `agents install -config` command that sets agents up for the new one.
-That is what makes `-home` safe for a disposable installation.
+That is what makes `-home` safe for a disposable installation. One limit to know:
+an agent has room for one dropin-miner skill, and it stays with the installation
+that put it there. If your main installation already set an agent up, the second
+one's `agents install` leaves that skill alone and tells you whose it is, so that
+agent keeps searching through your main installation.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an identity
 is the installation, and nothing set aside is offered. Your existing wallet,
