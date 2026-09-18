@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 )
 
 // Updater prepares an upgrade. Every field has a production default except
@@ -19,6 +20,16 @@ type Updater struct {
 	// sequence to run. Nil means the real operations and runtime.GOOS.
 	ops     *replaceOps
 	windows *bool
+	// Tests only: the candidate's per-attempt budget. Zero means
+	// CandidateTimeout; nothing outside this package can set it.
+	candidateBudget time.Duration
+}
+
+func (u Updater) budget() time.Duration {
+	if u.candidateBudget > 0 {
+		return u.candidateBudget
+	}
+	return CandidateTimeout
 }
 
 // Prepared is a verified candidate staged beside the installed binary, or,
@@ -109,9 +120,9 @@ func (u Updater) Prepare(ctx context.Context, executable, currentBuild string, r
 		return Prepared{}, failure(KindStaging, err)
 	}
 	prepared := Prepared{From: current, To: release.Version, Executable: resolved, Candidate: candidate}
-	if err := ValidateCandidate(ctx, u.Runner, candidate, release.Version); err != nil {
+	if err := validateCandidate(ctx, u.Runner, candidate, release.Version, u.budget()); err != nil {
 		prepared.Discard()
-		return Prepared{}, failure(KindCandidateInvalid, err)
+		return Prepared{}, candidateFailure(KindCandidateInvalid, err)
 	}
 	return prepared, nil
 }
