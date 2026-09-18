@@ -42,10 +42,10 @@ func (u Updater) Rollback(ctx context.Context, executable, currentBuild string) 
 		return Rolled{}, failure(KindStaging, err)
 	}
 	discard := func() { _ = os.Remove(candidate) } // #nosec G703 -- the staged copy this function just created
-	target, err := CandidateVersion(ctx, u.Runner, candidate)
+	target, err := candidateVersion(ctx, u.Runner, candidate, u.budget())
 	if err != nil {
 		discard()
-		return Rolled{}, failure(KindPreviousInvalid, fmt.Errorf("%s does not run as a release: %w", previous, err))
+		return Rolled{}, candidateFailure(KindPreviousInvalid, fmt.Errorf("%s does not run as a release: %w", previous, err))
 	}
 	if target.Compare(current) == 0 {
 		discard()

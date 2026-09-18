@@ -22,6 +22,9 @@ import (
 type fakeHookFS struct {
 	files   map[string][]byte
 	flushes []string
+	// mtimes holds a modification time for the files a test has aged; any
+	// other file reads as written at the fake's fixed "now", which is fresh.
+	mtimes map[string]time.Time
 
 	// forceWriteErr / forceMkdirErr / forceRenameErr, when set, make every
 	// call to the matching op fail — standing in for a full disk or a
@@ -30,7 +33,7 @@ type fakeHookFS struct {
 }
 
 func newFakeHookOps(env map[string]string) (*fakeHookFS, hookOps) {
-	f := &fakeHookFS{files: map[string][]byte{}}
+	f := &fakeHookFS{files: map[string][]byte{}, mtimes: map[string]time.Time{}}
 	return f, hookOps{
 		executable: os.Executable,
 		getenv:     func(k string) string { return env[k] },
@@ -56,6 +59,28 @@ func newFakeHookOps(env map[string]string) (*fakeHookFS, hookOps) {
 			f.files[to] = f.files[from]
 			delete(f.files, from)
 			return nil
+		},
+		remove: func(p string) error {
+			if _, ok := f.files[p]; !ok {
+				return fs.ErrNotExist
+			}
+			delete(f.files, p)
+			delete(f.mtimes, p)
+			return nil
+		},
+		listTemps: func(dir string) ([]tempEntry, error) {
+			var out []tempEntry
+			for p := range f.files {
+				if filepath.Dir(p) != dir || !strings.HasSuffix(p, ".tmp") {
+					continue
+				}
+				mod, aged := f.mtimes[p]
+				if !aged {
+					mod = time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+				}
+				out = append(out, tempEntry{name: filepath.Base(p), modTime: mod})
+			}
+			return out, nil
 		},
 		readTail: func(p string, max int64) ([]byte, error) {
 			b, ok := f.files[p]

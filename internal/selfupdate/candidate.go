@@ -102,19 +102,58 @@ func (ExecRunner) Run(ctx context.Context, path string, args, env []string) ([]b
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
+// ErrCandidateTimeout marks a candidate that did not answer `version` within
+// its budget. It is absence of evidence, and is kept apart from every other
+// failure for that reason: see CandidateVersion.
+var ErrCandidateTimeout = errors.New("the candidate's version command timed out")
+
 // CandidateVersion runs `path version` under CandidateTimeout with a stripped
 // environment and accepts only the release output contract: exactly
 // "dropin-miner X.Y.Z\n" with X.Y.Z canonical, and nothing on stderr.
+//
+// A candidate that has not answered is not a bad candidate (#95). The check is
+// the first execution of a freshly written binary, which is exactly when a
+// real-time scanner inspects it, and under load a process that prints one
+// line has missed five seconds twice on a development machine. A timeout is
+// therefore retried ONCE. Anything the candidate actually said — a wrong
+// version, a malformed line, a byte on stderr, a failure to start — is
+// evidence, and is refused on the first call with no second one: a retry
+// there could only turn a bad binary's second, luckier answer into an
+// acceptance. The check is read-only, so asking twice changes nothing.
+//
+// The budget is not raised. CandidateTimeout is a frozen bound, and a larger
+// number would be a guess at how slow a scan can be; one retry is bounded at
+// twice the budget and says something a bigger number cannot — that the
+// candidate was asked again and still did not answer. Two timeouts return an
+// error that is ErrCandidateTimeout, which callers report as retryable.
 func CandidateVersion(ctx context.Context, runner CommandRunner, path string) (Version, error) {
+	return candidateVersion(ctx, runner, path, CandidateTimeout)
+}
+
+func candidateVersion(ctx context.Context, runner CommandRunner, path string, budget time.Duration) (Version, error) {
+	v, err := candidateVersionOnce(ctx, runner, path, budget)
+	// Only a timeout, and only while the operation itself still has time: a
+	// parent deadline that has passed is the operation's end, not a slow
+	// candidate, and a second attempt under it could not run at all.
+	if !errors.Is(err, ErrCandidateTimeout) || ctx.Err() != nil {
+		return v, err
+	}
+	if v, err = candidateVersionOnce(ctx, runner, path, budget); errors.Is(err, ErrCandidateTimeout) {
+		return Version{}, fmt.Errorf("%w twice (limit %s each); it may be slow to start rather than broken, so try again", ErrCandidateTimeout, budget)
+	}
+	return v, err
+}
+
+func candidateVersionOnce(ctx context.Context, runner CommandRunner, path string, budget time.Duration) (Version, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
-	vctx, cancel := context.WithTimeout(ctx, CandidateTimeout)
+	vctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	stdout, stderr, err := runner.Run(vctx, path, []string{"version"}, validationEnvironment(os.Environ()))
 	if err != nil {
 		if errors.Is(vctx.Err(), context.DeadlineExceeded) {
-			return Version{}, fmt.Errorf("the candidate's version command timed out (limit %s)", CandidateTimeout)
+			return Version{}, fmt.Errorf("%w (limit %s)", ErrCandidateTimeout, budget)
 		}
 		return Version{}, fmt.Errorf("the candidate's version command failed: %w", err)
 	}
@@ -135,7 +174,11 @@ func CandidateVersion(ctx context.Context, runner CommandRunner, path string) (V
 
 // ValidateCandidate requires the candidate to report exactly expected.
 func ValidateCandidate(ctx context.Context, runner CommandRunner, path string, expected Version) error {
-	got, err := CandidateVersion(ctx, runner, path)
+	return validateCandidate(ctx, runner, path, expected, CandidateTimeout)
+}
+
+func validateCandidate(ctx context.Context, runner CommandRunner, path string, expected Version, budget time.Duration) error {
+	got, err := candidateVersion(ctx, runner, path, budget)
 	if err != nil {
 		return err
 	}
@@ -143,6 +186,19 @@ func ValidateCandidate(ctx context.Context, runner CommandRunner, path string, e
 		return fmt.Errorf("the candidate reports %s, want %s", got, expected)
 	}
 	return nil
+}
+
+// candidateFailure classifies a failed version check made BEFORE anything was
+// replaced. A candidate that answered wrongly is kind; one that never answered
+// is KindReplacementFailed, whose meaning is exactly this state — replacement
+// stopped before it was committed, the installed binary and .previous are as
+// they were, safe to retry — and which a participant is told to retry. The
+// same check made after the swap already ends there, through the restore.
+func candidateFailure(kind Kind, err error) error {
+	if errors.Is(err, ErrCandidateTimeout) {
+		return failure(KindReplacementFailed, err)
+	}
+	return failure(kind, err)
 }
 
 // validationEnvironment is what a candidate runs with: a fixed locale and,

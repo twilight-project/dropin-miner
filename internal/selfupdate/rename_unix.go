@@ -25,3 +25,8 @@ func platformRenameNew(from, to string) error {
 // fileInUse: a POSIX rename is never refused because a process runs the
 // target.
 func fileInUse(error) bool { return false }
+
+// transientlyHeld: never. The move-aside belongs to the Windows sequence; a
+// POSIX rename is not refused because another process has the file open, so
+// there is no transient holder to wait for and nothing here is ever retried.
+func transientlyHeld(error) bool { return false }
