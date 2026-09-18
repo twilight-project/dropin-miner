@@ -100,6 +100,80 @@ func TestMergedListNormalizesURLs(t *testing.T) {
 	}
 }
 
+// TestMergedListDropsOpaqueURLs: mailto:, tel: and javascript: URLs have no
+// host and no path — they are not fetchable pages — so three providers
+// each citing one must produce zero merged pages, not one page keyed to
+// the empty string all three collide on.
+func TestMergedListDropsOpaqueURLs(t *testing.T) {
+	r := routerResponse{
+		Candidates: []routerCandidate{
+			routerCandidateOK("alpha", routerCitation{URL: "mailto:someone@example.com"}),
+			routerCandidateOK("beta", routerCitation{URL: "tel:+15551234567"}),
+			routerCandidateOK("gamma", routerCitation{URL: "javascript:alert(1)"}),
+		},
+	}
+	pages := mergedPagesOf(r)
+	if len(pages) != 0 {
+		t.Fatalf("pages: got %d, want 0: %+v", len(pages), pages)
+	}
+}
+
+// TestMergedListKeepsPortDistinct: normalizeMergeKey keys on u.Host (which
+// carries the port), not u.Hostname() (which strips it) — two different
+// endpoints must not collapse into one page just because they share a
+// hostname.
+func TestMergedListKeepsPortDistinct(t *testing.T) {
+	r := routerResponse{
+		Candidates: []routerCandidate{
+			routerCandidateOK("alpha", routerCitation{URL: "https://a.test:8080/x"}),
+			routerCandidateOK("beta", routerCitation{URL: "https://a.test/x"}),
+		},
+	}
+	pages := mergedPagesOf(r)
+	if len(pages) != 2 {
+		t.Fatalf("pages: got %d, want 2 (the port makes these different endpoints): %+v", len(pages), pages)
+	}
+}
+
+// TestMergedListKeepsEncodedPathDistinct: normalizeMergeKey uses
+// EscapedPath(), not the percent-decoded Path — "/a%2Fb" (one path segment
+// containing a literal slash) and "/a/b" (two segments) name different
+// resources and must not merge just because Path decodes both the same way.
+func TestMergedListKeepsEncodedPathDistinct(t *testing.T) {
+	r := routerResponse{
+		Candidates: []routerCandidate{
+			routerCandidateOK("alpha", routerCitation{URL: "https://a.test/a%2Fb"}),
+			routerCandidateOK("beta", routerCitation{URL: "https://a.test/a/b"}),
+		},
+	}
+	pages := mergedPagesOf(r)
+	if len(pages) != 2 {
+		t.Fatalf("pages: got %d, want 2 (%%2F and / name different paths): %+v", len(pages), pages)
+	}
+}
+
+// TestMergedListDoesNotDoubleCountOneProvidersRepeat: a provider whose own
+// citation list cites the same page twice (once plain, once with a
+// trailing slash — the same normalized page) must appear in found_by once,
+// not twice; foundSet is what mergedPagesOf uses to guard this.
+func TestMergedListDoesNotDoubleCountOneProvidersRepeat(t *testing.T) {
+	r := routerResponse{
+		Candidates: []routerCandidate{
+			routerCandidateOK("repeats",
+				routerCitation{URL: "https://a.test/x"},
+				routerCitation{URL: "https://a.test/x/"},
+			),
+		},
+	}
+	pages := mergedPagesOf(r)
+	if len(pages) != 1 {
+		t.Fatalf("pages: got %d, want 1: %+v", len(pages), pages)
+	}
+	if got := pages[0].FoundBy; len(got) != 1 || got[0] != "repeats" {
+		t.Errorf("found_by: got %v, want exactly one entry for the repeating provider", got)
+	}
+}
+
 // TestMergedListOrdering drives all three ordering rules S3 states:
 // found_by count descending, then best_rank ascending, then first
 // appearance for a genuine tie.
@@ -131,18 +205,24 @@ func TestMergedListOrdering(t *testing.T) {
 		},
 	}
 	pages := mergedPagesOf(r)
-	wantOrder := []string{
-		"https://a.test/D", // found_by=2, beats every found_by=1 page
-		"https://a.test/A", // found_by=1, best_rank=0, seen before C
-		"https://a.test/C", // found_by=1, best_rank=0, tie with A broken by appearance
-		"https://a.test/B", // found_by=1, best_rank=1 — loses to both rank-0 pages
+	want := []struct {
+		url      string
+		bestRank int
+	}{
+		{"https://a.test/D", 0}, // found_by=2, beats every found_by=1 page; p3 lowered its rank from 1 to 0
+		{"https://a.test/A", 0}, // found_by=1, best_rank=0, seen before C
+		{"https://a.test/C", 0}, // found_by=1, best_rank=0, tie with A broken by appearance
+		{"https://a.test/B", 1}, // found_by=1, best_rank=1 — loses to both rank-0 pages
 	}
-	if len(pages) != len(wantOrder) {
-		t.Fatalf("pages: got %d, want %d: %+v", len(pages), len(wantOrder), pages)
+	if len(pages) != len(want) {
+		t.Fatalf("pages: got %d, want %d: %+v", len(pages), len(want), pages)
 	}
-	for i, want := range wantOrder {
-		if pages[i].URL != want {
-			t.Errorf("position %d: got %q, want %q (full order: %v)", i, pages[i].URL, want, urlsOf(pages))
+	for i, w := range want {
+		if pages[i].URL != w.url {
+			t.Errorf("position %d: got %q, want %q (full order: %v)", i, pages[i].URL, w.url, urlsOf(pages))
+		}
+		if pages[i].BestRank != w.bestRank {
+			t.Errorf("%s best_rank: got %d, want %d", pages[i].URL, pages[i].BestRank, w.bestRank)
 		}
 	}
 }

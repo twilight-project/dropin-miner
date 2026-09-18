@@ -484,27 +484,41 @@ type mergePage struct {
 }
 
 // normalizeMergeKey is S3's URL identity rule: scheme dropped, host
-// lowercased, one leading "www." dropped, a trailing slash dropped,
-// fragment dropped (url.Parse never puts it in Path or RawQuery, so
-// nothing further is needed to drop it) — the query string is kept,
-// because two pages differing only in query are, by the spec, distinct
-// pages, not the same one. A URL that fails to parse becomes its own
-// trimmed string: it matches nothing else, which is the safe default for
-// something this client cannot understand well enough to normalize.
-func normalizeMergeKey(raw string) string {
+// lowercased WITH its port kept (u.Host, not u.Hostname() — ":8080" and no
+// port are different endpoints, not the same page twice), one leading
+// "www." dropped, a trailing slash dropped, fragment dropped (url.Parse
+// never puts it in Path or RawQuery, so nothing further is needed to drop
+// it) — the query string is kept, because two pages differing only in
+// query are, by the spec, distinct pages, not the same one. The path is
+// EscapedPath(), not Path: Path is already percent-decoded, so "/a%2Fb"
+// and "/a/b" would collide on it even though they name different
+// resources (a literal "/" inside one path segment versus a second
+// segment).
+//
+// ok is false, and the citation must be dropped from merged entirely
+// rather than keyed to "", when the URL is not a fetchable page at all:
+// an opaque URL (mailto:, tel:, javascript: — Host and Path both empty
+// because there is no "//authority/path" to have one), the empty string,
+// or anything that fails to parse. Keying these to "" would merge a
+// mailto: link from one provider with a tel: link from another, and with
+// every other citation that also failed to name a page.
+func normalizeMergeKey(raw string) (key string, ok bool) {
 	trimmed := strings.TrimSpace(raw)
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return trimmed
+		return "", false
 	}
-	host := strings.ToLower(u.Hostname())
+	if u.Host == "" && u.Path == "" {
+		return "", false
+	}
+	host := strings.ToLower(u.Host)
 	host = strings.TrimPrefix(host, "www.")
-	path := strings.TrimSuffix(u.Path, "/")
-	key := host + path
+	path := strings.TrimSuffix(u.EscapedPath(), "/")
+	key = host + path
 	if u.RawQuery != "" {
 		key += "?" + u.RawQuery
 	}
-	return key
+	return key, true
 }
 
 // mergedPagesOf builds S3's result.merged: the citations of every "ok"
@@ -521,7 +535,10 @@ func mergedPagesOf(r routerResponse) []machineMergedPage {
 			continue
 		}
 		for rank, cit := range c.Citations {
-			key := normalizeMergeKey(cit.URL)
+			key, keyable := normalizeMergeKey(cit.URL)
+			if !keyable {
+				continue
+			}
 			acc, ok := byKey[key]
 			if !ok {
 				acc = &mergePage{

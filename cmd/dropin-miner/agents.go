@@ -760,11 +760,24 @@ func renderSkill(entry binEntry, prefer, note string, shells skillShells) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	// The frontmatter's description is a YAML scalar, not a bare string
+	// this template can quote for it: descriptionOn carries this search's
+	// own JSON examples, quotes and colons included, and a template that
+	// wraps the substitution in its own literal `"…"` breaks the moment
+	// the value contains one. json.Marshal produces a double-quoted
+	// string with every quote, backslash and control byte escaped — valid
+	// JSON is valid YAML flow scalar syntax, so this is a value every
+	// consumer's YAML parser (gray-matter, js-yaml, PyYAML) accepts
+	// without this template quoting it a second time.
+	descYAML, err := json.Marshal(desc)
+	if err != nil {
+		return nil, err
+	}
 	r := strings.NewReplacer(
 		"{{SEARCH}}", human,
 		"{{CALL}}", call,
 		"{{PREFER}}", pref,
-		"{{DESCRIPTION}}", desc,
+		"{{DESCRIPTION}}", string(descYAML),
 		"{{PREFER_RULES}}", rules,
 		"{{HOST_NOTES}}", note,
 	)

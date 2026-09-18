@@ -1,6 +1,6 @@
 ---
 name: dropin-miner
-description: "{{DESCRIPTION}}"
+description: {{DESCRIPTION}}
 ---
 
 # Web search (dropin-miner)
@@ -62,8 +62,7 @@ position any of them gave it. Ask `"view":"merged"` when tokens matter: it
 drops the per-provider `candidates` list and keeps everything else,
 `merged` included. `decision` says which providers ran. `usage.cost_micros`
 is what the search cost the network, in millionths of a dollar; mention it
-only if the user asks — this is about handling a field you now see, not
-about which tier to choose.
+only if the user asks.
 
 Decide what to do from `ok`, `retryable` and `action`. Never from the message
 text — the message is for a human reading a log, and its wording is not a
