@@ -9,12 +9,35 @@ description: "{{DESCRIPTION}}"
 
 Send one JSON request on **stdin** and read one JSON object back.
 {{CALL}}
-`version` must be `1`. `query` is required. `tier` is optional (`"fast"`).
+`version` must be `1`. `query` is required. Everything else — `tier`,
+`recency`, `domain_filter`, `max_results`, `view` — is optional; see Tiers
+and Request options below. A malformed value in any of them answers
+`fix_input` before the request reaches the router.
 
 The query goes in the JSON, never in the command line. Build that JSON with a
 JSON serializer — do not paste the user's words into a shell string and hope the
 quoting holds. If the host lets a tool write directly to a command's stdin, use
 that instead of a shell at all.
+
+## Tiers
+
+Leave `tier` unset for a routine lookup: the default, `fast`, answers from
+one provider. Ask `"tier":"balanced"` when the user needs to see several
+sources, or when the first result came back thin — several providers,
+attributed.
+
+## Request options
+
+Three more fields, each optional, passed straight through to the router:
+
+- `recency` — `"day"`, `"week"`, `"month"` or `"year"` — for anything
+  time-bound: a release, a price, the news.
+  `{"version":1,"query":"latest stable Kubernetes release","recency":"month"}`
+- `domain_filter` — up to 16 bare hostnames, no scheme or path — when the
+  answer lives on known sites: documentation, a standard, a vendor.
+  `{"version":1,"query":"array flatten method","domain_filter":["developer.mozilla.org"]}`
+- `max_results` — an integer from 1 to 25 — to read less.
+  `{"version":1,"query":"quick fact check","max_results":3}`
 
 ## What comes back
 
@@ -25,10 +48,22 @@ One JSON object on stdout, nothing else. These fields are always present:
  "status":"ok","code":"ok","retryable":false,"action":"none"}
 ```
 
-On success it also carries `request_id`, `result` (chosen index, candidates with
-their answers and citations, session, latency) and `mining`. On failure it
-carries `code`, an optional `error.message`, and `retry_after_ms` when the
-router said how long to wait.
+On success it also carries `request_id`, `result` (chosen index, a merged
+cross-provider list, per-provider candidates, decision, usage, session,
+latency) and `mining`. On failure it carries `code`, an optional
+`error.message`, and `retry_after_ms` when the router said how long to wait.
+
+## Reading the answer
+
+Read `result.merged` first: the citations of every provider that answered,
+deduplicated by page. Each entry's `found_by` says how many providers agree
+on that page — the fan-out's own evidence — and `best_rank` is the best
+position any of them gave it. Ask `"view":"merged"` when tokens matter: it
+drops the per-provider `candidates` list and keeps everything else,
+`merged` included. `decision` says which providers ran. `usage.cost_micros`
+is what the search cost the network, in millionths of a dollar; mention it
+only if the user asks — this is about handling a field you now see, not
+about which tier to choose.
 
 Decide what to do from `ok`, `retryable` and `action`. Never from the message
 text — the message is for a human reading a log, and its wording is not a
