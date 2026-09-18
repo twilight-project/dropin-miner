@@ -30,9 +30,26 @@ import (
 var hermesResavedEntries = map[string]struct {
 	entry   binEntry
 	windows bool
+	// above is the participant's file install appended to. One of them has no
+	// final newline, so that install's note is inside the block Hermes saves.
+	above string
 }{
-	"posix":   {binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/home/u/.tokendrop/tokendrop.toml"}, false},
-	"windows": {binEntry{command: `C:\Users\u\.tokendrop\bin\dropin-miner.exe`, cfg: `C:\Users\u\.tokendrop\tokendrop.toml`}, true},
+	"posix":       {binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/home/u/.tokendrop/tokendrop.toml"}, false, "model: gpt\n"},
+	"posix-noeol": {binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/home/u/.tokendrop/tokendrop.toml"}, false, "model: gpt"},
+	"windows":     {binEntry{command: `C:\Users\u\.tokendrop\bin\dropin-miner.exe`, cfg: `C:\Users\u\.tokendrop\tokendrop.toml`}, true, "model: gpt\n"},
+}
+
+// hermesRoundtripFixtures are what Hermes' ruamel writer makes of each input:
+// a key of its own after our block, and #125's two additions to the hooks:
+// mapping our block opened.
+var hermesRoundtripFixtures = []string{".roundtrip.yaml", ".roundtrip-sibling.yaml", ".roundtrip-item.yaml"}
+
+// hermesAsWindowsSavesIt is a fixture with the line endings Hermes gives it on
+// Windows, where utils.py _atomic_write opens its file in text mode and every
+// "\n" it writes becomes "\r\n". The fixtures themselves are LF because
+// .gitattributes keeps *.yaml LF on every platform.
+func hermesAsWindowsSavesIt(fixture string) string {
+	return strings.ReplaceAll(fixture, "\n", "\r\n")
 }
 
 // hermesResavedInputs is what install writes for each fixed entry, after a
@@ -45,7 +62,7 @@ func hermesResavedInputs() map[string]string {
 			panic("cannot render " + name)
 		}
 		body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
-		out[name] = string(hermesAppendBlock([]byte("model: gpt\n"), body))
+		out[name] = string(hermesAppendBlock([]byte(tc.above), body))
 	}
 	return out
 }
@@ -82,14 +99,22 @@ func TestTheHermesResavedFixturesAreNotStale(t *testing.T) {
 		// is exactly what the one above must not have: ruamel keeps comments
 		// and quotes, so both markers and our quoted matcher are still there,
 		// and the command is folded all the same.
-		roundtrip := readHermesFixture(t, name+".roundtrip.yaml")
-		for _, kept := range []string{agentsMarkerBegin + "\n", agentsMarkerEnd + "\n", hermesHookLines("")[3] + "\n"} {
-			if !strings.Contains(roundtrip, kept) {
-				t.Errorf("%s.roundtrip.yaml has lost %q: it is not the round-trip writer's output", name, kept)
+		for _, suffix := range hermesRoundtripFixtures {
+			roundtrip := readHermesFixture(t, name+suffix)
+			for _, kept := range []string{agentsMarkerBegin + "\n", agentsMarkerEnd + "\n", hermesHookLines("")[3] + "\n"} {
+				if !strings.Contains(roundtrip, kept) {
+					t.Errorf("%s%s has lost %q: it is not the round-trip writer's output", name, suffix, kept)
+				}
 			}
-		}
-		if strings.Contains(roundtrip, rendered) {
-			t.Errorf("%s.roundtrip.yaml holds the command on one line; this fixture no longer tests a folded scalar:\n%s", name, roundtrip)
+			if strings.Contains(roundtrip, rendered) {
+				t.Errorf("%s%s holds the command on one line; this fixture no longer tests a folded scalar:\n%s", name, suffix, roundtrip)
+			}
+			// #125's point: what Hermes added is after our end marker, and its
+			// two additions to OUR mapping are indented under it.
+			after := roundtrip[strings.Index(roundtrip, agentsMarkerEnd+"\n")+len(agentsMarkerEnd)+1:]
+			if continues := strings.HasPrefix(after, " "); continues != (suffix != ".roundtrip.yaml") {
+				t.Errorf("%s%s: what follows our end marker continues our mapping = %v:\n%s", name, suffix, continues, roundtrip)
+			}
 		}
 	}
 }
@@ -103,14 +128,14 @@ func hermesAroundOurBlock(t *testing.T, fixture string) string {
 	lines := strings.SplitAfter(fixture, "\n")
 	begin, end := -1, -1
 	for i, l := range lines {
-		switch strings.TrimRight(l, "\n") {
+		switch strings.TrimRight(l, "\r\n") {
 		case agentsMarkerBegin:
 			begin = i
 		case agentsMarkerEnd:
 			end = i
 		}
 	}
-	if begin < 1 || end < begin || lines[begin-1] != "\n" {
+	if begin < 1 || end < begin || strings.TrimRight(lines[begin-1], "\r\n") != "" {
 		t.Fatalf("no block of ours after a blank line in:\n%s", fixture)
 	}
 	return strings.Join(lines[:begin-1], "") + strings.Join(lines[end+1:], "")
@@ -154,12 +179,14 @@ func TestOurMarkedBlockIsReadAfterHermesFoldsIt(t *testing.T) {
 // What H1 compares the decoded block with is the command the renderer writes
 // today, not H5's rule. H5 answers whose an entry is, and accepts every
 // spelling this client ever wrote; status and install are asking whether there
-// is anything left to do. Each entry below differs from this installation's in
-// one way, is read out of the folded fixture or rendered into a block, and
-// must still be refreshed exactly as it was before #105.
-func TestAMarkedBlockThatIsNotTodaysEntryIsStillRefreshed(t *testing.T) {
+// is anything left to do. So a block that is this installation's in a spelling
+// the renderer no longer writes is not "installed", and is still refreshed.
+//
+// (A block that is ANOTHER installation's was refreshed too when this was
+// written, and this test pinned it. That was #73's defect at install time, and
+// hermes_marked_block_test.go now holds those three cases to the opposite.)
+func TestOurMarkedBlockInAStaleSpellingIsStillRefreshed(t *testing.T) {
 	ours := hermesResavedEntries["posix"].entry
-	folded := readHermesFixture(t, "posix.roundtrip.yaml")
 
 	// v0.2.9's %q spelling: this installation's under H5, and not a command
 	// either of Hermes' splitters reads the way it was meant.
@@ -167,32 +194,19 @@ func TestAMarkedBlockThatIsNotTodaysEntryIsStillRefreshed(t *testing.T) {
 	if !hermesCommandIsOurHook(stale, refFor(ours)) {
 		t.Fatal("v0.2.9's spelling is no longer this installation's under H5, so this case tests nothing")
 	}
-	staleBlock := string(hermesAppendBlock([]byte("model: gpt\n"), strings.Join(hermesHookLines(stale), "\n")+"\n"))
+	m, ops := newFakeMachine("hermes")
+	m.files[hermesConfigPath] = hermesAppendBlock([]byte("model: gpt\n"), strings.Join(hermesHookLines(stale), "\n")+"\n")
 
-	for name, tc := range map[string]struct {
-		config string
-		entry  binEntry
-	}{
-		"folded, another config":      {folded, binEntry{command: ours.command, cfg: "/somewhere/else/tokendrop.toml"}},
-		"folded, another binary":      {folded, binEntry{command: "/somewhere/else/bin/dropin-miner", cfg: ours.cfg}},
-		"folded, no config":           {folded, binEntry{command: ours.command}},
-		"ours in the v0.2.9 spelling": {staleBlock, ours},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m, ops := newFakeMachine("hermes")
-			m.files[hermesConfigPath] = []byte(tc.config)
-			if hermesHookInstalledFor(ops, hermesConfigPath, tc.entry, false) {
-				t.Error("status counted a block that does not hold today's entry for this installation")
-			}
-			var install agentPlan
-			if !planHermesHookFor(ops, "Hermes", hermesConfigPath, tc.entry, false, &install) || len(install.writes) != 1 {
-				t.Fatalf("install did not refresh the block: writes %+v, refused %v", install.writes, install.refused)
-			}
-			want, _ := hermesHookCommand(tc.entry, false)
-			if got := string(install.writes[0].contents); !strings.Contains(got, strings.Join(hermesHookLines(want), "\n")+"\n") {
-				t.Errorf("the refreshed block does not hold the rendered entry:\n%s", got)
-			}
-		})
+	if hermesHookInstalledFor(ops, hermesConfigPath, ours, false) {
+		t.Error("status counted a block that does not hold today's entry for this installation")
+	}
+	var install agentPlan
+	if !planHermesHookFor(ops, "Hermes", hermesConfigPath, ours, false, &install) || len(install.writes) != 1 {
+		t.Fatalf("install did not refresh the block: writes %+v, refused %v, notes %v", install.writes, install.refused, install.notes)
+	}
+	want, _ := hermesHookCommand(ours, false)
+	if got := string(install.writes[0].contents); got != string(hermesAppendBlock([]byte("model: gpt\n"), strings.Join(hermesHookLines(want), "\n")+"\n")) {
+		t.Errorf("the refreshed file is not the participant's file with today's block after it:\n%s", got)
 	}
 }
 
@@ -212,7 +226,43 @@ func TestTheMarkedBlockReaderAnswersOnlyForWhatTheRendererWrites(t *testing.T) {
 		"a different matcher":          func(s string) string { return strings.Replace(s, matcher, "      matcher: \"browser\"\n", 1) },
 		"no matcher":                   func(s string) string { return strings.Replace(s, matcher, "", 1) },
 		"a blank line inside the fold": func(s string) string { return strings.Replace(s, "\n        hermes", "\n\n        hermes", 1) },
-		"a tab in the indentation":     func(s string) string { return strings.Replace(s, "  pre_tool_call:", "\tpre_tool_call:", 1) },
+		// A tab where only the tab check can see it. The first version of this
+		// case put it in front of pre_tool_call:, a line compared as text, so
+		// it failed whether or not tabs were checked and the check could be
+		// deleted with every test green. These two lines are judged by depth,
+		// and len() of their leading whitespace counts a tab as one column: six
+		// for the matcher, eight for the continuation, exactly as rendered.
+		"a tab in the matcher's indentation": func(s string) string {
+			return strings.Replace(s, "      matcher:", "  \t   matcher:", 1)
+		},
+		"a tab in the continuation's indentation": func(s string) string {
+			return strings.Replace(s, "\n        hermes", "\n\t       hermes", 1)
+		},
+		// The entry two columns deeper, every line of it: still a YAML list
+		// entry, and not where the renderer puts one.
+		"the entry re-indented": func(s string) string {
+			for _, line := range []string{"    - command:", "        hermes pre_tool_call'", "      matcher:"} {
+				s = strings.Replace(s, "\n"+line, "\n  "+line, 1)
+			}
+			return s
+		},
+		// The command line alone, with the matcher left where it was. This is
+		// the case that pins the command's OWN depth, and the case above does
+		// not: moving the matcher too makes the matcher's depth check refuse
+		// the block first, so the command's depth can stop being read at all
+		// and every test stays green. A mutation making the `    - command:`
+		// prefix indentation-insensitive survived the whole package until this
+		// case existed. What it lets through is a file no parser loads — a
+		// sequence item and a mapping key at one depth — which is `already set
+		// up` claimed on a config Hermes cannot start on.
+		"the command line alone re-indented": func(s string) string {
+			return strings.Replace(s, "\n    - command:", "\n      - command:", 1)
+		},
+		// Today's command and then more: an equality weakened to "contains"
+		// calls this installed, and Hermes would run the rest.
+		"today's command with more after it": func(s string) string {
+			return strings.Replace(s, "hermes pre_tool_call'", "hermes pre_tool_call && curl https://example.invalid/x'", 1)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			edited := edit(folded)

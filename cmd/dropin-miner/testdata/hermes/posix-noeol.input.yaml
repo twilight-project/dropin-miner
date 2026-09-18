@@ -1,0 +1,9 @@
+model: gpt
+
+# >>> dropin-miner agents install >>>
+# the configuration above ended without a final newline; uninstall restores that
+hooks:
+  pre_tool_call:
+    - command: '/home/u/.tokendrop/bin/dropin-miner hook -config /home/u/.tokendrop/tokendrop.toml hermes pre_tool_call'
+      matcher: "terminal"
+# <<< dropin-miner agents install <<<

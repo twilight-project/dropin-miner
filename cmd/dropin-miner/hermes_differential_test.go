@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -81,9 +82,41 @@ func TestHermesDifferential(t *testing.T) {
 	foreignNull := "    - command: 'nullkey'\n      extra:\n"
 	foreignMulti := "    - command: 'multi'\n      description: long text\n        continues here\n"
 	post := foreignPostTool
+	// Another installation's hook, made by the same renderer from the same
+	// entry with another config: this installation's binary, somebody else's
+	// installation, which is exactly the pair #73 is about.
+	otherEntry, _ := ourHermesEntry(t)
+	otherEntry.cfg = "/tmp/disposable/tokendrop.toml"
+	otherInstallCmd, ok := hermesHookCommand(otherEntry, runtime.GOOS == "windows")
+	if !ok {
+		t.Fatal("could not render another installation's command")
+	}
 	postZero := "  post_tool_call:\n  - command: 'zero-indented'\n    matcher: y\n"
 	head := "hooks:\n  pre_tool_call:\n"
 	plain := "    - command: " + cmd + "\n      matcher: terminal\n"
+
+	// #106 and #125: the same generator, with our own markers around the body.
+	// A marked block is removed only when it is provably ours and provably
+	// only ours, and only when nothing after the end marker continues the
+	// mapping it opened — so for every shape here the config must come back
+	// untouched by INSTALL, whether uninstall takes the block or leaves it.
+	// below is what Hermes' ruamel writer added to our mapping after the end
+	// marker; testdata/hermes holds that writer's real output for these two,
+	// and this is the same two shapes through every prefix and suffix.
+	marked := map[string]struct {
+		text  string
+		below string
+		want  hermesOutcome
+	}{
+		"ours":              {head + ours, "", edited},
+		"foreign-entry":     {head + ours + foreign, "", left},
+		"foreign-first":     {head + foreign + ours, "", left},
+		"comment-inside":    {head + ours + "# mine\n", "", left},
+		"deeper-after-ours": {head + ours + "      timeout: 5\n", "", left},
+		"another-install":   {head + entryLines(otherInstallCmd), "", left},
+		"sibling-below":     {head + ours, post, left},
+		"item-below":        {head + ours, foreign, left},
+	}
 
 	bodies := map[string]struct {
 		text string
@@ -156,7 +189,7 @@ func TestHermesDifferential(t *testing.T) {
 	}
 
 	var pairs []hermesDifferentialPair
-	run := func(name, before string, want hermesOutcome) {
+	run := func(name, before string, want hermesOutcome, isMarked bool) {
 		m, ops := newFakeMachine("hermes")
 		m.files[hermesConfigPath] = []byte(before)
 		code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
@@ -169,6 +202,14 @@ func TestHermesDifferential(t *testing.T) {
 		pairs = append(pairs, hermesDifferentialPair{Name: name, Cmd: cmd, Before: before, After: after, Out: out,
 			InstallOut: installOut, InstallChanged: installChanged})
 
+		// A marked block is ours to rewrite, so install has one job here and
+		// it is to leave the file alone: the block either holds today's entry
+		// (nothing to do) or cannot be vouched for (nothing that may be cut).
+		// Before #106 install cut every one of these out and wrote its own
+		// block in its place, which is #73's defect at install time.
+		if isMarked && installChanged {
+			t.Errorf("%s: install rewrote a marked block:\n%s", name, installOut)
+		}
 		// Install and uninstall read the same file with the same finder, and
 		// their verdicts must be the same verdict. What uninstall could only
 		// MENTION, install may not call set up, may not write beside, and may
@@ -183,7 +224,13 @@ func TestHermesDifferential(t *testing.T) {
 				t.Errorf("%s: install advised pasting a second copy with no warning:\n%s", name, installOut)
 			}
 		}
-		if (after != before || strings.Contains(out, "was left there because")) && !strings.Contains(installOut, "already set up —") {
+		// The same rule for the unmarked form, where install's way of saying
+		// it is the #83 note. Our OWN block does not get that note: install's
+		// answer to a block of ours it will not rewrite is either silence —
+		// there is nothing to do, and the plan's "already installed" says so —
+		// or the one sentence naming what it left, which is asserted above by
+		// installChanged and in hermes_marked_block_test.go by wording.
+		if !isMarked && (after != before || strings.Contains(out, "was left there because")) && !strings.Contains(installOut, "already set up —") {
 			t.Errorf("%s: uninstall found our hook and install did not call it set up:\n%s", name, installOut)
 		}
 		if code != exitOK {
@@ -208,16 +255,21 @@ func TestHermesDifferential(t *testing.T) {
 			}
 		}
 	}
+	every := func(name, cfg string, want hermesOutcome, isMarked bool) {
+		run(name+"/lf", cfg, want, isMarked)
+		run(name+"/crlf", strings.ReplaceAll(cfg, "\n", "\r\n"), want, isMarked)
+		if strings.HasSuffix(cfg, "\n") {
+			run(name+"/noeol", strings.TrimSuffix(cfg, "\n"), want, isMarked)
+		}
+	}
 	for pn, p := range prefixes {
-		for bn, b := range bodies {
-			for sn, s := range suffixes {
-				cfg := p + b.text + s
-				name := fmt.Sprintf("%s/%s/%s", pn, bn, sn)
-				run(name+"/lf", cfg, b.want)
-				run(name+"/crlf", strings.ReplaceAll(cfg, "\n", "\r\n"), b.want)
-				if strings.HasSuffix(cfg, "\n") {
-					run(name+"/noeol", strings.TrimSuffix(cfg, "\n"), b.want)
-				}
+		for sn, s := range suffixes {
+			for bn, b := range bodies {
+				every(fmt.Sprintf("%s/%s/%s", pn, bn, sn), p+b.text+s, b.want, false)
+			}
+			for bn, b := range marked {
+				cfg := p + agentsMarkerBegin + "\n" + b.text + agentsMarkerEnd + "\n" + b.below + s
+				every(fmt.Sprintf("%s/marked-%s/%s", pn, bn, sn), cfg, b.want, true)
 			}
 		}
 	}

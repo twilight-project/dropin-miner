@@ -17,6 +17,15 @@ before/after pair TestHermesDifferential writes:
               warning that the file already names the command; and nothing is
               ever written beside a live hook
 
+  marked      a file carrying our own marked block (#106, #125): install never
+              rewrites one, and a removal never leaves a file that no longer
+              parses. Our end marker is a comment, so Hermes' round-trip writer
+              keeps it attached to our matcher line and adds to the mapping our
+              block opened BELOW it; a marker-to-marker cut orphans those lines
+              and Hermes cannot load its configuration afterwards. That is the
+              one failure this file exists to catch, so it is reported as
+              itself and not as a difference in meaning.
+
 Anything else is a finding. It started as the oracle of L3's review, where it
 found 870 across 2,875 files (F2, F3 and F4 of that review), and took on the
 install checks from the review after that (D1, D2); the expected result now is
@@ -72,6 +81,8 @@ def is_subsequence(after_lines, before_lines):
     return all(any(a == b for b in it) for a in after_lines)
 
 
+MARKER = "# >>> dropin-miner agents install >>>"
+
 pairs = json.load(open(sys.argv[1]))
 tally, findings = Counter(), []
 for p in pairs:
@@ -79,6 +90,18 @@ for p in pairs:
     okb, db = load(b)
     is_live = okb and live(db, cmd)
     io = p.get("install_out", "")
+    if MARKER in b:
+        tally["marked: our own block"] += 1
+        # Ours to rewrite, and two installations share one: a rewrite is
+        # either pointless or another installation's hook replaced (#73).
+        if p.get("install_changed"):
+            findings.append(("install rewrote our marked block", p["name"]))
+    if a != b:
+        oka_early, da_early = load(a)
+        if okb and not oka_early:
+            # The #125 shape, and the reason this check is not left to the
+            # chain below: it is the outcome, not a symptom of one.
+            findings.append(("a removal left a file PyYAML cannot parse: " + str(da_early), p["name"]))
     if "already set up \u2014 the pre_tool_call hook is in" in io:
         tally["install: already set up"] += 1
         if not is_live:
