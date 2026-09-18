@@ -33,7 +33,14 @@ func TestStatusReportsAStaleRenderingUntilAnInstallRefreshesIt(t *testing.T) {
 
 	// An earlier version's skill, and an earlier version's hook matcher — the
 	// one #111's Windows comment found, `"Bash"` for `"Bash|PowerShell"`.
-	skill, settings := "/home/u/.claude/skills/dropin-miner/SKILL.md", "/home/u/.claude/settings.json"
+	// Taken from ops.paths, not typed: paths joins with the host separator,
+	// so on Windows the file production names is \home\u\.claude\... and a
+	// typed forward-slash literal is a different string -- which is what was
+	// still red on both Windows runners after the first attempt at this.
+	// slash() is how the in-memory machine keys them, and tilde() is how the
+	// line spells them.
+	paths := ops.paths(noEnv)
+	skill, settings := slash(paths.claudeSkill), slash(paths.claudeSettings)
 	m.files[skill] = append([]byte("as an earlier version rendered it\n"), m.files[skill]...)
 	stale := strings.Replace(string(m.files[settings]), claudeToolMatcher, "Bash", 1)
 	if stale == string(m.files[settings]) {
@@ -51,8 +58,8 @@ func TestStatusReportsAStaleRenderingUntilAnInstallRefreshesIt(t *testing.T) {
 	// subject and is pinned there; what this test guards is WHICH files are
 	// called stale, and how many.
 	want := []string{
-		tilde(ops.home, skill) + ": " + staleWords,
-		tilde(ops.home, settings) + ": " + staleWords,
+		tilde(ops.home, paths.claudeSkill) + ": " + staleWords,
+		tilde(ops.home, paths.claudeSettings) + ": " + staleWords,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("want exactly Claude Code's skill and settings named as stale\n got %q\nwant %q\n%s", got, want, out)
