@@ -31,6 +31,51 @@ type replaceOps struct {
 	remove        func(path string) error
 	validate      func(ctx context.Context, path string, want Version) error
 	inUse         func(err error) bool // the target is an image a process still runs
+	// transient reports a move-aside failure that a momentary holder of the
+	// file explains (Windows only; never true elsewhere), and pause waits
+	// between attempts. See moveAside.
+	transient func(err error) bool
+	pause     func(time.Duration)
+}
+
+// The move-aside is attempted at most moveAsideAttempts times, moveAsideDelay
+// apart: five attempts and four waits, one second in all.
+const (
+	moveAsideAttempts = 5
+	moveAsideDelay    = 250 * time.Millisecond
+)
+
+// moveAside renames the installed binary to its displaced name, which is the
+// first change the Windows sequence makes.
+//
+// Seen once on main's Windows runner (#78): this rename failed with a sharing
+// violation while nothing of ours held the file — the only child ran from
+// .previous, and Windows lets a running image be renamed. What was left, by
+// elimination, was a scanner or indexer reading a binary the step before had
+// just put in place. A moment later the same rename succeeds, and a
+// participant's desktop has the same scanners.
+//
+// So the rename is retried, for about a second, and ONLY for the errors
+// Windows returns for a file something else is holding right now
+// (transientlyHeld). Every other error is returned at once, on the first
+// attempt: a missing file will not appear, and waiting for it would only
+// delay the message. A directory this user cannot write never gets here —
+// reserve has just created and removed a file in it. When the attempts run
+// out the last error is returned and the caller reports exactly what it
+// always did; nothing has been changed, so there is nothing to undo.
+//
+// An access-denied that is a real, permanent refusal (an ACL that forbids
+// renaming this one file) costs that second and then fails as before. That is
+// the price of not being able to tell the two apart from the code alone, and
+// it is paid once, on a path that was going to fail anyway.
+func moveAside(ctx context.Context, executable, displaced string, ops replaceOps) error {
+	for attempt := 1; ; attempt++ {
+		err := ops.renameNew(executable, displaced)
+		if err == nil || attempt == moveAsideAttempts || !ops.transient(err) || ctx.Err() != nil {
+			return err
+		}
+		ops.pause(moveAsideDelay)
+	}
 }
 
 func defaultReplaceOps(runner CommandRunner) replaceOps {
@@ -53,7 +98,9 @@ func replaceOpsWithin(runner CommandRunner, budget time.Duration) replaceOps {
 		validate: func(ctx context.Context, path string, want Version) error {
 			return validateCandidate(ctx, runner, path, want, budget)
 		},
-		inUse: fileInUse,
+		inUse:     fileInUse,
+		transient: transientlyHeld,
+		pause:     time.Sleep,
 	}
 }
 
@@ -148,7 +195,7 @@ func replaceWindows(ctx context.Context, executable, candidate string, target Ve
 	if err != nil {
 		return failure(KindReplacementFailed, fmt.Errorf("reserve a name for the installed binary: %w", err))
 	}
-	if err := ops.renameNew(executable, displaced); err != nil {
+	if err := moveAside(ctx, executable, displaced, ops); err != nil {
 		return failure(KindReplacementFailed, fmt.Errorf("move the installed binary aside: %w", err))
 	}
 	if err := ops.renameNew(candidate, executable); err != nil {
