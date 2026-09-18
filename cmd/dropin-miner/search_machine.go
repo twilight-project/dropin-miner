@@ -263,11 +263,34 @@ type searchEnvelope struct {
 // bytes and puts the one piece of model-influenceable text in this
 // envelope somewhere it serves no purpose.
 type machineResult struct {
-	RequestID  string             `json:"request_id"`
-	Chosen     int                `json:"chosen"`
-	SessionID  string             `json:"session_id,omitempty"`
-	LatencyMS  int64              `json:"latency_ms,omitempty"`
+	RequestID string `json:"request_id"`
+	Chosen    int    `json:"chosen"`
+	SessionID string `json:"session_id,omitempty"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	// Decision and Usage are nil, and so absent from the envelope, exactly
+	// when the router's own response omitted them — never a zeroed struct
+	// standing in for "the router didn't say."
+	Decision   *machineDecision   `json:"decision,omitempty"`
+	Usage      *machineUsage      `json:"usage,omitempty"`
 	Candidates []machineCandidate `json:"candidates"`
+}
+
+// machineDecision is the router's decision block, carried through: which
+// tier ran, which providers it dispatched, and which it dropped for cost.
+type machineDecision struct {
+	Tier      string   `json:"tier,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	Trimmed   []string `json:"trimmed,omitempty"`
+}
+
+// machineUsage is the router's cost and cache ledger for the whole
+// search. The maintainer's call, 2026-09-18: a participant should see
+// what a search costs the network even though it is free to them.
+type machineUsage struct {
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	CacheHit   bool  `json:"cache_hit,omitempty"`
+	Pending    int   `json:"pending,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type machineCandidate struct {
@@ -278,6 +301,12 @@ type machineCandidate struct {
 	Answer    string            `json:"answer,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	Citations []machineCitation `json:"citations,omitempty"`
+	// CostMicros and LatencyMS are per-candidate, unlike the search-wide
+	// Usage above: each arm has its own cost and its own clock. LatencyMS
+	// is the candidate's total latency (latency.total_ms on the wire),
+	// not its time to first byte.
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type machineCitation struct {
@@ -297,20 +326,39 @@ func machineResultOf(s routerSuccess) *machineResult {
 	out := &machineResult{
 		RequestID:  s.RequestID,
 		Chosen:     r.Chosen,
-		LatencyMS:  r.Usage.LatencyMS,
 		Candidates: make([]machineCandidate, 0, len(r.Candidates)),
 	}
 	if r.Session != nil {
 		out.SessionID = r.Session.ID
 	}
+	if r.Usage != nil {
+		out.LatencyMS = r.Usage.LatencyMS
+		out.Usage = &machineUsage{
+			CostMicros: r.Usage.CostMicros,
+			CacheHit:   r.Usage.CacheHit,
+			Pending:    r.Usage.Pending,
+			LatencyMS:  r.Usage.LatencyMS,
+		}
+	}
+	if r.Decision != nil {
+		out.Decision = &machineDecision{
+			Tier:      r.Decision.Tier,
+			Providers: r.Decision.Providers,
+			Trimmed:   r.Decision.Trimmed,
+		}
+	}
 	for i, c := range r.Candidates {
 		mc := machineCandidate{
-			Provider: c.Provider,
-			Kind:     c.Kind,
-			Status:   c.Status,
-			Chosen:   i == r.Chosen,
-			Answer:   c.Answer,
-			Error:    c.Error,
+			Provider:   c.Provider,
+			Kind:       c.Kind,
+			Status:     c.Status,
+			Chosen:     i == r.Chosen,
+			Answer:     c.Answer,
+			Error:      c.Error,
+			CostMicros: c.CostMicros,
+		}
+		if c.Latency != nil {
+			mc.LatencyMS = c.Latency.TotalMS
 		}
 		for _, cit := range c.Citations {
 			// A conversion, not a field-by-field copy, on purpose: if the

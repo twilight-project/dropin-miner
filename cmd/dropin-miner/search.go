@@ -704,18 +704,56 @@ type routerResponse struct {
 	Session    *struct {
 		ID string `json:"id"`
 	} `json:"session,omitempty"`
-	Usage struct {
-		LatencyMS int64 `json:"latency_ms"`
-	} `json:"usage"`
+	// Decision and Usage are pointers, not values, so a router response
+	// that omits them decodes to nil rather than to a zeroed struct this
+	// client cannot tell apart from a genuine zero — the difference
+	// between "the router said nothing about this" and "the router said
+	// zero", which the machine envelope must preserve (omitempty on the
+	// pointer, never on a value that would print as {} or 0).
+	Decision *routerDecision `json:"decision,omitempty"`
+	Usage    *routerUsage    `json:"usage,omitempty"`
+}
+
+// routerDecision is the router's own account of which arms it ran.
+type routerDecision struct {
+	Tier      string   `json:"tier,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	// Trimmed lists providers the router dropped because the cost
+	// estimate exceeded the tier's ceiling, per the router's own contract
+	// (SKILL.md's "trimmed rather than the request refused"). Absent when
+	// nothing was trimmed.
+	Trimmed []string `json:"trimmed,omitempty"`
+}
+
+// routerUsage is the router's ledger for the whole search: what it cost,
+// whether the answer came from cache, and whether slow-lane arms are
+// still landing.
+type routerUsage struct {
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	CacheHit   bool  `json:"cache_hit,omitempty"`
+	Pending    int   `json:"pending,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type routerCandidate struct {
-	Provider  string           `json:"provider"`
-	Kind      string           `json:"kind"`
-	Status    string           `json:"status"`
-	Answer    string           `json:"answer,omitempty"`
-	Error     string           `json:"error,omitempty"`
-	Citations []routerCitation `json:"citations,omitempty"`
+	Provider   string           `json:"provider"`
+	Kind       string           `json:"kind"`
+	Status     string           `json:"status"`
+	Answer     string           `json:"answer,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Citations  []routerCitation `json:"citations,omitempty"`
+	CostMicros int64            `json:"cost_micros,omitempty"`
+	// CostSource is "reported" when it is the provider's own number, and
+	// something else (typically "modeled") otherwise. Carried through
+	// unread by this client's own logic — a participant reading -format
+	// json is the consumer, not a branch here.
+	CostSource string         `json:"cost_source,omitempty"`
+	Latency    *routerLatency `json:"latency,omitempty"`
+}
+
+type routerLatency struct {
+	TTFBMS  int64 `json:"ttfb_ms,omitempty"`
+	TotalMS int64 `json:"total_ms,omitempty"`
 }
 
 type routerCitation struct {
