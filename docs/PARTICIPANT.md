@@ -244,6 +244,13 @@ carries the answer and its citations, and `mining` carries the mining state.
 2 usage, 3 a 4xx, 4 a 5xx or a response the client could not use.
 `status`, `doctor` and `connect` take `-json` and answer the same way.
 
+The request may also ask for `"tier":"balanced"` (several providers,
+attributed, instead of the default `fast`'s one), `recency`, `domain_filter`
+or `max_results`, and for `"view":"merged"` — a deduplicated list of pages
+across every provider that answered, each naming which ones found it, in
+place of the full per-provider candidate list. The skill your agent was given
+teaches all of this; you never have to ask for it by hand.
+
 A search is bounded by `-timeout`, default 60s, covering the whole operation.
 
 ## Making it the default, or not

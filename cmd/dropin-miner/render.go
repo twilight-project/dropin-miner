@@ -286,5 +286,63 @@ func renderForModel(r routerResponse) string {
 			}
 		}
 	}
+	if line := renderDecisionLine(r); line != "" {
+		b.printf("\n%s\n", line)
+	}
 	return b.String()
+}
+
+// renderDecisionLine is the one line -format model adds after the answer:
+// which providers the router decided to run, the chosen one marked, and
+// what the search cost the network. Nothing here frames tier choice —
+// that is the skill's job (S4) — this only reports what already
+// happened. Absent entirely when the router sent neither decision nor
+// usage, so an older router's response (or the constructed "absence"
+// fixture) renders exactly as it did before this existed, not with a
+// line of zeros standing in for data that was never there.
+func renderDecisionLine(r routerResponse) string {
+	var b strings.Builder
+	if r.Decision != nil && len(r.Decision.Providers) > 0 {
+		chosenProvider := ""
+		if c := r.chosen(); c != nil {
+			chosenProvider = c.Provider
+		}
+		b.WriteString("providers:")
+		for _, p := range r.Decision.Providers {
+			b.WriteString(" ")
+			b.WriteString(oneLine(p, renderProviderCap))
+			if p == chosenProvider {
+				b.WriteString("*")
+			}
+		}
+	}
+	if r.Usage != nil {
+		if b.Len() > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString("cost: ")
+		b.WriteString(formatCostDollars(r.Usage.CostMicros))
+		if r.Usage.Pending > 0 {
+			fmt.Fprintf(&b, "  %d arm(s) still running", r.Usage.Pending)
+		}
+	}
+	return b.String()
+}
+
+// formatCostDollars renders integer micro-dollars (1_000_000 = $1) as the
+// shortest exact decimal: 4000 micros is "$0.004", not "$0.004000" and
+// not "$0" — six decimal places computed exactly from the integer, then
+// trailing zeros trimmed, so the figure is never off by a rounding step.
+func formatCostDollars(micros int64) string {
+	neg := micros < 0
+	if neg {
+		micros = -micros
+	}
+	whole, frac := micros/1_000_000, micros%1_000_000
+	s := strings.TrimRight(fmt.Sprintf("%d.%06d", whole, frac), "0")
+	s = strings.TrimSuffix(s, ".")
+	if neg {
+		s = "-" + s
+	}
+	return "$" + s
 }

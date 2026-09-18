@@ -316,6 +316,15 @@ nothing has to escape it for a shell. `action` is one of `none`, `retry`,
 `retryable` is true, and honor `retry_after_ms` when it is present. Recovery is
 decided from those fields, never from the text of a message.
 
+The request may also carry `tier` (`"fast"`, the default, one provider;
+`"balanced"`, several, attributed), `recency` (`"day"`, `"week"`, `"month"` or
+`"year"`), `domain_filter` (up to 16 bare hostnames) and `max_results` (1-25),
+all optional and passed through to the router unchanged; a malformed value
+answers `fix_input` before any router call. `result.merged` is the citations of
+every candidate deduplicated across providers, each naming which providers
+found it (`found_by`) and its best rank; `view: "merged"` asks for it alone,
+dropping the per-provider `candidates` list.
+
 `connect` means the registration/setup/claim workflow needs attention — no
 registration, an unclaimed one, an expired one, or a step only a person can
 answer. `login` means a search credential exists and was not accepted. A router
