@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/twilight-project/dropin-miner/pkg/fsx"
 )
@@ -33,6 +34,10 @@ type replaceOps struct {
 }
 
 func defaultReplaceOps(runner CommandRunner) replaceOps {
+	return replaceOpsWithin(runner, CandidateTimeout)
+}
+
+func replaceOpsWithin(runner CommandRunner, budget time.Duration) replaceOps {
 	return replaceOps{
 		snapshot:      durableSnapshot,
 		reserve:       reservePath,
@@ -46,7 +51,7 @@ func defaultReplaceOps(runner CommandRunner) replaceOps {
 		},
 		remove: os.Remove,
 		validate: func(ctx context.Context, path string, want Version) error {
-			return ValidateCandidate(ctx, runner, path, want)
+			return validateCandidate(ctx, runner, path, want, budget)
 		},
 		inUse: fileInUse,
 	}
@@ -73,7 +78,7 @@ func (u Updater) replaceOps() replaceOps {
 	if u.ops != nil {
 		return *u.ops
 	}
-	return defaultReplaceOps(u.Runner)
+	return replaceOpsWithin(u.Runner, u.budget())
 }
 
 func replaceWith(ctx context.Context, windows bool, executable, candidate string, target Version, ops replaceOps) error {
