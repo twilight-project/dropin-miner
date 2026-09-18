@@ -19,6 +19,15 @@ import (
 // replacing every occurrence of a known string leaves nothing of it behind.
 // A string too large to scan in one piece is omitted whole, never sliced.
 //
+// The two run in that order — rewrite first, then detect on what is left —
+// and the order is the whole reason both rules can coexist. The account name
+// is known exactly, so inside a path it is rewritten; outside one it is a
+// bare mention with no known shape around it, and the mention is omitted. If
+// detection ran first, every path holding the account name would omit its
+// event and the rewrite would never happen, which is not what a home path is
+// for. Rewriting first removes the name from every path it sits in, so what
+// the bare-mention rule then sees is a mention and nothing else.
+//
 // pkg/redact was not reused: it rewrites in place where this must omit, and
 // importing it brings net/http into a package whose dependency graph is held
 // clear of the network by a test. The credential shapes and their thresholds
@@ -28,14 +37,19 @@ import (
 type ScrubClass string
 
 const (
-	ScrubCredential ScrubClass = "credential"
-	ScrubEnvSecret  ScrubClass = "env_secret"
-	ScrubEmail      ScrubClass = "email"
-	ScrubHostname   ScrubClass = "hostname"
-	ScrubTooLarge   ScrubClass = "too_large"
+	ScrubCredential  ScrubClass = "credential"
+	ScrubEnvSecret   ScrubClass = "env_secret"
+	ScrubEnvDump     ScrubClass = "env_dump"
+	ScrubEmail       ScrubClass = "email"
+	ScrubHostname    ScrubClass = "hostname"
+	ScrubTraceBridge ScrubClass = "trace_bridge"
+	ScrubTooLarge    ScrubClass = "too_large"
 
-	ScrubHomePath    ScrubClass = "home_path"    // rewritten, not omitted
-	ScrubAccountName ScrubClass = "account_name" // rewritten, not omitted
+	ScrubHomePath ScrubClass = "home_path" // rewritten, not omitted
+	// ScrubAccountName is both: the account name inside a home path is
+	// rewritten, and a bare mention of it anywhere else omits the event. One
+	// class names what was found; ScrubResult says which of the two happened.
+	ScrubAccountName ScrubClass = "account_name"
 )
 
 // scrubLimit is the most text scrubbed as one piece.
@@ -59,16 +73,40 @@ var (
 	unixHomePattern    = regexp.MustCompile(`(/Users/|/home/)[^/\s"']+`)
 	windowsHomePattern = regexp.MustCompile(`(?i)([A-Z]:\\Users\\)[^\\\s"']+`)
 	secretNamePattern  = regexp.MustCompile(`(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE)`)
+	// envLinePattern is one line of an environment dump. `env` and `printenv`
+	// write exactly this, and a shell that echoes its environment writes it
+	// with `export ` in front.
+	envLinePattern = regexp.MustCompile(`(?m)^(?:export +)?[A-Za-z_][A-Za-z0-9_]*=`)
 )
 
 // minSecretLength keeps a short value — "true", "1", a port — from being
 // treated as a secret and omitting every event that contains it.
 const minSecretLength = 8
 
+// traceBridgeVar is the environment variable the client carries its trace
+// envelope in. The envelope is base64 and can hold model prose, so no pattern
+// here can see into it; a string that so much as names the variable is
+// omitted whole, wherever it appears — a command line, a shell history, a
+// tool result quoting either.
+const traceBridgeVar = "TOKENDROP_TRACE_BRIDGE="
+
+// envDumpMin is how many NAME=value lines make a string an environment dump.
+// One such line is a variable being set and is judged on its value; five are
+// somebody's whole environment, where the next line is as likely to hold a
+// secret as the one a pattern caught, and the value that gives it away may be
+// one this scrubber has never been told about.
+const envDumpMin = 5
+
 // Scrubber carries what is known exactly about this machine.
 type Scrubber struct {
-	home      string
-	hostname  string
+	home string
+	// hostNames is the machine's name and its first label: a tool result
+	// prints either, and the label alone is still this machine.
+	hostNames []string
+	// accounts is the participant's account name: the home directory's base
+	// name, and USER and LOGNAME where the environment sets them. On Windows
+	// the base name is the account name, which is why USERNAME is not read.
+	accounts  []string
 	envValues []string
 }
 
@@ -76,14 +114,45 @@ type Scrubber struct {
 // and the home directory, so a test supplies them and nothing is read from
 // the process behind the caller's back.
 func NewScrubber(environ []string, hostname, home string) *Scrubber {
-	s := &Scrubber{home: strings.TrimRight(home, `/\`), hostname: hostname}
+	s := &Scrubber{home: strings.TrimRight(home, `/\`)}
+	add := func(list []string, v string) []string {
+		if v == "" {
+			return list
+		}
+		for _, have := range list {
+			if have == v {
+				return list
+			}
+		}
+		return append(list, v)
+	}
+	s.hostNames = add(s.hostNames, hostname)
+	if label, _, ok := strings.Cut(hostname, "."); ok {
+		s.hostNames = add(s.hostNames, label)
+	}
+	s.accounts = add(s.accounts, baseName(s.home))
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
-		if ok && len(value) >= minSecretLength && secretNamePattern.MatchString(name) {
+		if !ok {
+			continue
+		}
+		if len(value) >= minSecretLength && secretNamePattern.MatchString(name) {
 			s.envValues = append(s.envValues, value)
+		}
+		if name == "USER" || name == "LOGNAME" {
+			s.accounts = add(s.accounts, value)
 		}
 	}
 	return s
+}
+
+// baseName is the last element of a path under either separator, since the
+// home directory may be a Windows one on any host reading a transcript.
+func baseName(p string) string {
+	if k := strings.LastIndexAny(p, `/\`); k >= 0 {
+		return p[k+1:]
+	}
+	return p
 }
 
 // ScrubResult is what happened to one piece of content.
@@ -95,17 +164,24 @@ type ScrubResult struct {
 }
 
 // Text scrubs one string. When Omit is set the returned text is empty.
+//
+// A string past the limit is omitted before anything looks at it: scanning
+// its first piece and keeping that is how a credential at the end of a long
+// tool result survives its own scrubbing.
 func (s *Scrubber) Text(in string) (string, ScrubResult) {
-	if class := s.detect(in); class != "" {
-		return "", ScrubResult{Omit: class}
+	if len(in) > scrubLimit {
+		return "", ScrubResult{Omit: ScrubTooLarge}
 	}
 	out, rewrites := s.rewrite(in)
+	if class := s.detect(out); class != "" {
+		return "", ScrubResult{Omit: class}
+	}
 	return out, ScrubResult{Rewrites: rewrites}
 }
 
 func (s *Scrubber) detect(in string) ScrubClass {
-	if len(in) > scrubLimit {
-		return ScrubTooLarge
+	if strings.Contains(in, traceBridgeVar) {
+		return ScrubTraceBridge
 	}
 	for _, re := range credentialPatterns {
 		if re.MatchString(in) {
@@ -117,11 +193,23 @@ func (s *Scrubber) detect(in string) ScrubClass {
 			return ScrubEnvSecret
 		}
 	}
+	if len(envLinePattern.FindAllStringIndex(in, envDumpMin)) >= envDumpMin {
+		return ScrubEnvDump
+	}
 	if emailPattern.MatchString(in) {
 		return ScrubEmail
 	}
-	if s.hostname != "" && containsWhole(in, s.hostname) {
-		return ScrubHostname
+	for _, name := range s.hostNames {
+		if containsWhole(in, name) {
+			return ScrubHostname
+		}
+	}
+	// Last, because a path holding the account name has already been
+	// rewritten by the time this runs: what reaches here is a bare mention.
+	for _, name := range s.accounts {
+		if containsWhole(in, name) {
+			return ScrubAccountName
+		}
 	}
 	return ""
 }
@@ -149,8 +237,15 @@ func tokenByte(b byte) bool {
 func (s *Scrubber) rewrite(in string) (string, map[ScrubClass]int) {
 	rewrites := map[ScrubClass]int{}
 	out := in
+	home := func() { rewrites[ScrubHomePath]++ }
+	// The shell's own spelling of the home directory, before the directory
+	// itself: ~zebrauser and /Users/zebrauser name the same place, and a
+	// transcript holds both.
+	for _, name := range s.accounts {
+		out = replaceWholePath(out, "~"+name, "~", home)
+	}
 	if s.home != "" {
-		out = replaceWholePath(out, s.home, "~", func() { rewrites[ScrubHomePath]++ })
+		out = replaceWholePath(out, s.home, "~", home)
 	}
 	for _, re := range []*regexp.Regexp{unixHomePattern, windowsHomePattern} {
 		out = re.ReplaceAllStringFunc(out, func(m string) string {
@@ -164,10 +259,18 @@ func (s *Scrubber) rewrite(in string) (string, map[ScrubClass]int) {
 // replaceWholePath replaces prefix where it is a whole path prefix: followed
 // by a separator, or by nothing that could continue a name. /Users/ann must
 // not match inside /Users/annabel.
+//
+// The match ignores ASCII case, because the two filesystems this runs on are
+// themselves case-insensitive: /users/zebrauser opens the same directory the
+// host named /Users/zebrauser, and a tool result prints whichever spelling it
+// was given.
 func replaceWholePath(text, prefix, with string, count func()) string {
+	if prefix == "" {
+		return text
+	}
 	var b strings.Builder
 	for {
-		k := strings.Index(text, prefix)
+		k := indexFoldASCII(text, prefix)
 		if k < 0 {
 			b.WriteString(text)
 			return b.String()
@@ -178,10 +281,40 @@ func replaceWholePath(text, prefix, with string, count func()) string {
 			b.WriteString(with)
 			count()
 		} else {
-			b.WriteString(prefix)
+			b.WriteString(text[k:end])
 		}
 		text = text[end:]
 	}
+}
+
+// indexFoldASCII is strings.Index ignoring case in ASCII only. Folding just
+// ASCII keeps every index into one string an index into the other:
+// strings.ToLower can change a rune's encoded length, and a participant whose
+// home directory holds a non-ASCII character would have every offset after it
+// shifted by one.
+func indexFoldASCII(text, sub string) int {
+	for i := 0; i+len(sub) <= len(text); i++ {
+		if equalFoldASCII(text[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+func equalFoldASCII(a, b string) bool {
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 // JSON scrubs every string inside a JSON value, keys included, and

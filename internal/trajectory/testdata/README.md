@@ -22,6 +22,11 @@ with words on either side of each so that a cut, as opposed to an omission, woul
 `…23` is a search interrupted in a second workspace, for which no test writes a consent record.
 None of the planted values is a real credential, address or host.
 
+`emitdup/` is one turn read twice, which is what a resumed session looks like on disk: `…32` is a
+transcript that copied `…31`'s entries verbatim — the same uuids, still carrying the session id
+they were written under — and then held a turn of its own. Two files, three turns read, two turns.
+It is apart from `emit/` because that directory's record count is pinned to it.
+
 One file per case in `projects/`, so a failure names its case:
 
 | Session (last characters) | Case |

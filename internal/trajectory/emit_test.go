@@ -10,12 +10,17 @@ import (
 	"testing"
 )
 
-const emitFixtureDir = "testdata/emit"
+const (
+	emitFixtureDir    = "testdata/emit"
+	emitDupFixtureDir = "testdata/emitdup"
+)
 
 const (
 	sessLabels    = "00000000-0000-4000-8000-000000000021"
 	sessScrub     = "00000000-0000-4000-8000-000000000022"
 	sessAbandoned = "00000000-0000-4000-8000-000000000023"
+	sessDupFirst  = "00000000-0000-4000-8000-000000000031"
+	sessDupResume = "00000000-0000-4000-8000-000000000032"
 
 	consentedWorkspace = "/synthetic/workspace"
 )
@@ -430,6 +435,82 @@ func TestOutcomeLabelsAreDecidedFromWhatTheTurnDid(t *testing.T) {
 	}
 	if got := records[TraceHash(sessAbandoned)]; got.Level != 1 || got.Labels != nil {
 		t.Errorf("the unconsented workspace's record = level %d, labels %v; want 1 and none", got.Level, got.Labels)
+	}
+}
+
+// TestAHostSuppliedNameThatIsNotANameNeverReachesARecord. A model, a host
+// version and a tool name are the host's own strings, and a record carries
+// them as they are rather than scrubbing them as text — so they are held to
+// an identifier's alphabet instead, and one that is not a name is replaced by
+// a placeholder rather than passed through. These three fields sit outside
+// every content class, so text smuggled into one would ride at level 1
+// beside the ids, in a record whose whole claim is that it holds no text.
+func TestAHostSuppliedNameThatIsNotANameNeverReachesARecord(t *testing.T) {
+	for name, hostile := range map[string]string{
+		"a newline":           "synthetic-model-1\nZEBRA-INJECTED a second line",
+		"an at sign":          "zebra.person@example.test",
+		"a quote and a brace": `synthetic-model-1", "zebra": "ZEBRA-INJECTED`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			turn := &Turn{
+				Model: hostile, HostVersion: hostile,
+				Events: []Event{{Kind: KindSearchCall, Origin: OriginClient, ToolName: hostile, Bytes: 1}},
+			}
+			gates := testPolicy(t, buildable(), buildable()).For(consentedWorkspace)
+			rec := buildRecord(turn, emitContext{sessionID: sessLabels}, gates, make([]scrubbed, len(turn.Events)), nil)
+			if rec.Level != 3 || len(rec.Events) != 1 {
+				t.Fatalf("level %d with %d events: the test is not looking at the fields it is about", rec.Level, len(rec.Events))
+			}
+			for field, got := range map[string]string{
+				"model": rec.Model, "host_version": rec.HostVersion, "tool": rec.Events[0].Tool,
+			} {
+				if got != "<unprintable>" {
+					t.Errorf("%s = %q, want <unprintable>", field, got)
+				}
+			}
+			line, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []string{"ZEBRA-INJECTED", "zebra.person@example.test", "synthetic-model-1"} {
+				if strings.Contains(string(line), s) {
+					t.Errorf("the record carries %q out of a host-supplied name:\n%s", s, line)
+				}
+			}
+		})
+	}
+}
+
+// TestATurnPresentTwiceInTheWalkIsEmittedOnce. A resumed session copies the
+// earlier transcript's entries into the new file verbatim, uuids and all, so
+// the same turn is read twice from two files. It is one turn: a corpus that
+// holds it twice counts every search in it twice, and the second copy is not
+// a second observation of anything.
+func TestATurnPresentTwiceInTheWalkIsEmittedOnce(t *testing.T) {
+	var out bytes.Buffer
+	stats, err := Emit(emitDupFixtureDir, testPolicy(t, nil, nil), testScrubber(), &out)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if stats.Records != 2 {
+		t.Fatalf("records = %d, want 2 — the duplicated turn once and the resume's own turn once:\n%s", stats.Records, out.String())
+	}
+	for id, want := range map[string]int{"req_synthetic_0031": 1, "req_synthetic_0032": 1} {
+		if got := strings.Count(out.String(), id); got != want {
+			t.Errorf("request id %s appears %d times, want %d", id, got, want)
+		}
+	}
+	// The copy that is kept is the first reading of the turn, not the resume's.
+	var sessions []string
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var r Record
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("emit wrote a line that is not a record: %v\n%s", err, line)
+		}
+		sessions = append(sessions, r.SessionID)
+	}
+	if want := []string{TraceHash(sessDupFirst), TraceHash(sessDupResume)}; !reflect.DeepEqual(sessions, want) {
+		t.Errorf("records came from sessions %v, want %v: the turn is kept where it was first recorded", sessions, want)
 	}
 }
 
