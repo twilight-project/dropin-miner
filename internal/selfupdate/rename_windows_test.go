@@ -89,7 +89,7 @@ func TestOnWindowsARealSharingViolationIsRetriedUntilTheHolderLetsGo(t *testing.
 	if x.version(x.exe) != "0.3.1" || x.version(x.prev) != "0.3.0" {
 		t.Errorf("installed %s, previous %s", x.version(x.exe), x.version(x.prev))
 	}
-	t.Logf("K6-WINDOWS transient: ran; first move-aside error %v, then success after %d pause", asideErrs[0], pauses)
+	t.Logf("K6-WINDOWS transient: ran; first move-aside error %v, then success after %d pause(s) and %d attempt(s)", asideErrs[0], pauses, len(asideErrs))
 }
 
 func TestOnWindowsAHolderThatNeverLetsGoFailsAfterAboutASecondWithNothingChanged(t *testing.T) {
@@ -142,7 +142,7 @@ func TestOnWindowsAMissingInstalledBinaryIsNotWaitedFor(t *testing.T) {
 	if elapsed > 900*time.Millisecond {
 		t.Errorf("took %s: a missing file was waited for", elapsed)
 	}
-	t.Logf("K6-WINDOWS missing-file: ran; error %v, 1 attempt, no pause, %s", asideErrs[0], elapsed)
+	t.Logf("K6-WINDOWS missing-file: ran; error %v, %d attempt(s), %d pause(s), %s", asideErrs[0], len(asideErrs), pauses, elapsed)
 }
 
 func TestOnWindowsOnlyAHeldFileIsTransient(t *testing.T) {
