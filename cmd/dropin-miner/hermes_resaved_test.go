@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -72,9 +73,156 @@ func TestTheHermesResavedFixturesAreNotStale(t *testing.T) {
 		// The point of the fixture: the dumper folded the command, so no one
 		// line of the file holds it and the renderer's form is not there.
 		tc := hermesResavedEntries[name]
-		if rendered, _ := hermesHookCommand(tc.entry, tc.windows); strings.Contains(resaved, rendered) {
+		rendered, _ := hermesHookCommand(tc.entry, tc.windows)
+		if strings.Contains(resaved, rendered) {
 			t.Errorf("%s.resaved.yaml holds the command on one line; this fixture no longer tests a folded scalar:\n%s", name, resaved)
 		}
+
+		// #105's fixture is the OTHER writer's output, and what makes it that
+		// is exactly what the one above must not have: ruamel keeps comments
+		// and quotes, so both markers and our quoted matcher are still there,
+		// and the command is folded all the same.
+		roundtrip := readHermesFixture(t, name+".roundtrip.yaml")
+		for _, kept := range []string{agentsMarkerBegin + "\n", agentsMarkerEnd + "\n", hermesHookLines("")[3] + "\n"} {
+			if !strings.Contains(roundtrip, kept) {
+				t.Errorf("%s.roundtrip.yaml has lost %q: it is not the round-trip writer's output", name, kept)
+			}
+		}
+		if strings.Contains(roundtrip, rendered) {
+			t.Errorf("%s.roundtrip.yaml holds the command on one line; this fixture no longer tests a folded scalar:\n%s", name, roundtrip)
+		}
+	}
+}
+
+// hermesAroundOurBlock is the fixture with our block taken out by LINE — the
+// markers, what is between them, and the one blank line install puts in front
+// — which is what uninstall must leave. Derived from the fixture rather than
+// typed, and by another route than hermesRemoveBlock's byte offsets.
+func hermesAroundOurBlock(t *testing.T, fixture string) string {
+	t.Helper()
+	lines := strings.SplitAfter(fixture, "\n")
+	begin, end := -1, -1
+	for i, l := range lines {
+		switch strings.TrimRight(l, "\n") {
+		case agentsMarkerBegin:
+			begin = i
+		case agentsMarkerEnd:
+			end = i
+		}
+	}
+	if begin < 1 || end < begin || lines[begin-1] != "\n" {
+		t.Fatalf("no block of ours after a blank line in:\n%s", fixture)
+	}
+	return strings.Join(lines[:begin-1], "") + strings.Join(lines[end+1:], "")
+}
+
+// #105. After a model switch, an in-session setting or a personality change,
+// Hermes' ruamel writer has kept our markers and folded the command inside
+// them. It is the same YAML: status counts it, install leaves it, uninstall
+// takes the block out and nothing else.
+func TestOurMarkedBlockIsReadAfterHermesFoldsIt(t *testing.T) {
+	for name, tc := range hermesResavedEntries {
+		t.Run(name, func(t *testing.T) {
+			roundtrip := readHermesFixture(t, name+".roundtrip.yaml")
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesConfigPath] = []byte(roundtrip)
+
+			if !hermesHookInstalledFor(ops, hermesConfigPath, tc.entry, tc.windows) {
+				t.Errorf("status: Hermes reads this entry and runs it, and it is not counted:\n%s", roundtrip)
+			}
+
+			var install agentPlan
+			if planHermesHookFor(ops, "Hermes", hermesConfigPath, tc.entry, tc.windows, &install) || len(install.writes) != 0 {
+				t.Errorf("install planned a write, which Hermes' next save undoes, on every run: %+v", install.writes)
+			}
+			if len(install.refused) != 0 {
+				t.Errorf("install refused:\n%s", strings.Join(install.refused, "\n"))
+			}
+
+			var uninstall agentPlan
+			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, &uninstall)
+			if len(uninstall.writes) != 1 {
+				t.Fatalf("uninstall planned %d writes, want the one that removes the block: %+v", len(uninstall.writes), uninstall.writes)
+			}
+			if got, want := string(uninstall.writes[0].contents), hermesAroundOurBlock(t, roundtrip); got != want {
+				t.Errorf("uninstall did not leave the surrounding file byte for byte\n--- got ---\n%s\n--- want ---\n%s", got, want)
+			}
+		})
+	}
+}
+
+// What H1 compares the decoded block with is the command the renderer writes
+// today, not H5's rule. H5 answers whose an entry is, and accepts every
+// spelling this client ever wrote; status and install are asking whether there
+// is anything left to do. Each entry below differs from this installation's in
+// one way, is read out of the folded fixture or rendered into a block, and
+// must still be refreshed exactly as it was before #105.
+func TestAMarkedBlockThatIsNotTodaysEntryIsStillRefreshed(t *testing.T) {
+	ours := hermesResavedEntries["posix"].entry
+	folded := readHermesFixture(t, "posix.roundtrip.yaml")
+
+	// v0.2.9's %q spelling: this installation's under H5, and not a command
+	// either of Hermes' splitters reads the way it was meant.
+	stale := strconv.Quote(ours.command) + " hook -config " + strconv.Quote(ours.cfg) + " hermes pre_tool_call"
+	if !hermesCommandIsOurHook(stale, refFor(ours)) {
+		t.Fatal("v0.2.9's spelling is no longer this installation's under H5, so this case tests nothing")
+	}
+	staleBlock := string(hermesAppendBlock([]byte("model: gpt\n"), strings.Join(hermesHookLines(stale), "\n")+"\n"))
+
+	for name, tc := range map[string]struct {
+		config string
+		entry  binEntry
+	}{
+		"folded, another config":      {folded, binEntry{command: ours.command, cfg: "/somewhere/else/tokendrop.toml"}},
+		"folded, another binary":      {folded, binEntry{command: "/somewhere/else/bin/dropin-miner", cfg: ours.cfg}},
+		"folded, no config":           {folded, binEntry{command: ours.command}},
+		"ours in the v0.2.9 spelling": {staleBlock, ours},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, ops := newFakeMachine("hermes")
+			m.files[hermesConfigPath] = []byte(tc.config)
+			if hermesHookInstalledFor(ops, hermesConfigPath, tc.entry, false) {
+				t.Error("status counted a block that does not hold today's entry for this installation")
+			}
+			var install agentPlan
+			if !planHermesHookFor(ops, "Hermes", hermesConfigPath, tc.entry, false, &install) || len(install.writes) != 1 {
+				t.Fatalf("install did not refresh the block: writes %+v, refused %v", install.writes, install.refused)
+			}
+			want, _ := hermesHookCommand(tc.entry, false)
+			if got := string(install.writes[0].contents); !strings.Contains(got, strings.Join(hermesHookLines(want), "\n")+"\n") {
+				t.Errorf("the refreshed block does not hold the rendered entry:\n%s", got)
+			}
+		})
+	}
+}
+
+// Anything more than the four rendered lines between the markers is not
+// something install may call finished: the block is read exactly or not at all.
+func TestTheMarkedBlockReaderAnswersOnlyForWhatTheRendererWrites(t *testing.T) {
+	folded := readHermesFixture(t, "posix.roundtrip.yaml")
+	want, _ := hermesHookCommand(hermesResavedEntries["posix"].entry, false)
+	if !hermesMarkedBlockIsCurrent([]byte(folded), want) {
+		t.Fatal("the fixture itself is not read; every case below would pass for the wrong reason")
+	}
+	matcher := hermesHookLines("")[3] + "\n"
+	for name, edit := range map[string]func(string) string{
+		"a further key in the entry":   func(s string) string { return strings.Replace(s, matcher, matcher+"      timeout: 5\n", 1) },
+		"a second entry":               func(s string) string { return strings.Replace(s, matcher, matcher+"    - command: other\n", 1) },
+		"another event":                func(s string) string { return strings.Replace(s, matcher, matcher+"  post_tool_call: []\n", 1) },
+		"a different matcher":          func(s string) string { return strings.Replace(s, matcher, "      matcher: \"browser\"\n", 1) },
+		"no matcher":                   func(s string) string { return strings.Replace(s, matcher, "", 1) },
+		"a blank line inside the fold": func(s string) string { return strings.Replace(s, "\n        hermes", "\n\n        hermes", 1) },
+		"a tab in the indentation":     func(s string) string { return strings.Replace(s, "  pre_tool_call:", "\tpre_tool_call:", 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			edited := edit(folded)
+			if edited == folded {
+				t.Fatal("the edit did not apply")
+			}
+			if hermesMarkedBlockIsCurrent([]byte(edited), want) {
+				t.Errorf("read as today's entry and nothing besides:\n%s", edited)
+			}
+		})
 	}
 }
 
@@ -137,6 +285,75 @@ func TestOurHookIsFoundInTheFormHermesWrites(t *testing.T) {
 				t.Errorf("the file was changed:\n%s", got)
 			}
 		})
+	}
+}
+
+// The decode accepts a single-quoted scalar only when the renderer's encoder
+// reproduces it, and inside our block that check is load-bearing in one place:
+// a path with an apostrophe. Un-double one of its quotes and a lenient reading
+// decodes to the very same command — byte for byte today's entry — from a
+// file no YAML parser accepts, so Hermes cannot load it and no hook in it is
+// live. Without the check install calls that finished and never repairs it.
+func TestAMarkedBlockWithALoneQuoteIsNotTodaysEntry(t *testing.T) {
+	entry := binEntry{command: "/Users/O'Neil/bin/dropin-miner", cfg: testCfg}
+	cmd, _ := hermesHookCommand(entry, false)
+	rendered := string(hermesAppendBlock([]byte("model: gpt\n"), strings.Join(hermesHookLines(cmd), "\n")+"\n"))
+	if !hermesMarkedBlockIsCurrent([]byte(rendered), cmd) {
+		t.Fatal("the rendered block itself is not read; the case below would pass for the wrong reason")
+	}
+	// The renderer spells the apostrophe '\'' and YAML doubles each quote of
+	// it; take the doubling off the last one.
+	const doubled = `''\''''`
+	if strings.Count(rendered, doubled) != 1 {
+		t.Fatalf("the apostrophe is not spelled the way this test expects:\n%s", rendered)
+	}
+	broken := strings.Replace(rendered, doubled, `''\'''`, 1)
+	// The lenient reading is hermesUnquoteSingle without its check: the outer
+	// quotes off, every doubled quote undone. It must give today's command, or
+	// this case passes without the check it is here to pin.
+	var lenient string
+	for _, line := range strings.Split(broken, "\n") {
+		if scalar, ok := strings.CutPrefix(line, hermesCommandPrefix); ok {
+			lenient = strings.ReplaceAll(scalar[1:len(scalar)-1], "''", "'")
+		}
+	}
+	if lenient != cmd {
+		t.Fatalf("a lenient reading of the broken scalar is %q, not today's command %q", lenient, cmd)
+	}
+	if hermesMarkedBlockIsCurrent([]byte(broken), cmd) {
+		t.Errorf("a scalar no YAML parser accepts was read as today's entry:\n%s", broken)
+	}
+}
+
+// And through the real commands, where this runner can resolve the entry.
+func TestTheRealCommandsReadOurBlockAfterHermesFoldsIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the POSIX entry does not resolve on Windows; the function-level cases above run here instead")
+	}
+	roundtrip := readHermesFixture(t, "posix.roundtrip.yaml")
+	m, ops := newFakeMachine("hermes")
+	m.files[hermesConfigPath] = []byte(roundtrip)
+
+	// The first run has the skill to write; the config is already right.
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("install: exit %d\n%s%s", code, out, errOut)
+	}
+	if got := string(m.files[hermesConfigPath]); got != roundtrip {
+		t.Errorf("install rewrote a block that already holds today's entry:\n%s", got)
+	}
+	code, out, errOut := runAgents(t, ops, nil, "install", "-config", testCfg, "-yes")
+	if code != exitOK || !strings.Contains(out, "Hermes: already installed") {
+		t.Errorf("a second install is not a no-op: exit %d\n%s%s", code, out, errOut)
+	}
+	_, status, _ := runAgents(t, ops, nil, "status", "-config", testCfg)
+	if !strings.Contains(status, "installed (skill+hook)") {
+		t.Errorf("status:\n%s", status)
+	}
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes"); code != exitOK {
+		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
+	}
+	if got, want := string(m.files[hermesConfigPath]), hermesAroundOurBlock(t, roundtrip); got != want {
+		t.Errorf("uninstall did not leave the surrounding file byte for byte\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 

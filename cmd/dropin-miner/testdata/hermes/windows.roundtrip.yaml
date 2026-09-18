@@ -1,0 +1,11 @@
+model: gpt
+
+# >>> dropin-miner agents install >>>
+hooks:
+  pre_tool_call:
+    - command: '"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml"
+        hermes pre_tool_call'
+      matcher: "terminal"
+# <<< dropin-miner agents install <<<
+display:
+  personality: kawaii

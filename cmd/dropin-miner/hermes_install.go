@@ -62,16 +62,30 @@ const hermesNoEOLNote = "# the configuration above ended without a final newline
 // planHermesHook appends (or refreshes) our marked hooks: block in Hermes'
 // config.yaml. Returns whether it planned a write.
 func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPlan) bool {
+	return planHermesHookFor(ops, label, path, entry, runtime.GOOS == "windows", p)
+}
+
+// planHermesHookFor is planHermesHook with the splitter named, so that both
+// platforms' fixtures can be driven on every runner.
+func planHermesHookFor(ops agentOps, label, path string, entry binEntry, windows bool, p *agentPlan) bool {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
 		return false
 	}
-	body, ok := hermesHookYAML(entry)
+	cmd, ok := hermesHookCommand(entry, windows)
 	if !ok {
 		p.refused = append(p.refused, fmt.Sprintf(
 			"%s: cannot write a hook entry for %s — the path cannot be quoted for this platform's command splitter",
 			label, entry.command))
+		return false
+	}
+	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
+	if hermesMarkedBlockIsCurrent(existing, cmd) {
+		// #105: our block, holding today's entry in whatever bytes Hermes'
+		// round-trip writer left it in. Writing it back would be undone by
+		// Hermes' next save, and would make install report a change on every
+		// run of a host where nothing is wrong.
 		return false
 	}
 	stripped, hadBlock := hermesRemoveBlock(existing)
@@ -124,7 +138,13 @@ func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPl
 // "is the hook for THIS binary and THIS config here": a block left behind
 // by a different install is not this installation being complete.
 func hermesHookInstalled(ops agentOps, path string, entry binEntry) bool {
-	body, ok := hermesHookYAML(entry)
+	return hermesHookInstalledFor(ops, path, entry, runtime.GOOS == "windows")
+}
+
+// hermesHookInstalledFor is hermesHookInstalled with the splitter named, so
+// that both platforms' fixtures can be judged on every runner.
+func hermesHookInstalledFor(ops agentOps, path string, entry binEntry, windows bool) bool {
+	cmd, ok := hermesHookCommand(entry, windows)
 	if !ok {
 		return false
 	}
@@ -132,18 +152,138 @@ func hermesHookInstalled(ops agentOps, path string, entry binEntry) bool {
 	if err != nil || b == nil {
 		return false
 	}
-	i := bytes.Index(b, []byte(agentsMarkerBegin))
-	if i < 0 {
+	s := string(b)
+	i, j, marked := hermesMarkedSpan(s)
+	if !marked {
 		// No block of ours: the hook may still be there under a hooks: block
 		// the participant wrote (#83), and then this installation is complete.
 		return findHermesOwnEntry(b, refFor(entry)).found
 	}
-	j := bytes.Index(b[i:], []byte(agentsMarkerEnd))
-	if j < 0 {
+	// The renderer's own bytes, as before — a block that has come to hold
+	// something more beside them still runs our hook, and what that something
+	// is belongs to removal (#106), not to status. Or the same entry in the
+	// bytes Hermes' round-trip writer leaves it in (#105).
+	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
+	return strings.Contains(s[i:j], body) || hermesMarkedBlockIsCurrent(b, cmd)
+}
+
+// ── our own block, after Hermes has been at it ──────────────────────────
+//
+// #105. Hermes has more than one writer for config.yaml, and they do
+// different things to us (utils.py at NousResearch/hermes-agent d150fc202463,
+// each caller read there rather than assumed):
+//
+//   - atomic_yaml_write re-dumps the file through PyYAML. Comments go, so our
+//     markers go; that is the unmarked form findHermesOwnEntry reads. Its
+//     callers are save_config, the setup wizard and `hermes config set`
+//     (set_config_value -> _write_user_config).
+//   - atomic_roundtrip_yaml_update and atomic_roundtrip_yaml_save are ruamel
+//     round trips sharing one loader (_roundtrip_load: preserve_quotes,
+//     indent 2/4/2, ruamel's default 80-column width). Comments and quotes
+//     are KEPT, so our markers survive and our matcher keeps its quotes — and
+//     the command, being longer than 80 columns, is folded onto a second line
+//     inside them. Their callers are a model switch (persist_model_selection),
+//     an in-session setting (cli.save_config_value), a personality change and
+//     the TUI gateway's _save_cfg.
+//
+// A folded scalar is the same YAML and different bytes, and the question this
+// used to ask was about bytes: is the rendered entry, byte for byte, between
+// the markers. After one model switch the answer was no. Status said the hook
+// was missing while Hermes ran it on every terminal call, and install wrote
+// the block back on every run until Hermes folded it again.
+//
+// So the block is read, with the reader #83 built for the unmarked form. What
+// it is compared with is deliberately NOT H5's rule, which answers whose an
+// entry is and accepts every spelling this client ever wrote — v0.2.9's %q
+// among them, which neither of Hermes' splitters undoes. The block is ours to
+// rewrite, so the question here is narrower and costs nothing to keep narrow:
+// does it decode to exactly the command the renderer writes today. A block
+// that is this installation's in a spelling that is not is still refreshed.
+
+// hermesMarkedSpan finds our block: s[i:j] runs from the begin marker to the
+// start of the end marker. The first of each, as hermesRemoveBlock reads them.
+func hermesMarkedSpan(s string) (i, j int, ok bool) {
+	i = strings.Index(s, agentsMarkerBegin)
+	if i < 0 {
+		return 0, 0, false
+	}
+	n := strings.Index(s[i:], agentsMarkerEnd)
+	if n < 0 {
+		return 0, 0, false
+	}
+	return i, i + n, true
+}
+
+// hermesMarkedBlockIsCurrent: does what lies between our markers decode to
+// the entry the renderer writes for cmd?
+func hermesMarkedBlockIsCurrent(b []byte, cmd string) bool {
+	s := string(b)
+	i, j, ok := hermesMarkedSpan(s)
+	if !ok {
 		return false
 	}
-	return bytes.Contains(b[i:i+j], []byte(body))
+	got, ok := hermesReadMarkedBlock(s[i+len(agentsMarkerBegin) : j])
+	return ok && got == cmd
 }
+
+// hermesReadMarkedBlock decodes what lies between our markers, and answers
+// only when that is the mapping the renderer writes and nothing besides:
+// hooks:, pre_tool_call:, one entry whose command is a scalar in any of the
+// three styles with its folding undone, and its matcher. Blank lines and
+// comments are passed over between those lines — our own note is one — but
+// not inside the command, where hermesItemCommand stops at the first line
+// that is not a continuation and an unterminated scalar then fails to decode.
+func hermesReadMarkedBlock(inside string) (cmd string, ok bool) {
+	lines := hermesLines([]byte(inside))
+	var content []int
+	for i, l := range lines {
+		if l.hasTabs {
+			return "", false
+		}
+		if l.indent >= 0 {
+			content = append(content, i)
+		}
+	}
+	want := hermesHookLines("")
+	if len(content) < 4 || lines[content[0]].text != want[0] || lines[content[1]].text != want[1] {
+		return "", false
+	}
+	at := content[2]
+	if lines[at].indent != 4 {
+		return "", false
+	}
+	cmd, ok = hermesItemCommand(lines, at, len(lines))
+	if !ok {
+		return "", false
+	}
+	// What follows the command's own continuation lines is the matcher, and
+	// after the matcher there is nothing.
+	k := at + 1
+	for k < len(lines) && lines[k].indent > 6 {
+		k++
+	}
+	if next := hermesNextContent(lines, k); next < 0 || next != content[len(content)-1] || !hermesIsOurMatcher(lines[next]) {
+		return "", false
+	}
+	return cmd, true
+}
+
+// hermesIsOurMatcher: `      matcher: ` and a scalar that decodes to the tool
+// name the renderer writes. ruamel keeps the quotes we wrote and PyYAML drops
+// them; both are the same matcher.
+func hermesIsOurMatcher(l hermesLine) bool {
+	if l.indent != 6 {
+		return false
+	}
+	rest, ok := strings.CutPrefix(l.text[6:], "matcher:")
+	if !ok || rest == "" || rest[0] != ' ' {
+		return false
+	}
+	v, ok := hermesDecodeScalar(strings.TrimSpace(rest))
+	return ok && v == hermesMatcher
+}
+
+const hermesMatcher = "terminal"
 
 // hermesConfigRefusal reports, in a phrase that completes "config.yaml …",
 // why our block must not be appended to this configuration — or "" when
@@ -300,15 +440,11 @@ func hermesAppendBlock(existing []byte, body string) []byte {
 // put in front of it, restoring the surrounding configuration exactly.
 func hermesRemoveBlock(b []byte) ([]byte, bool) {
 	s := string(b)
-	i := strings.Index(s, agentsMarkerBegin)
-	if i < 0 {
+	i, j, ok := hermesMarkedSpan(s)
+	if !ok {
 		return b, false
 	}
-	j := strings.Index(s[i:], agentsMarkerEnd)
-	if j < 0 {
-		return b, false
-	}
-	end := i + j + len(agentsMarkerEnd)
+	end := j + len(agentsMarkerEnd)
 	if end < len(s) && s[end] == '\n' {
 		end++
 	}
