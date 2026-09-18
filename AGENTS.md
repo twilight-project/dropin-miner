@@ -160,6 +160,19 @@ govulncheck.
     `uninstall -purge-state` after an interactive typed confirmation, the wallet address or the
     installation path, that `-yes` cannot supply and a non-terminal cannot reach: protection against
     accidents and non-interactive automation, not against a program driving a terminal.
+18. **A prompt answers only to a line the participant typed.** A read that ends without one — an
+    interrupt, a closed stdin, a console read the terminal aborted — is not the visual default and
+    not the opposite of it; it is the absence of an answer, and the operation stops there, records
+    nothing, writes nothing, sends nothing, and exits non-zero. `-yes` answers what it already
+    answers and never turns an interrupt into an answer. `prompt.go` owns the rule and the two
+    readers that apply it (`promptBufio` over the shared `bufio.Reader` a command's prompts take
+    turns on, `promptSetup` over `readSetupLine`); a bare `line, _ := br.ReadString('\n')` at a
+    question is the defect, not a shortcut. #81 is the cost: at `Enable mining rewards? [y/N]` the
+    discarded read error made an interrupt an empty line, an empty line is not `y`, and invariant
+    10's runtime authority was written with a decision nobody made — then `connect` registered.
+    A typed refusal and an unanswered question are different outcomes and must stay
+    distinguishable by exit code, which is why the ones that change nothing either way
+    (`agents install`'s `Proceed?`, `wallet send`'s confirmation) still differ there.
 
 ## Subsystems and where their rules live
 A subsystem's authority is one file, and a subsystem nobody has watched fail is a hypothesis — so
@@ -201,6 +214,84 @@ each line names the file that owns the rule and the test that proves it.
   no-flag replacement of a positively-verified expired identity) and
   `TestConnectRefusesCorruptRegistrationWithExistingPlatformCredential` (the refusal that
   `-force` exists to override).
+- **The prompt rule** — `cmd/dropin-miner/prompt.go` owns what counts as an answer and the two
+  readers that ask; every prompt in the binary goes through one of them.
+  `prompt_abort_test.go` drives each real command to each real question, under both an interrupted
+  read and a closed stdin, and asserts the non-zero exit, the unwritten decision and the
+  uncontacted platform — and, in the same file, that a typed refusal still declines and exits 0.
+- **Which installation the profile and the agents belong to** — `cmd/dropin-miner/setup.go` owns it
+  (`otherInstallation`, `leftForOtherInstallation`). This machine's installation is
+  `$TOKENDROP_HOME`, else `~/.tokendrop`; an explicit `-home` naming any other directory is a
+  separate installation, and for it the profile step and the agents step are skipped — named as
+  skipped through D4's mechanism, asked before `-yes`, `-with` or the terminal are, because none of
+  them changes whose profile and whose agents these are (#84: the documented way to make a
+  disposable installation repointed the participant's real agents at it). The closing line and
+  uninstall's restore hint both name what does configure such an installation, and
+  `TOKENDROP_HOME` as the way to say a directory elsewhere IS the machine's own.
+  `setup_other_home_test.go` snapshots the whole sandbox, since the claim is about what is not
+  touched.
+- **Whose content is inside our marked block** — `cmd/dropin-miner/agents.go` owns the split
+  (`markedRegion`, `splitMarkedBlock`, `splitCodexBlock`) and `targets.go` owns what uninstall
+  does with it (`removeOurSandboxBlock`). It is `ownership_match.go`'s rule one level finer: H5
+  decides whether a block is *this installation's* by what the renderer wrote into it rather than
+  where it sits; this decides which tables *inside* it are ours the same way, from the one name in
+  `codexSandboxTable`. Neither is about position, which is what made both defects possible — #73
+  matched a hook by its binary alone, #82 deleted a marker-to-marker byte range and took Codex's
+  folder trust and `[windows] sandbox` with it. A block that will not decode is left alone and
+  reported, never deleted. The line scan that finds the boundaries is **not trusted**:
+  `oursIsOnlyOurs` decodes whatever was classified as ours and requires exactly our one table with
+  nothing nested in it before a byte is deleted or rewritten, because a header the scan misses is
+  not an error, only a missing boundary, and the text around it still decodes — the first pattern
+  said "anything but `]`", Codex keys folder trust by path, and `[projects.'/home/u/work [1]']`
+  went with our table, exit 0, no note. The grammar is fixed; the net is what makes the next miss
+  a refusal instead of a lost table, and the two are tested independently on purpose. `codex_block_ownership_test.go` drives install and uninstall against
+  the shapes Codex produces; `marked_block_sections_test.go` tests the split on its own first,
+  because getting it wrong in the removing direction destroys a participant's settings.
+- **Our entry in a Hermes `hooks:` block we did not write** — `cmd/dropin-miner/hermes_install.go`
+  owns it (`findHermesOwnEntry`, `hermesRunIsRendered`), in the file that already owns the rule it
+  follows: there is no YAML parser, so a false-positive refusal is cheap and an ambiguous mutation
+  is not. An entry is ours only when the file's structure can be vouched for by the same scan
+  install trusts, the entry sits exactly where the renderer puts one, its command is this
+  installation's under `ownership_match.go`'s rule and ends in exactly the renderer's words, and —
+  the net, as in the Codex block — the lines about to go are byte for byte lines `hermesHookLines`
+  produces. What goes is a contiguous suffix of the rendered mapping (two, three or four lines, so
+  no key is left with a null where Hermes expects a list); every other line is copied as read.
+  Found, removable and mentioned are three different answers: a live hook of ours in a form this
+  client will not edit — above all the form **Hermes itself** writes, since `save_config` reloads
+  the file and dumps it through PyYAML, dropping our markers and folding the command — is counted
+  by install and status and named with its lines by uninstall; a command named somewhere the
+  structured find will not read earns a sentence and never an edit or an "already set up".
+  "Found" is a claim about what Hermes will run — install turns it into "already set up", status
+  into "installed" — so every rule about the block itself runs before it is made, and a rule that
+  trips answers at the mention tier: one `pre_tool_call:` key, nothing at list depth that is not a
+  list entry, no line at a depth a parser would reject, and our own entry made only of lines a
+  parser would accept where they stand. Install's refusal then carries the warning that the file
+  already names the command, so the paste advice never lands silently beside a live hook.
+  `hermes_own_entry_test.go` pairs each removed shape with neighbors one step away that must come
+  back byte-identical, and takes its command from a real install rather than a typed string;
+  `testdata/hermes/*.resaved.yaml` is the real output of Hermes' dumper (`resave.py`), never typed;
+  and `hermes_differential_test.go` runs 2,875 generated files through the real uninstall, with
+  `testdata/hermes/oracle.py` to ask PyYAML what each meant before and after — the only judge of
+  a by-line YAML edit that is not the code that made it.
+- **What the client writes into a participant's files** — `cmd/dropin-miner/setup_config.go`
+  renders `tokendrop.toml`, fresh and migrated; `agents.go`, `setup_env.go` and
+  `hermes_install.go` render the blocks that go into a host's own config. Every byte any of them
+  contributes is ASCII: Windows PowerShell 5.1 reads a file with no byte-order mark in the ANSI
+  code page, so an em dash reaches a participant as `â€”` (#88), and in a PowerShell
+  script a mis-decoded quotation mark ends a string early and the file stops parsing.
+  `generated_config_ascii_test.go` renders each artifact from ASCII inputs and refuses a byte
+  above 0x7F — from ASCII inputs, because a participant whose home is `C:\Users\José` is not
+  this client's doing. `installer_bridge_test.go` holds the same rule for `scripts/install.ps1`.
+- **What a destructive run may leave behind** — `cmd/dropin-miner/lifecycle.go` owns the
+  exclusion: which operation locks it takes, which of those files it created, and the rule that
+  `release` removes exactly those and only when the operation never proceeded (`proceeded()`).
+  `excludeForUpgrade` opts out, in its own words, at its own construction. `install.sh`'s EXIT
+  trap and `install.ps1`'s try/finally are the same rule for the download: the temporary directory
+  goes on every exit path, because a checksum failure is the one case where what is left behind is
+  the file just called untrustworthy. `lifecycle_created_locks_test.go` and
+  `installer_tempdir_test.go` guard them; the second names where the temporary directory was
+  before it claims it is gone, because asserting an empty scratch directory passes just as well
+  when nothing was ever created there.
 - **Wallet custody and the send journal** — `wallet_store.go` owns the creation lock and the
   wallet directory's layout; `wallet_journal.go` owns `pending_tx.json` and its resolution;
   `wallet_tx.go` hand-encodes the signed bytes. `wallet_lock_test.go` proves creation is exclusive

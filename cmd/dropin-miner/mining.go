@@ -382,8 +382,19 @@ func askMiningQuestion(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Writ
 				"participant draw one share, so enabling it here earns nothing extra and mostly adds conflict noise "+
 				"during epochs where both are live.")
 		}
-		fmt.Fprint(stderr, "Enable mining rewards? [y/N] ")
-		line, _ := br.ReadString('\n')
+		// #81: this is the prompt prompt.go's rule was written for. An
+		// interrupt here used to be an empty line, an empty line is not
+		// "y", and SaveMiningEnabled(false) below then wrote a decision
+		// nobody made onto invariant 10's runtime authority — with
+		// connect going on to register afterwards. A non-zero code is
+		// what stops that: every caller (cmdMining, and connect through
+		// decideRegistrationOutcome) already returns on one, before the
+		// Register call.
+		line, err := promptBufio(stderr, "Enable mining rewards? [y/N] ", br)
+		if err != nil {
+			fmt.Fprintf(stderr, "\ndropin-miner: %s; no mining decision was recorded and nothing was registered\n", promptAbortedReason)
+			return miningEnableOutcome{}, exitUsage
+		}
 		enabled = strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
 	}
 	if err := store.SaveMiningEnabled(enabled); err != nil {
@@ -436,8 +447,18 @@ func finishMiningEnabled(stdin io.Reader, br *bufio.Reader, stdout, stderr io.Wr
 	// exactly that case).
 	address := cfg.Mining.PayoutAddress
 	if address == "" {
-		fmt.Fprint(stderr, "Payout address (leave empty to create a wallet here): ")
-		addrLine, _ := br.ReadString('\n')
+		// The enable half above is already on disk by now, from a line
+		// the participant did type. Aborting here therefore leaves
+		// exactly the state decideRegistrationOutcome is written to
+		// resume from — ENABLED with no address on file — and says so,
+		// rather than falling through to the empty-answer branch below,
+		// which would create a wallet nobody asked for.
+		addrLine, err := promptBufio(stderr, "Payout address (leave empty to create a wallet here): ", br)
+		if err != nil {
+			fmt.Fprintf(stderr, "\ndropin-miner: %s; no payout address was recorded and no wallet was created. "+
+				"Mining stays enabled from your answer above; run `dropin-miner mining enable` to give it an address.\n", promptAbortedReason)
+			return miningEnableOutcome{}, exitUsage
+		}
 		address = strings.TrimSpace(addrLine)
 	}
 

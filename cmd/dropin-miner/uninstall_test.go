@@ -375,6 +375,12 @@ func TestDefaultUninstallPreservesEveryParticipantByte(t *testing.T) {
 			t.Errorf("the closing message must say %q:\n%s", want, out)
 		}
 	}
+	// #88: the order of those two is the whole point. setup -home is the way
+	// back; connect on its own is the thing not to do. The old wording put
+	// the warning last, where it read as the next step.
+	if i, j := strings.Index(out, "To keep using this installation"), strings.Index(out, "Do not run `dropin-miner connect` on its own"); i < 0 || j < 0 || j < i {
+		t.Errorf("the closing message must offer setup -home before it warns off connect (at %d and %d):\n%s", i, j, out)
+	}
 	if runtime.GOOS == "windows" {
 		if pathHasEntry(s.userEnv.values["Path"], filepath.Join(s.home, "bin")) || s.userEnv.values["TOKENDROP_CONFIG"] != "" {
 			t.Errorf("the user environment setup set was not reverted: %v", s.userEnv.values)

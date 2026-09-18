@@ -137,56 +137,64 @@ func (registryUserEnvironment) Broadcast() {
 	runtime.KeepAlive(param)
 }
 
-func (r *setupRun) environmentStep() {
+func (r *setupRun) environmentStep() int {
 	binDir := filepath.Join(r.home, "bin")
 	r.say("User environment")
+	if r.leftForOtherInstallation("user environment", "Your user PATH and TOKENDROP_CONFIG belong to that one", "setting them here would repoint your real environment at this installation") {
+		return exitOK
+	}
 	r.printf("These make the other commands short: %s on your user PATH, and\n"+
 		"TOKENDROP_CONFIG=%s. Your key is not among them: a search reads it from the\n"+
 		"stored credentials file. Windows and agents started afterwards see them.\n", binDir, r.cfgPath)
 	if r.noProfile {
 		r.printf("Left your user environment alone (-no-profile).\n")
 		r.skip("user environment")
-		return
+		return exitOK
 	}
 	env := r.d.userEnv
 	if env == nil {
 		r.printf("No user environment to change. Add %s to PATH and set TOKENDROP_CONFIG by hand.\n", binDir)
-		return
+		return exitOK
 	}
 	journalPath := filepath.Join(r.home, setupEnvJournalFile)
 	prior, err := readEnvJournal(journalPath)
 	if err != nil {
 		r.printf("Not touching your user environment: %v. Set them by hand.\n", err)
-		return
+		return exitOK
 	}
 	change, err := planUserEnvironment(env, prior, binDir, r.cfgPath)
 	if err != nil {
 		r.printf("Not touching your user environment: %v. Set them by hand.\n", err)
-		return
+		return exitOK
 	}
 	if !change.writeJournal && !change.addPath && !change.setConfig {
 		r.shortCommands = true
 		r.printf("Your user environment already has them.\n")
-		return
+		return exitOK
 	}
 	if r.dry {
 		r.printf("(dry run) would record what it changes in %s, then set them\n", journalPath)
-		return
+		return exitOK
 	}
 	if !r.d.interactive && !r.yes {
 		r.printf("Not an interactive shell — not touching your user environment (pass -yes to set them).\n")
 		r.skip("user environment")
-		return
+		return exitOK
 	}
-	if !r.ask("Set them for your user?") {
+	set, err := r.ask("Set them for your user?")
+	if err != nil {
+		return r.abort("your user environment was not touched and the coding agents were not set up")
+	}
+	if !set {
 		r.say("Left your user environment alone")
-		return
+		return exitOK
 	}
 	if err := applyUserEnvironment(env, journalPath, change); err != nil {
 		r.printf("Could not finish: %v. Set them by hand.\n", err)
-		return
+		return exitOK
 	}
 	r.changed = true
 	r.shortCommands = true
 	r.say("Set them for your user; open a new window to use them")
+	return exitOK
 }

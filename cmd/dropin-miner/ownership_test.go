@@ -12,6 +12,7 @@ package main
 // names, and it was correctly left with a line saying why.
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -115,13 +116,37 @@ func TestRenderedWordsKeepsAQuotedPathWhole(t *testing.T) {
 
 // ── two installations sharing one binary, end to end ────────────────────
 
-// installationWithAgents sets up a second installation under home, using the
-// same sandbox — and therefore the same binary — as the first.
+// installationWithAgents sets up an installation under home, using the same
+// sandbox — and therefore the same binary — as the first, and gives it its
+// agent integrations.
+//
+// For the machine's own installation setup does both. For any other home it
+// no longer does (#84): setup -home <elsewhere> leaves the agents alone, and
+// its closing line names `agents install -config <home>/tokendrop.toml` as
+// the way to configure them. So that is the path this takes, which keeps the
+// scenario below — two installations, one binary, both with integrations —
+// reachable the way a participant now reaches it.
 func installationWithAgents(t *testing.T, s *setupSandbox, home string, with ...string) {
 	t.Helper()
 	args := append([]string{"-yes", "-home", home}, with...)
-	if code, out, errOut := s.run(nil, false, args...); code != exitOK {
+	code, out, errOut := s.run(nil, false, args...)
+	if code != exitOK {
 		t.Fatalf("setup -home %s exited %d\n%s\n%s", home, code, out, errOut)
+	}
+	if samePath(home, s.home) {
+		return
+	}
+	cfg := filepath.Join(home, setupConfigFile)
+	if !strings.Contains(out, "agents install -config "+cfg) {
+		t.Fatalf("setup -home %s did not name the command that configures its agents:\n%s", home, out)
+	}
+	install := []string{"install", "-config", cfg, "-yes"}
+	for i := 0; i+1 < len(with); i += 2 {
+		install = append(install, "-client", with[i+1])
+	}
+	var aout, aerr bytes.Buffer
+	if code := agentsMain(s.agentOps(false), install, strings.NewReader(""), &aout, &aerr, s.getenv); code != exitOK {
+		t.Fatalf("agents install -config %s exited %d\n%s\n%s", cfg, code, aout.String(), aerr.String())
 	}
 }
 
@@ -581,13 +606,13 @@ func TestTheCodexSandboxBlockIsAttributedByItsWritableRoots(t *testing.T) {
 	ours := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(home, "state"), filepath.Join(home, "intake")}))
 	theirs := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(t.TempDir(), "other", "state")}))
 
-	if _, had, isOurs := removeOurSandboxBlock(ours, entry); !had || !isOurs {
-		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", had, isOurs)
+	if r := removeOurSandboxBlock(ours, entry); !r.had || !r.ours {
+		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", r.had, r.ours)
 	}
-	if _, had, isOurs := removeOurSandboxBlock(theirs, entry); !had || isOurs {
-		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", had, isOurs)
+	if r := removeOurSandboxBlock(theirs, entry); !r.had || r.ours {
+		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", r.had, r.ours)
 	}
-	if _, had, _ := removeOurSandboxBlock([]byte("[nothing]\n"), entry); had {
+	if r := removeOurSandboxBlock([]byte("[nothing]\n"), entry); r.had {
 		t.Error("a config with no marked block reported one")
 	}
 }

@@ -270,11 +270,21 @@ func (r *uninstallRun) run(homeFlag string) int {
 			return code
 		}
 	default:
-		if !r.ask("Remove what is listed above?") {
+		remove, err := r.ask("Remove what is listed above?")
+		if err != nil {
+			fmt.Fprintf(d.stderr, "\ndropin-miner uninstall: %s; %s\n", promptAbortedReason, noParticipantChange)
+			return exitUsage
+		}
+		if !remove {
 			r.say(noParticipantChange)
 			return exitOK
 		}
 	}
+
+	// Past the decision: the operation lock files this run's exclusion had
+	// to create are now part of the installation it is changing, not
+	// something an abort has to undo (#86, lifecycle.go's release).
+	r.ex.proceeded()
 
 	r.applyIntegrations()
 	r.applyEnvironment()
@@ -395,7 +405,12 @@ func (r *uninstallRun) exclude() (*lifecycleExclusion, error) {
 	if err != nil {
 		return nil, err
 	}
-	ex := &lifecycleExclusion{home: r.home, gate: gate}
+	// removeCreated for the same reason excludeLifecycle sets it: a
+	// default run that is declined at "Remove what is listed above?"
+	// prints that nothing was changed, and a setup.lock this probe made
+	// would make that false too (#86). The issue reported -purge-state,
+	// but nothing about the defect was particular to it.
+	ex := &lifecycleExclusion{home: r.home, gate: gate, removeCreated: true}
 	if err := ex.hold("setup", filepath.Join(r.home, setupLockFile)); err != nil {
 		ex.release()
 		return nil, err
@@ -1191,21 +1206,26 @@ func (r *uninstallRun) revocationDecision() (reason string, try bool) {
 
 // ── confirmation ────────────────────────────────────────────────────────
 
-func (r *uninstallRun) ask(question string) bool {
+// ask is uninstall's [Y/n], answered yes by -yes. Its error is
+// errPromptAborted and nothing else: a read that ended without a line is
+// not the "no" this used to return. Both answers leave the installation
+// alone here, so the difference a participant sees is the exit code and
+// the sentence — an operation that was never answered did not decline,
+// and a script must be able to tell those apart (prompt.go).
+func (r *uninstallRun) ask(question string) (bool, error) {
 	if r.yes {
 		r.printf("\n%s [Y/n]: yes (-yes)\n", question)
-		return true
+		return true, nil
 	}
-	r.printf("\n%s [Y/n]: ", question)
-	line, err := readSetupLine(r.d.stdin)
-	if err != nil && line == "" {
-		return false
+	line, err := promptSetup(r.d.stdout, "\n"+question+" [Y/n]: ", r.d.stdin)
+	if err != nil {
+		return false, err
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "", "y", "yes":
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 // purgeConfirmation is what the participant must type: the wallet's address
@@ -1225,12 +1245,16 @@ func purgeConfirmation(home string) (token, what string) {
 // nothing has been changed or sent when it refuses.
 func (r *uninstallRun) confirmPurge() (code int, ok bool) {
 	token, what := purgeConfirmation(r.home)
-	r.printf("\nThis destroys the participant state listed above. If the wallet holds funds and you\n"+
-		"have not kept its 24 words, they are lost. This confirmation guards against accidents;\n"+
-		"it cannot tell a person from a program typing at this terminal.\n"+
-		"Type %s to permanently remove this participant state:\n  %s\n> ", what, token)
-	line, err := readSetupLine(r.d.stdin)
-	if err != nil && line == "" {
+	line, err := promptSetup(r.d.stdout, fmt.Sprintf(
+		"\nThis destroys the participant state listed above. If the wallet holds funds and you\n"+
+			"have not kept its 24 words, they are lost. This confirmation guards against accidents;\n"+
+			"it cannot tell a person from a program typing at this terminal.\n"+
+			"Type %s to permanently remove this participant state:\n  %s\n> ", what, token), r.d.stdin)
+	if err != nil {
+		// Already the rule prompt.go now states, and the reason it is
+		// stated as one: this prompt was the only one in the binary that
+		// had it. It stays here so a reader sees the same shape in all
+		// of them, and so the guard below cannot be lost by accident.
 		r.say("No confirmation was typed. " + noParticipantChange)
 		return exitUsage, false
 	}
@@ -1271,6 +1295,24 @@ func (r *uninstallRun) applyEnvironment() {
 	for _, n := range notes {
 		r.printf("%s\n", n)
 	}
+}
+
+// otherInstallationHint completes the restore hint for a home that is not
+// this machine's default installation. setup -home leaves the shell profile
+// and the coding agents alone for such a home (#84) — they belong to the
+// default one — so "run setup -home" on its own would promise a restore it
+// no longer performs. It says what does, both ways: the agents command for an
+// installation that really is a separate one, and TOKENDROP_HOME for one that
+// is this machine's own, kept somewhere else.
+func (r *uninstallRun) otherInstallationHint() string {
+	def, other := otherInstallation(r.home, r.home, r.d.getenv("TOKENDROP_HOME"), r.d.userHome)
+	if !other {
+		return ""
+	}
+	return fmt.Sprintf("%s is not this machine's default installation (%s), so that leaves the shell profile and\n"+
+		"the coding agents alone; configure agents for it with: dropin-miner agents install -config %s\n"+
+		"If it IS this machine's installation, kept somewhere else, run setup with TOKENDROP_HOME set to it\n"+
+		"instead of -home, which sets up the profile and the agents too.\n", r.home, def, r.cfgPath)
 }
 
 // revokeAuthorization attempts the one bounded revocation and returns the
@@ -1387,9 +1429,21 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("  (nothing is there)\n")
 		}
 		if !r.binary {
-			r.printf("\nTo use this binary without setting it up again, pass -config %s;\n"+
-				"or run: dropin-miner setup -home %s\n"+
-				"A bare `dropin-miner connect` afterwards would register this machine anew.\n", r.cfgPath, r.home)
+			// #88: the old wording ended on `connect`, which read as the
+			// next step. It is the opposite — setup -home is what reuses
+			// this registration, and a bare connect is what replaces it,
+			// because uninstall has just removed the profile block (on
+			// Windows, the user environment) that pointed at this
+			// installation. With nothing pointing at it, connect reads the
+			// default state location, finds no registration there, and
+			// makes a new one.
+			r.printf("\nTo keep using this installation, run:\n"+
+				"  dropin-miner setup -home %s\n"+
+				"It finds this state and uses it: the same agent, the same wallet, no new registration.\n"+
+				r.otherInstallationHint()+
+				"Or, to use this binary without setting it up again, pass -config %s to each command.\n"+
+				"Do not run `dropin-miner connect` on its own to come back: with nothing naming this\n"+
+				"installation any more, it would register this machine anew.\n", r.home, r.cfgPath)
 		} else {
 			r.printf("\nTo come back, reinstall and run setup; it finds this state and uses it.\n")
 		}

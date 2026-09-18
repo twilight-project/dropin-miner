@@ -1505,7 +1505,10 @@ func TestSetupNoAgentsWithCodexInstallsExactlyCodex(t *testing.T) {
 	s.onPath["claude"] = true
 	s.onPath["cursor"] = true
 	before := snapshotTree(t, s.root)
-	code, out, errOut := s.run(tty(), true, "-yes", "-no-profile", "-no-agents", "-with", "codex")
+	// "n" answers the mining question, which -yes deliberately does not
+	// (S6). Before #81 an empty tty answered it by accident: the read
+	// error was discarded and the resulting empty line counted as "no".
+	code, out, errOut := s.run(tty("n"), true, "-yes", "-no-profile", "-no-agents", "-with", "codex")
 	if code != exitOK {
 		t.Fatalf("setup exited %d\n%s\n%s", code, out, errOut)
 	}

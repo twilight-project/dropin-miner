@@ -73,8 +73,11 @@ Answering yes here accepts all of that.
 `, joinLabels(labels(targetsByKind(targetHost))), codex)
 }
 
-func (r *setupRun) agentsStep() {
+func (r *setupRun) agentsStep() int {
 	r.say("Coding agents")
+	if r.leftForOtherInstallation("coding agents", "The coding agents on this machine belong to that one", "setting them up here would repoint your real agents at this installation's config") {
+		return exitOK
+	}
 	ops := r.d.agents
 	paths := ops.paths(r.d.getenv)
 	later := fmt.Sprintf("%s agents install -config %s", r.displayPath(r.exe), r.displayPath(r.cfgPath))
@@ -85,14 +88,14 @@ func (r *setupRun) agentsStep() {
 		case r.noAgents:
 			r.printf("Left the agents alone (-no-agents). When you are ready:\n\n    %s\n", later)
 			r.skip("coding agents")
-			return
+			return exitOK
 		case len(selected) == 0:
 			r.printf("No coding agent found (looked for: %s, each by its command or its config directory). When one is installed:\n\n    %s\n", targetIDs(targetHost), later)
-			return
+			return exitOK
 		case !r.d.interactive && !r.yes && !r.dry:
 			r.printf("Not an interactive shell — not touching any agent (pass -yes to set them up). When you are ready:\n\n    %s\n", later)
 			r.skip("coding agents")
-			return
+			return exitOK
 		}
 	}
 
@@ -121,15 +124,21 @@ func (r *setupRun) agentsStep() {
 	printPlan(&plan, ops.home, r.d.stdout)
 	if plan.empty() {
 		r.printf("  nothing to write: already set up\n")
-		return
+		return exitOK
 	}
 	if r.dry {
 		r.printf("(dry run) nothing was written\n")
-		return
+		return exitOK
 	}
-	if !r.explicitTargets && !r.ask("Set up the coding agents found on this machine now?") {
-		r.printf("Left the agents alone. When you change your mind: %s\n", later)
-		return
+	if !r.explicitTargets {
+		set, err := r.ask("Set up the coding agents found on this machine now?")
+		if err != nil {
+			return r.abort("no coding agent was set up")
+		}
+		if !set {
+			r.printf("Left the agents alone. When you change your mind: %s\n", later)
+			return exitOK
+		}
 	}
 	failures := commitPlan(ops, &plan, r.d.stdout, r.d.stderr)
 	if len(plan.writes) > failures || len(plan.removes) > 0 {
@@ -138,4 +147,5 @@ func (r *setupRun) agentsStep() {
 	if failures > 0 || len(plan.refused) > 0 {
 		r.printf("Some agent could not be set up; see above.\n")
 	}
+	return exitOK
 }

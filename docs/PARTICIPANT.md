@@ -74,7 +74,13 @@ dropin-miner setup
 Nothing needs removing first. Run the installer again (npm: `npm install -g
 dropin-miner@latest`, then `dropin-miner setup`). If your old installation used a
 non-default home (you had `TOKENDROP_HOME` set for the old installer), run the
-installer or `setup -home` with that same one — setup has no other way to find it.
+installer, or `dropin-miner setup`, with `TOKENDROP_HOME` set to that same one — setup
+has no other way to find it. `TOKENDROP_HOME` is how you say "this directory is this
+machine's installation". `setup -home <dir>` by itself, for any other directory, makes
+a separate installation there: it leaves your shell profile and your coding agents
+alone, even with `-yes`, because those belong to the machine's own installation, and
+tells you the `agents install -config` command that sets agents up for the new one.
+That is what makes `-home` safe for a disposable installation.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an identity
 is the installation, and nothing set aside is offered. Your existing wallet,
@@ -127,6 +133,16 @@ Setup asks, in order:
 | **Payout address (leave empty to create a wallet here):** | Only asked after yes above. Paste a `twilight1…` address you control, or leave it empty for a wallet: it asks for a keyfile passphrase (**keyfile passphrase:**, then **again:** to confirm) before it prints the 24 words once. Have paper ready. |
 | **Add them to ~/.zshrc? [Y/n]** | (or `~/.bashrc`, whichever your shell reads). Puts the binary on PATH, sets `TOKENDROP_CONFIG`, and — when a wallet was made here — `TOKENDROP_WALLET_DIR`, in one marked block. Saying no just means longer commands. On Windows the question is **Set them for your user? [Y/n]**: PATH and `TOKENDROP_CONFIG` only, in your user environment. |
 | **Set up the coding agents found on this machine now? [Y/n]** | Writes a skill and, where the agent supports them, hook entries into its own config. Shown before anything is written, with each agent named beside what made it count as present — the command it is launched by, or its own config directory. An agent you have but do not see listed is one neither signal found; `setup -with <id>` sets it up anyway. |
+
+Each of these counts only an answer you typed. If you interrupt one, or its
+input closes, setup stops at that question rather than guessing: nothing is
+recorded, nothing further is written, and it exits non-zero saying so. That
+matters most at **Enable mining rewards?**, where a bare Enter means no — an
+interrupt is not a bare Enter, and leaves no decision on file, so the next run
+asks again instead of reusing one you never made. The same rule holds for
+`dropin-miner agents install`'s **Proceed?**, for uninstall's confirmations and
+for `wallet send`'s: a typed refusal declines and exits 0, an unanswered
+question aborts and exits non-zero, and the two are never the same thing.
 
 `dropin-miner setup -yes` answers yes to **Add them to ~/.zshrc?** (on Windows,
 **Set them for your user?**) and **Set up the coding agents found on this
@@ -314,7 +330,12 @@ prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
 block in `~/.codex/config.toml` that widens its sandbox just enough: network
-on, and a short list of writable directories. The state directory is always
+on, and a short list of writable directories. Codex writes its own tables into
+that file too — a project's folder trust, a `[windows] sandbox` choice — and
+because it appends them at the end they can land between dropin-miner's
+markers. Only the one table dropin-miner writes is ever removed from there:
+anything else inside the markers is yours, is kept exactly as you left it, and
+is named in the plan before anything is written. The state directory is always
 on that list, because the detached claim resume writes there after every
 search whether you mine or not; the intake, sessions and spool directories
 join it when `[miner] enabled` is set, which is where the mining observation
@@ -361,6 +382,27 @@ not touch the file: it prints the four lines to paste under your own section
 instead. That refusal is deliberate and errs on the cautious side — YAML keeps
 the last of two identical keys and says nothing, so a config edited on a guess
 could lose the hooks you wrote, with no error to tell you.
+
+Once those lines are under your own `hooks:` section, install sees them: it
+says the hook is already set up and leaves your file alone, and `agents status`
+counts it. Uninstall removes them again — those lines and no others. It takes
+an entry out only when it is written exactly as dropin-miner writes it, names
+this installation's binary and config, and sits under `pre_tool_call:` where
+the four lines put it; if that entry was the only one there, the `pre_tool_call:`
+line goes with it, and `hooks:` too if nothing else is left under it, so no
+empty key stays behind. Anything it cannot be that sure of — an entry you
+added a `timeout:` to, one with a comment between it and its heading, the
+same entry twice — it leaves where it is and tells you, because a hook left
+for you to delete is a smaller mistake than somebody else's hook deleted.
+
+Hermes rewrites `config.yaml` in its own style when it saves it: comments go,
+so dropin-miner's markers go with them, and the long command is folded over two
+lines. The hook still fires, and install and `agents status` still see it
+there. Uninstall will not edit that form — it removes lines only when they are
+exactly the ones it writes — so it tells you which lines hold the entry and
+asks you to remove them. If your file names the hook command somewhere
+uninstall cannot make sense of at all, it says so, with the line, rather than
+reporting that Hermes is not installed.
 
 `dropin-miner agents uninstall` removes exactly those files and entries.
 
@@ -532,7 +574,20 @@ way, saying which. Your approval on the platform is revoked only at the
 console. If you made the wallet here, the 24 words you wrote down are the only
 other copy, so do not purge until you have them or have moved the funds.
 
-Coming back later, run the installer again (or `dropin-miner setup`). It looks
+If you stop it — answer the address prompt wrong, say no to the plain
+uninstall — the installation is left exactly as it was found. That includes the
+lock files uninstall has to take to be sure nothing else is running: one it had
+to create is removed again, one that was already there is left alone.
+
+Coming back later, run the installer again, or `dropin-miner setup` — with
+`-home <dir>` if this installation is not the default one. Setup is the way
+back: it finds the state uninstall left and reuses it, the same agent and the
+same wallet, with no new registration. Do not run `dropin-miner connect` on its
+own to come back. Uninstall removed the profile block (on Windows, the user
+environment entries) that named this installation, so connect would look at the
+default location instead, find nothing, and register this machine anew.
+
+Setup looks
 for `~/.tokendrop`, or a set-aside copy beside it (`~/.tokendrop.bak-<date>`,
 `~/.tokendrop.old`), tells you what it holds — the wallet's address, whether it
 is enrolled, whether a key is stored, any unsent searches — and asks before
