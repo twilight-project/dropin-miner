@@ -1,6 +1,11 @@
 package trajectory
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestSearchIsRecognizedByParsingTheCommandLine(t *testing.T) {
 	cases := []struct {
@@ -52,6 +57,23 @@ func TestSearchIsRecognizedByParsingTheCommandLine(t *testing.T) {
 	}
 }
 
+// TestNoFormatMeansJSONBecauseTheClientSaysSo reads the client's flag
+// definition. ExpectsJSON rests on -format defaulting to json; if that default
+// moves, every unformatted search would be misfiled, and nothing else here
+// would notice.
+func TestNoFormatMeansJSONBecauseTheClientSaysSo(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "cmd", "dropin-miner", "search.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `fs.String("format", "json",`; !bytes.Contains(src, []byte(want)) {
+		t.Fatalf("cmd/dropin-miner/search.go no longer contains %q: ExpectsJSON must follow the new default", want)
+	}
+	if !(SearchInvocation{}).ExpectsJSON() || (SearchInvocation{Format: "model"}).ExpectsJSON() {
+		t.Fatal("ExpectsJSON: no format must mean json, and a named non-json format must not")
+	}
+}
+
 func TestLossReasonIsDecidedFromStructure(t *testing.T) {
 	envelope := func(extra string) string { return `{"version":1,"command":"search",` + extra + `}` }
 	cases := []struct {
@@ -73,6 +95,10 @@ func TestLossReasonIsDecidedFromStructure(t *testing.T) {
 		{"failed, tool error", SearchInvocation{Stdin: true}, "Exit code 1", true, false, 0, LossSearchFailed},
 		{"piped elsewhere", SearchInvocation{Stdin: true, OutputElsewhere: true}, "3", false, false, 0, LossOutputElsewhere},
 		{"human rendering", SearchInvocation{Format: "text"}, "an answer", false, false, 0, LossHumanFormat},
+		// No -format is the flag's default, json: text that is not JSON is
+		// then a surprise, not the human rendering.
+		{"no format named, id present", SearchInvocation{}, `{"request_id":"req_6","candidates":[]}`, false, false, 1, ""},
+		{"no format named, not json", SearchInvocation{}, "an answer", false, false, 0, LossResultNotJSON},
 		{"cut by the host", SearchInvocation{Stdin: true}, `{"version":1,"command":"search","ok":true,"result":{"candi`, false, false, 0, LossResultTruncated},
 		{"json without an id", SearchInvocation{Stdin: true}, envelope(`"ok":true`), false, false, 0, LossNoRequestID},
 		{"not json at all", SearchInvocation{Stdin: true}, "something else", false, false, 0, LossResultNotJSON},

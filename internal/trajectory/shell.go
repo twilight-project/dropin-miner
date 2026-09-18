@@ -26,8 +26,10 @@ type SearchInvocation struct {
 
 // ExpectsJSON reports whether the invocation asked for output that carries a
 // request id at all. The human rendering does not print one, so a search run
-// that way loses its anchor by design rather than by accident.
-func (s SearchInvocation) ExpectsJSON() bool { return s.Stdin || s.Format == "json" }
+// that way loses its anchor by design rather than by accident. No -format at
+// all is JSON: that is the flag's default in search.go, so only a format that
+// was named, and is not json, is the human rendering.
+func (s SearchInvocation) ExpectsJSON() bool { return s.Stdin || s.Format == "" || s.Format == "json" }
 
 const clientBinary = "dropin-miner"
 
