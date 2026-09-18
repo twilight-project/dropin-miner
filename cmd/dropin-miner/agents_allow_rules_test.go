@@ -124,6 +124,50 @@ func TestASupersededAllowRuleIsReplacedRatherThanAddedBeside(t *testing.T) {
 	}
 }
 
+// A rule of ours written twice is not the current set, however current each
+// copy is. sameRuleSet counts rather than testing membership for exactly this
+// reason, and its comment said so while nothing asserted it: a mutation that
+// deduplicated `ours` before the comparison survived the whole package, which
+// is the review's finding and this test's reason to exist.
+//
+// A duplicate is a state #114 leaves behind -- the defect added a rule
+// whenever its exact text was absent, and two installs of two renderers that
+// happened to agree on one form would write it twice -- so it collapses like
+// any other superseded spelling.
+func TestADuplicatedAllowRuleOfOursCollapsesToOne(t *testing.T) {
+	m, ops := newFakeMachine("claude")
+	current := claudeAllowRules(installedEntry(t, ops))
+	if len(current) < 2 {
+		t.Fatalf("this test duplicates one of our rules among the others and needs at least two: %q", current)
+	}
+	const mine = "Bash(git status:*)"
+
+	// Otherwise exactly the current set, with one of ours written twice and
+	// the participant's own rule between the copies.
+	seeded := append([]string{current[0], mine}, current...)
+	if countString(seeded, current[0]) != 2 {
+		t.Fatalf("this fixture is meant to hold one of our rules twice and does not: %q", seeded)
+	}
+	seedAllow(t, m, seeded...)
+
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-yes", "-config", testCfg, "-client", "claude"); code != exitOK {
+		t.Fatalf("install: exit %d\n%s\n%s", code, out, errOut)
+	}
+	allow := allowOf(t, m, claudeSettingsPath)
+	for _, rule := range current {
+		if n := countString(allow, rule); n != 1 {
+			t.Errorf("allow rule %q appears %d times after the install, want 1: %q", rule, n, allow)
+		}
+	}
+	if countString(allow, mine) != 1 {
+		t.Errorf("the participant's own rule was disturbed: %q", allow)
+	}
+	if len(allow) != len(current)+1 {
+		t.Errorf("allow rules after the install: %d, want %d (ours once each, plus the participant's): %q",
+			len(allow), len(current)+1, allow)
+	}
+}
+
 // The other half, which needed no change: planHooksRemove already asks
 // ruleIsOurs, so uninstall took out every spelling before #114 and this
 // records it rather than claiming it as new.

@@ -104,6 +104,11 @@ func TestReinstallingWritesTheCodexBlockWhereItWas(t *testing.T) {
 // A file the participant edits on Windows has CRLF endings, and our block is
 // written with LF. What must hold is the same thing: their bytes, on either
 // side of our markers, exactly as they were.
+//
+// Their table is put BELOW our block on purpose. With our block last this
+// case would pass against an implementation that stripped and appended --
+// the review found exactly that, since the mutation for #99 left this test
+// green -- so the CRLF fixture now carries position as well as bytes.
 func TestReinstallingKeepsACRLFCodexConfigsOwnBytes(t *testing.T) {
 	cfgPath, _ := sandboxTestConfig(t)
 	m, ops := newFakeMachine("codex")
@@ -111,9 +116,13 @@ func TestReinstallingKeepsACRLFCodexConfigsOwnBytes(t *testing.T) {
 	if code, out, errOut := runAgents(t, ops, nil, "install", "-config", cfgPath, "-yes"); code != exitOK {
 		t.Fatalf("install: exit %d\n%s%s", code, out, errOut)
 	}
-	installed := string(m.files[codexConfigPath])
+	installed := strings.TrimRight(string(m.files[codexConfigPath]), "\n") + "\n\r\n[windows]\r\nsandbox = \"unelevated\"\r\n"
+	m.files[codexConfigPath] = []byte(installed)
 	if !strings.Contains(installed, "\r\n") {
 		t.Fatal("this fixture is meant to carry CRLF endings and does not, so it proves nothing")
+	}
+	if _, _, post, _ := markedRegion([]byte(installed)); !strings.Contains(post, "[windows]") {
+		t.Fatalf("this fixture is meant to leave our block mid-file, and nothing follows it: %q", post)
 	}
 	stale := staleOurTable(t, installed)
 	m.files[codexConfigPath] = []byte(stale)
@@ -125,6 +134,9 @@ func TestReinstallingKeepsACRLFCodexConfigsOwnBytes(t *testing.T) {
 	gotPre, gotPost := outsideOurMarkers(t, string(m.files[codexConfigPath]))
 	if gotPre != wantPre || gotPost != wantPost {
 		t.Errorf("a CRLF config's own bytes changed around our block\n gotPre %q\nwantPre %q\n gotPost %q\nwantPost %q", gotPre, wantPre, gotPost, wantPost)
+	}
+	if !strings.Contains(gotPost, "\r\n") {
+		t.Errorf("the participant's CRLF endings below our block did not survive: %q", gotPost)
 	}
 }
 
