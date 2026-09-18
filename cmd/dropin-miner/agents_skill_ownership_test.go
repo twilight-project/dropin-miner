@@ -221,3 +221,54 @@ func mustExe(t *testing.T, ops agentOps) string {
 	}
 	return exe
 }
+
+// `agents status` calls a host installed from the file being there, so a
+// host another installation set up read as this one's. It now says whose it
+// is, in uninstall's own words (#112's reporting half, on the status side).
+func TestStatusNamesTheInstallationAHostBelongsTo(t *testing.T) {
+	m := newTwoInstallations(t)
+	m.install(m.first)
+
+	// Asked about by the installation that did NOT write these files.
+	code, out := m.agents("status", "-config", m.second)
+	if code != exitOK {
+		t.Fatalf("status: exit %d\n%s", code, out)
+	}
+	want := "it belongs to the installation configured by " + m.first + ", not this installation"
+	for _, label := range []string{"Claude Code", "Cursor", "opencode", "Pi"} {
+		line := statusLineFor(t, out, label)
+		if !strings.Contains(line, want) {
+			t.Errorf("status does not say whose %s's files are:\n%s", label, line)
+		}
+		if strings.Contains(line, "installed (") {
+			t.Errorf("status still calls another installation's %s installed:\n%s", label, line)
+		}
+	}
+
+	// And the installation that DID write them is still told it is installed.
+	code, out = m.agents("status", "-config", m.first)
+	if code != exitOK {
+		t.Fatalf("status: exit %d\n%s", code, out)
+	}
+	for _, label := range []string{"Claude Code", "Cursor", "opencode", "Pi"} {
+		line := statusLineFor(t, out, label)
+		if !strings.Contains(line, "installed (") || strings.Contains(line, "not this installation") {
+			t.Errorf("the installation that wrote %s's files is not told it is installed:\n%s", label, line)
+		}
+	}
+}
+
+// statusLineFor is the one status row for a host label.
+func statusLineFor(t *testing.T, out, label string) string {
+	t.Helper()
+	var found []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), label+" ") {
+			found = append(found, l)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one status row for %s, got %d:\n%s", label, len(found), out)
+	}
+	return found[0]
+}

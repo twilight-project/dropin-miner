@@ -1389,6 +1389,15 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 		state := "not installed"
 		if st.installed {
 			state = "installed (" + st.detail + ")"
+			// A host has one skill directory whoever wrote into it, and
+			// Status answers from the file existing. So a host set up by
+			// another installation read as this one's "installed (skill)",
+			// which is the reading #112 fixed at the writing end and left
+			// standing here: the participant whose searches all go through
+			// the other installation was told this one was installed.
+			if other := foreignHost(ops, paths, t, entry); other != "" {
+				state = belongsTo(other)
+			}
 		}
 		found := "not found"
 		if sig := signals[t.ID()]; sig != "" {
@@ -1402,6 +1411,23 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 			fmt.Fprintf(stdout, "  %-12s %s: rendered by an earlier version; `agents install` refreshes it\n", "", tilde(ops.home, path))
 		}
 	}
+}
+
+// foreignHost names the installation a host's single-slot files belong to,
+// or "" when none of them is another installation's. It asks the same
+// question at the same grain as the install-time refusal and the removal
+// filter, through the one reading all three share (foreignOwner), over the
+// files a removal would take -- which are exactly the files that are wholly
+// one installation's when they are anyone's.
+func foreignHost(ops agentOps, paths agentPaths, t installTarget, entry binEntry) string {
+	var agnostic agentPlan
+	t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, &agnostic)
+	for _, r := range agnostic.removes {
+		if other, foreign := foreignOwner(ops, r.path, entry); foreign {
+			return other
+		}
+	}
+	return ""
 }
 
 // staleRenderings is the files of an installed host that are this

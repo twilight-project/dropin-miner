@@ -248,7 +248,11 @@ is executed to find out whether it exists.
 | anything else | rules line | not detected; `setup -with <id>` names one | Bash | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only what belongs to the installation
-being uninstalled: a hook entry, an allow rule or a skill is this
+being uninstalled -- and, since a superseded spelling is replaced rather than
+added beside it, at install too: a rule for this installation's binary and
+config in any spelling this client has written is the same rule, so the file
+carries one current set per host instead of one more rule per renderer change.
+A hook entry, an allow rule or a skill is this
 installation's only when it runs one of this installation's binaries **and**
 names this installation's config. Two installations on one machine commonly
 share a binary — `setup -home <dir>` run from an existing one makes exactly
@@ -268,7 +272,16 @@ this client writes and keeps every other table in the block, in its original
 bytes, moved below where the block was; the plan says how many it is keeping
 and names them. Install does the same rather than rewriting over them, and
 moves any it finds inside the markers out below them, so the host's next append
-lands outside our block. A block that cannot be read as TOML tables is left
+lands outside our block. Install writes the block **where it finds it** and
+appends only when there is none, so no byte outside our markers ever moves and
+a reinstall does not reorder a file it shares with its host; "below them" is
+therefore directly below the block rather than at the end of the file, which
+also stops a block that is no longer last from collecting the host's next
+append at all. One thing this cannot restore: an uninstall removes the block
+and with it the record of where it stood, so an install afterwards appends. A
+block where this client's own writes put it, at the end, comes back byte for
+byte; one that had been moved comes back at the end, with every line of the
+participant's own still in its original order. A block that cannot be read as TOML tables is left
 exactly as it is and reported, because deleting a region this client cannot
 parse is how a config gets destroyed. Before anything classified as ours is
 deleted or rewritten it is decoded and must be exactly our one table, with

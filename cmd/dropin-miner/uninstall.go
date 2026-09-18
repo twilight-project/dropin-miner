@@ -633,7 +633,18 @@ var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(`
 // installation's. One function, because every command that finds one says
 // the same thing about it: uninstall's plan, and an upgrade's re-render.
 func leftForeign(other string) string {
-	return "left in place; it belongs to " + other + ", not this installation"
+	return "left in place; " + belongsTo(other)
+}
+
+// belongsTo is that sentence without the removal verb, for the command that
+// is not removing anything: `agents status`, which reports what is on this
+// machine and had been calling another installation's skill "installed".
+// The words after the semicolon are the same words in both places on
+// purpose -- a participant reading status and then uninstall should be told
+// the same thing about the same file -- and "left in place" is dropped here
+// because status leaves everything in place and the phrase would be noise.
+func belongsTo(other string) string {
+	return "it belongs to " + other + ", not this installation"
 }
 
 // attribution is what the files a target would remove say about who they

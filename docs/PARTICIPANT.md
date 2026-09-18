@@ -338,7 +338,9 @@ context compaction, and one on Stop that flushes. It also adds three
 `permissions.allow` rules for the search command — the single-quoted, quoted
 and bare spellings of the same command, because a shell may strip the quotes
 — so Claude Code runs it without asking each time; nothing else the binary
-does is allowed by those rules.
+does is allowed by those rules. Running `agents install` again replaces those
+rules rather than adding more beside them, so the list does not grow each time
+you reinstall or upgrade.
 
 The hook that threads the search also answers the permission question, for
 exactly the search command your own skill renders and nothing else. It has to,
@@ -362,7 +364,9 @@ search reads it. The shell hook also allows our command, so Cursor never
 prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
-block in `~/.codex/config.toml` that widens its sandbox just enough: network
+block in `~/.codex/config.toml` that widens its sandbox just enough (and,
+when it rewrites that block later, leaves it exactly where it already sits, so
+nothing else in the file moves): network
 on, and a short list of writable directories. Codex writes its own tables into
 that file too — a project's folder trust, a `[windows] sandbox` choice — and
 because it appends them at the end they can land between dropin-miner's
