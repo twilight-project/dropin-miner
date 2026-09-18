@@ -15,7 +15,18 @@ const fixtureDir = "../../internal/trajectory/testdata/projects"
 
 // snapshot hashes every file under dir with its mode and modification time,
 // so a read that changed anything — content, permissions or a timestamp a
-// rewrite would move — shows up.
+// rewrite would move — shows up. A directory's modification time is kept on
+// purpose: it is what moves when a file is created and removed again, which
+// the set of entries alone would not show.
+//
+// The metadata comes from os.Lstat, not from the walk's DirEntry. On Windows
+// a DirEntry's Info is the parent directory's index entry, which NTFS updates
+// lazily: the first snapshot saw a directory's stale time from the checkout,
+// the scan opened that directory to read it, the entry caught up, and the
+// second snapshot differed though nothing had been written. That failed this
+// test on windows-11-arm and passed on windows-latest, which is what a lazy
+// update looks like. Counting the right observable means asking the file,
+// not the directory that lists it.
 func snapshot(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -23,7 +34,7 @@ func snapshot(t *testing.T, dir string) map[string]string {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
@@ -77,7 +88,10 @@ func TestScanPrintsCountsAndNoContentAndChangesNothing(t *testing.T) {
 	}
 	for p, was := range before {
 		if after[p] != was {
-			t.Errorf("scan changed %s", p)
+			// Both values are fixture metadata — a mode, a time, a hash of
+			// synthetic bytes — and naming the field that moved is what
+			// turns a recurrence of the failure above into evidence.
+			t.Errorf("scan changed %s\n  before: %s\n  after:  %s", p, was, after[p])
 		}
 	}
 }
