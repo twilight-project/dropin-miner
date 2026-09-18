@@ -78,6 +78,10 @@ type hookOps struct {
 	writeFile  func(string, []byte, os.FileMode) error
 	mkdirAll   func(string, os.FileMode) error
 	rename     func(string, string) error
+	remove     func(string) error
+	// listTemps returns the entries of dir whose names end in ".tmp", with
+	// their modification times. Only replaceViaTemp's sweep reads it.
+	listTemps func(dir string) ([]tempEntry, error)
 	// readTail returns at most max bytes from the END of the file, or an
 	// error; a file larger than hookMaxTranscript is reported as an error.
 	readTail func(path string, max int64) ([]byte, error)
@@ -95,6 +99,8 @@ func realHookOps() hookOps {
 		writeFile:  os.WriteFile,
 		mkdirAll:   os.MkdirAll,
 		rename:     os.Rename,
+		remove:     os.Remove,
+		listTemps:  listTempFiles,
 		readTail:   readFileTail,
 		spawnFlush: startFlush,
 		now:        time.Now,
@@ -659,11 +665,12 @@ func hookWindow(ops hookOps, hc hookContext, phase string, payload []byte) {
 	if err := ops.mkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	tmp := path + "." + strconv.Itoa(ops.pid) + ".tmp"
-	if err := ops.writeFile(tmp, b, 0o600); err != nil {
-		return
-	}
-	_ = ops.rename(tmp, path)
+	// The error is still discarded — a state-file problem never blocks a
+	// session start or a compaction — but a failed rename no longer leaves
+	// its temporary file behind (#100). Only this file's own leftovers are
+	// swept: with no sessions directory configured the state file lives in
+	// the plugin root or TMPDIR, which are not this client's to tidy.
+	_ = replaceViaTemp(ops, path, b, ops.now(), false)
 }
 
 // hookWindowID is what lineage stamps into the envelope: "none" until the

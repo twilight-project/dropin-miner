@@ -31,6 +31,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -238,11 +239,122 @@ func saveLineage(ops hookOps, path string, sc *lineageFile, now time.Time) error
 	if err != nil {
 		return err
 	}
+	return replaceViaTemp(ops, path, data, now, true)
+}
+
+// ── temp, then rename ───────────────────────────────────────────────────
+
+// tempEntry is one "*.tmp" file in a directory, as the sweep needs it.
+type tempEntry struct {
+	name    string
+	modTime time.Time
+}
+
+func listTempFiles(dir string) ([]tempEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []tempEntry
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tmp") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue // gone between the listing and the stat: somebody renamed it
+		}
+		out = append(out, tempEntry{name: e.Name(), modTime: info.ModTime()})
+	}
+	return out, nil
+}
+
+var (
+	// tempNameRe is the one shape these writers produce: "<file>.<pid>.tmp".
+	tempNameRe = regexp.MustCompile(`^(.+)\.(\d+)\.tmp$`)
+	// lineageNameRe is a lineage file's name: lineagePath's 32 hex digits.
+	lineageNameRe = regexp.MustCompile(`^[0-9a-f]{32}\.json$`)
+)
+
+// replaceViaTemp writes data to "<path>.<pid>.tmp" and renames it over path,
+// so a reader never sees a half-written file. It is the one writer behind the
+// lineage files, the window state and the flush stamp.
+//
+// A failed write or rename removes the temporary file before returning (#100).
+// On Windows a rename fails while the target is momentarily held — seen on
+// the 0.2.10 release check — and each failure used to leave one
+// "<hash>.json.<pid>.tmp" in the sessions directory for good. What was at
+// path is untouched by a failure, as before.
+func replaceViaTemp(ops hookOps, path string, data []byte, now time.Time, lineageDir bool) error {
+	sweepStaleTemps(ops, path, now, lineageDir)
 	tmp := fmt.Sprintf("%s.%d.tmp", path, ops.pid)
 	if err := ops.writeFile(tmp, data, 0o600); err != nil {
+		removeTemp(ops, tmp) // a write that failed halfway leaves one too
 		return err
 	}
-	return ops.rename(tmp, path)
+	if err := ops.rename(tmp, path); err != nil {
+		removeTemp(ops, tmp)
+		return err
+	}
+	return nil
+}
+
+func removeTemp(ops hookOps, tmp string) {
+	if ops.remove != nil {
+		_ = ops.remove(tmp)
+	}
+}
+
+// sweepStaleTemps removes temporary files that a crashed writer, or a failed
+// removal, left beside path. Best effort and silent: it runs in front of a
+// search, and nothing it fails to do matters to that search.
+//
+// What it may remove is narrow on every axis:
+//
+//   - the NAME is "<file>.<pid>.tmp", where <file> is the file being written
+//     or — for a lineage write only — any lineage file's name. The sessions
+//     directory is this code's own; the flush stamp's directory is shared
+//     with other writers of the same shape (connect's resume stamp), and the
+//     window state can live in TMPDIR, so those two sweep only their own.
+//   - the PID is not this process's.
+//   - the AGE is more than lineageMaxAge. That is the lineage code's own
+//     answer to "how long can a session plausibly last": past it the session
+//     that wrote the file is, by this code's existing rule, over.
+//
+// It cannot delete a file another live process is about to rename. A writer
+// holds its temporary file for the span between two adjacent calls in
+// replaceViaTemp — a write and a rename, microseconds apart — and the sweep
+// takes only files last modified more than twelve hours ago. To lose its file
+// a writer would have to be stopped between those two calls for half a day (a
+// machine suspended at that instant). Even then nothing is corrupted: its
+// rename fails, it reports the error its caller already tolerates, and the
+// file at path is whatever the last successful writer left — the "lose at
+// most one update, never the file" that updateLineage already promises. A
+// modification time in the future is not old, so a clock set backwards sweeps
+// nothing.
+func sweepStaleTemps(ops hookOps, path string, now time.Time, lineageDir bool) {
+	if ops.listTemps == nil || ops.remove == nil {
+		return
+	}
+	dir, file := filepath.Dir(path), filepath.Base(path)
+	entries, err := ops.listTemps(dir)
+	if err != nil {
+		return
+	}
+	own := strconv.Itoa(ops.pid)
+	for _, e := range entries {
+		m := tempNameRe.FindStringSubmatch(e.name)
+		if m == nil || m[2] == own {
+			continue
+		}
+		if m[1] != file && (!lineageDir || !lineageNameRe.MatchString(m[1])) {
+			continue
+		}
+		if now.Sub(e.modTime) <= lineageMaxAge {
+			continue
+		}
+		_ = ops.remove(filepath.Join(dir, e.name))
+	}
 }
 
 // updateLineage applies one change under read-modify-write. Two hooks
@@ -440,11 +552,7 @@ func writeFlushStamp(path string, st flushStamp) error {
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return replaceViaTemp(realHookOps(), path, data, time.Now(), false)
 }
 
 // ── recorded-search epoch (D's own evidence, not F's stamp) ─────────────
