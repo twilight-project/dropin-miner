@@ -1152,29 +1152,89 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 		hooks[ev] = append(kept, spec.entries[ev])
 		changed = true
 	}
-	if len(spec.allow) > 0 {
-		perms := child(m, "permissions")
-		list, _ := perms["allow"].([]any)
-		for _, rule := range spec.allow {
-			present := false
-			for _, e := range list {
-				if e == rule {
-					present = true
-					break
-				}
-			}
-			if !present {
-				list = append(list, rule)
-				changed = true
-			}
-		}
-		perms["allow"] = list
+	if len(spec.allow) > 0 && mergeAllowRules(m, entry, spec.allow) {
+		changed = true
 	}
 	if !changed {
 		return false
 	}
 	next, _ := json.MarshalIndent(m, "", "  ")
 	return planWrite(ops, label, path, append(next, '\n'), mode, "hooks", p)
+}
+
+// mergeAllowRules brings this installation's permission rules to exactly
+// want, and reports whether it changed anything.
+//
+// A rule was added when its exact text was absent, and a rule whose text had
+// changed was therefore never recognised as the same rule: it stayed, beside
+// its replacement, for good. On the Windows machine of the 0.2.11 release
+// check that file held two rules for this binary and this config before the
+// check and three after one uninstall-and-install cycle, differing only in
+// quoting (#114). Today's three happen to be a superset of v0.2.9's two, so
+// the count settles; the defect is that nothing MAKES it settle, and the next
+// renderer change -- a spelling dropped, a quote changed, the PowerShell rule
+// #77 is waiting on -- adds one per host for ever, with nothing in the file
+// to say which is current.
+//
+// So a rule for this installation's binary and config, in any spelling this
+// client has ever written, is the same rule. ruleIsOurs already decides that,
+// through the same commandIsOurs that tells a hook entry of ours from another
+// installation's, so an old spelling is recognised and another installation's
+// rule -- which shares our binary -- is not touched. This is H3b for allow
+// rules: recognising the old spelling is what makes the replacement possible,
+// and it is the thing exact-text matching cannot do.
+//
+// Ours are replaced as a set rather than one by one, because they ARE a set:
+// claudeAllowRules writes three prefix forms of one permission, and which of
+// them a given Claude Code build matches is not this client's to predict. A
+// set already equal to want is left exactly as it lies -- order, position
+// among the participant's own rules, and bytes -- so a second install still
+// writes nothing at all.
+func mergeAllowRules(m map[string]any, entry binEntry, want []string) bool {
+	perms := child(m, "permissions")
+	list, _ := perms["allow"].([]any)
+	ref := refFor(entry)
+	kept := make([]any, 0, len(list))
+	ours := make([]string, 0, len(list))
+	for _, e := range list {
+		if ruleIsOurs(e, ref) {
+			if r, isString := e.(string); isString {
+				ours = append(ours, r)
+			}
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if sameRuleSet(ours, want) {
+		perms["allow"] = list
+		return false
+	}
+	for _, rule := range want {
+		kept = append(kept, rule)
+	}
+	perms["allow"] = kept
+	return true
+}
+
+// sameRuleSet: do these name the same rules, whatever their order? A rule
+// appearing twice is not the same set as one appearing once, so this counts
+// rather than just testing membership -- a duplicate is one of the states
+// #114 leaves behind, and it has to be collapsed like any other.
+func sameRuleSet(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(got))
+	for _, r := range got {
+		seen[r]++
+	}
+	for _, r := range want {
+		seen[r]--
+		if seen[r] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // planHooksRemove drops this installation's entries and nothing else; an
