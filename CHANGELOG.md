@@ -137,23 +137,30 @@ Coming from earlier: the older entries below apply first.
   (`TOKENDROP_WALLET_DIR`), and the keyfile passphrase the wallet prompt
   asks for and what it protects.
 
-- **Deferred to 0.2.12.** Hosts running each other's hooks, and a
-  model-written trace prefix: #87, #91, in PR #107. Lineage inside a nested
-  workspace, and a leftover temporary file: #104, #100, in PR #107.
-  Self-update timing on a loaded or scanned machine: #95, #78, in PR #107.
-  Cursor CLI launched from Git Bash on Windows: #101. Codex config order
-  after a reinstall: #99. The empty update lock left after an upgrade: #103.
-  Hermes once Hermes has saved its own config — status, the marked block's
-  ownership check, and uninstall's by-hand step: #105, #106, #108. The
-  Claude Code PowerShell tool and text written in the same message as the
-  search, which are host limits: #77, #93.
+- **Deferred to 0.2.12.** Hosts running each other's hooks, and a trace
+  prefix written by another host's hook: #87, #91, in PR #107. Lineage
+  inside a nested workspace, and a leftover temporary file: #104, #100, in
+  PR #107. Two Cursor conversations on one workspace sharing a lineage file
+  and relabelling each other's searches: #109, whose immediate guard is in
+  PR #107 and whose proper fix is its own. Self-update timing on a loaded or
+  scanned machine: #95, #78, in PR #107. Cursor CLI launched from Git Bash
+  on Windows: #101. Codex config order after a reinstall: #99. The empty
+  update lock left after an upgrade: #103. Hermes once Hermes has saved its
+  own config — status, the marked block's ownership check, and uninstall's
+  by-hand step: #105, #106, #108. The Claude Code PowerShell tool and text
+  written in the same message as the search, which are host limits: #77,
+  #93.
 
 - **Stated exceptions.** The Windows-desktop-with-real-time-antivirus
-  exercise of the replacement transaction, stated in v0.2.9 and again in
-  v0.2.10, still has not run — no such machine has been available. Pi and
-  Hermes have been run live on Windows; on macOS and Linux they still rest
-  on reading each host's own source, not a live run. The upgrade acceptance
-  from 0.2.10 runs after this tag, so this entry does not claim it.
+  exercise of the replacement transaction, promised in v0.2.9 and again in
+  v0.2.10, has now run: on 2026-09-17, as the Windows half of 0.2.10's
+  upgrade acceptance, a Windows 11 desktop with Microsoft Defender real-time
+  protection on upgraded from 0.2.9 through the shipped updater, and the
+  binary it installed was byte-identical to the release asset. Pi and Hermes
+  have been run live on Windows; on macOS and Linux they still rest on
+  reading each host's own source, not a live run. The upgrade acceptance
+  from 0.2.10 into this release runs after this tag, so this entry does not
+  claim it.
 
 ## v0.2.10 — 2026-09-17
 
