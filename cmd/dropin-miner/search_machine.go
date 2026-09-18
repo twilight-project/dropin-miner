@@ -14,8 +14,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/twilight-project/dropin-miner/pkg/auth"
@@ -33,15 +35,18 @@ const (
 // them are exit 2 / usage_error / fix_input: the caller has something to
 // correct, and no amount of retrying corrects it.
 const (
-	codeInputTooLarge      = "input_too_large"
-	codeInvalidUTF8        = "invalid_utf8"
-	codeInvalidJSON        = "invalid_json"
-	codeUnsupportedVersion = "unsupported_version"
-	codeUnknownField       = "unknown_field"
-	codeMissingQuery       = "missing_query"
-	codeEmptyQuery         = "empty_query"
-	codeUnexpectedArgument = "unexpected_argument"
-	codeInvalidFlags       = "invalid_flags"
+	codeInputTooLarge       = "input_too_large"
+	codeInvalidUTF8         = "invalid_utf8"
+	codeInvalidJSON         = "invalid_json"
+	codeUnsupportedVersion  = "unsupported_version"
+	codeUnknownField        = "unknown_field"
+	codeMissingQuery        = "missing_query"
+	codeEmptyQuery          = "empty_query"
+	codeUnexpectedArgument  = "unexpected_argument"
+	codeInvalidFlags        = "invalid_flags"
+	codeInvalidRecency      = "invalid_recency"
+	codeInvalidDomainFilter = "invalid_domain_filter"
+	codeInvalidMaxResults   = "invalid_max_results"
 )
 
 // inputError is a local refusal with a stable machine code. It is a type
@@ -55,19 +60,32 @@ func (e *inputError) Error() string { return e.Msg }
 
 func inputErrorf(code, msg string) *inputError { return &inputError{Code: code, Msg: msg} }
 
-// machineSearchRequest is the v1 request, after validation.
+// machineSearchRequest is the v1 request, after validation. The three
+// router options are pointers/slices left nil when the caller's request
+// did not carry them, so the body this client sends can tell "absent"
+// from "present and empty" the same way the wire request does.
 type machineSearchRequest struct {
-	query string
-	tier  string
+	query        string
+	tier         string
+	recency      *string
+	domainFilter []string
+	maxResults   *int
 }
 
 // wireSearchRequest is the decoded shape. Pointers distinguish an absent
 // field from a present empty one, which is the difference between
-// missing_query and empty_query.
+// missing_query and empty_query. recency, domainFilter and maxResults are
+// decoded as raw JSON first so a type mismatch (a number where a string
+// was expected, and so on) can be answered with a message naming the
+// field, rather than the generic "unknown field" a struct-typed decode
+// failure would give no matter which field caused it.
 type wireSearchRequest struct {
-	Version *int    `json:"version"`
-	Query   *string `json:"query"`
-	Tier    *string `json:"tier"`
+	Version      *int            `json:"version"`
+	Query        *string         `json:"query"`
+	Tier         *string         `json:"tier"`
+	Recency      json.RawMessage `json:"recency"`
+	DomainFilter json.RawMessage `json:"domain_filter"`
+	MaxResults   json.RawMessage `json:"max_results"`
 }
 
 // decodeMachineSearchRequest reads exactly one v1 request from r.
@@ -132,7 +150,96 @@ func decodeMachineSearchRequest(r io.Reader) (machineSearchRequest, error) {
 	if wire.Tier != nil {
 		req.tier = *wire.Tier
 	}
+	if len(wire.Recency) > 0 {
+		recency, err := validateRecency(wire.Recency)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.recency = &recency
+	}
+	if len(wire.DomainFilter) > 0 {
+		domainFilter, err := validateDomainFilter(wire.DomainFilter)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.domainFilter = domainFilter
+	}
+	if len(wire.MaxResults) > 0 {
+		maxResults, err := validateMaxResults(wire.MaxResults)
+		if err != nil {
+			return machineSearchRequest{}, err
+		}
+		req.maxResults = &maxResults
+	}
 	return req, nil
+}
+
+// validRecencyWords is the router's own closed vocabulary for "recency",
+// mirrored here so a bad value costs the caller no router call.
+var validRecencyWords = map[string]bool{"day": true, "week": true, "month": true, "year": true}
+
+func validateRecency(raw json.RawMessage) (string, *inputError) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must be a string`)
+	}
+	if !validRecencyWords[s] {
+		return "", inputErrorf(codeInvalidRecency, `"recency" must be one of "day", "week", "month", "year"`)
+	}
+	return s, nil
+}
+
+// domainFilterMax is the router's own cap on the "domain_filter" array,
+// mirrored here so an oversized list costs the caller no router call.
+const domainFilterMax = 16
+
+func validateDomainFilter(raw json.RawMessage) ([]string, *inputError) {
+	var hosts []string
+	if err := json.Unmarshal(raw, &hosts); err != nil {
+		return nil, inputErrorf(codeInvalidDomainFilter, `"domain_filter" must be an array of strings`)
+	}
+	if len(hosts) > domainFilterMax {
+		return nil, inputErrorf(codeInvalidDomainFilter,
+			fmt.Sprintf(`"domain_filter" accepts at most %d hostnames`, domainFilterMax))
+	}
+	for _, h := range hosts {
+		if !bareHostname(h) {
+			return nil, inputErrorf(codeInvalidDomainFilter,
+				fmt.Sprintf(`"domain_filter" entry %q must be a bare hostname: no scheme, path, port or whitespace`, h))
+		}
+	}
+	return hosts, nil
+}
+
+// bareHostname is deliberately strict rather than a URL parse: a scheme
+// or a path both put a "/" in the string, and a port puts a ":" in it, so
+// refusing both catches every shape the router's own rule names without
+// needing to parse the entry as a URL first (which would accept things a
+// bare hostname is not, such as a scheme-relative "//host").
+func bareHostname(h string) bool {
+	if h == "" {
+		return false
+	}
+	if strings.ContainsAny(h, ":/") {
+		return false
+	}
+	for _, r := range h {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateMaxResults(raw json.RawMessage) (int, *inputError) {
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must be an integer`)
+	}
+	if n < 1 || n > 25 {
+		return 0, inputErrorf(codeInvalidMaxResults, `"max_results" must be between 1 and 25`)
+	}
+	return n, nil
 }
 
 // ── the envelope ────────────────────────────────────────────────────────

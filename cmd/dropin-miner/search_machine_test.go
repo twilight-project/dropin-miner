@@ -243,6 +243,161 @@ func TestMachineTierComesFromTheRequest(t *testing.T) {
 	}
 }
 
+// ── S1 recency, domain_filter and max_results ───────────────────────────
+
+// Each option round-trips into the body the fake router receives, byte
+// for byte, and an absent option is absent from the body — never null,
+// never a default this client invented.
+func TestMachineOptionsRoundTripIntoTheBody(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stdin string
+		check func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:  "recency",
+			stdin: `{"version":1,"query":"q","recency":"week"}`,
+			check: func(t *testing.T, body map[string]any) {
+				if body["recency"] != "week" {
+					t.Errorf("recency: %v", body)
+				}
+				if _, ok := body["domain_filter"]; ok {
+					t.Errorf("domain_filter present when not requested: %v", body)
+				}
+				if _, ok := body["max_results"]; ok {
+					t.Errorf("max_results present when not requested: %v", body)
+				}
+			},
+		},
+		{
+			name:  "domain_filter",
+			stdin: `{"version":1,"query":"q","domain_filter":["example.com","docs.example.org"]}`,
+			check: func(t *testing.T, body map[string]any) {
+				df, _ := body["domain_filter"].([]any)
+				if len(df) != 2 || df[0] != "example.com" || df[1] != "docs.example.org" {
+					t.Errorf("domain_filter: %v", body["domain_filter"])
+				}
+				if _, ok := body["recency"]; ok {
+					t.Errorf("recency present when not requested: %v", body)
+				}
+			},
+		},
+		{
+			name:  "max_results",
+			stdin: `{"version":1,"query":"q","max_results":3}`,
+			check: func(t *testing.T, body map[string]any) {
+				if body["max_results"] != float64(3) {
+					t.Errorf("max_results: %v", body)
+				}
+			},
+		},
+		{
+			name:  "all three together",
+			stdin: `{"version":1,"query":"q","tier":"balanced","recency":"day","domain_filter":["a.test"],"max_results":25}`,
+			check: func(t *testing.T, body map[string]any) {
+				if body["tier"] != "balanced" || body["recency"] != "day" || body["max_results"] != float64(25) {
+					t.Errorf("body: %v", body)
+				}
+				df, _ := body["domain_filter"].([]any)
+				if len(df) != 1 || df[0] != "a.test" {
+					t.Errorf("domain_filter: %v", body["domain_filter"])
+				}
+			},
+		},
+		{
+			name:  "none of the three: unchanged from today",
+			stdin: `{"version":1,"query":"q"}`,
+			check: func(t *testing.T, body map[string]any) {
+				for _, k := range []string{"tier", "recency", "domain_filter", "max_results"} {
+					if _, ok := body[k]; ok {
+						t.Errorf("%s present in a version-1 request that only sent query: %v", k, body)
+					}
+				}
+				if body["query"] != "q" {
+					t.Errorf("body changed for a query-only request: %v", body)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fr, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(routerBody))
+			})
+			h := fixedSearchOps(root)
+			code, out, errOut := runSearchStdin(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, tc.stdin, "-config", cfg)
+			if code != exitOK {
+				t.Fatalf("exit %d: %s %s", code, out, errOut)
+			}
+			_, sent := fr.last(t)
+			var body map[string]any
+			if err := json.Unmarshal(sent, &body); err != nil {
+				t.Fatalf("router body: %v", err)
+			}
+			tc.check(t, body)
+		})
+	}
+}
+
+// A malformed recency, domain_filter or max_results is answered with
+// fix_input, naming the field, before any router call — never sent and
+// never charged.
+func TestMachineOptionsRefusedBeforeRouterCall(t *testing.T) {
+	for _, tc := range []struct {
+		name, stdin, wantCode string
+	}{
+		{"recency not a word", `{"version":1,"query":"q","recency":"decade"}`, codeInvalidRecency},
+		{"recency wrong type", `{"version":1,"query":"q","recency":7}`, codeInvalidRecency},
+		{"recency empty string", `{"version":1,"query":"q","recency":""}`, codeInvalidRecency},
+		{"domain_filter not an array", `{"version":1,"query":"q","domain_filter":"example.com"}`, codeInvalidDomainFilter},
+		{"domain_filter not strings", `{"version":1,"query":"q","domain_filter":[1,2]}`, codeInvalidDomainFilter},
+		{
+			"domain_filter too many entries",
+			`{"version":1,"query":"q","domain_filter":["a0.test","a1.test","a2.test","a3.test","a4.test","a5.test","a6.test","a7.test","a8.test","a9.test","a10.test","a11.test","a12.test","a13.test","a14.test","a15.test","a16.test"]}`,
+			codeInvalidDomainFilter,
+		},
+		{"domain_filter empty entry", `{"version":1,"query":"q","domain_filter":[""]}`, codeInvalidDomainFilter},
+		{"domain_filter carries a scheme", `{"version":1,"query":"q","domain_filter":["https://example.com"]}`, codeInvalidDomainFilter},
+		{"domain_filter carries a path", `{"version":1,"query":"q","domain_filter":["example.com/docs"]}`, codeInvalidDomainFilter},
+		{"domain_filter carries a port", `{"version":1,"query":"q","domain_filter":["example.com:8080"]}`, codeInvalidDomainFilter},
+		{"domain_filter carries whitespace", `{"version":1,"query":"q","domain_filter":["exa mple.com"]}`, codeInvalidDomainFilter},
+		{"max_results not an integer", `{"version":1,"query":"q","max_results":"8"}`, codeInvalidMaxResults},
+		{"max_results not integral", `{"version":1,"query":"q","max_results":8.5}`, codeInvalidMaxResults},
+		{"max_results below 1", `{"version":1,"query":"q","max_results":0}`, codeInvalidMaxResults},
+		{"max_results negative", `{"version":1,"query":"q","max_results":-1}`, codeInvalidMaxResults},
+		{"max_results above 25", `{"version":1,"query":"q","max_results":26}`, codeInvalidMaxResults},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fr, cfg, root := newFakeRouter(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(routerBody))
+			})
+			h := fixedSearchOps(root)
+			code, out, errOut := runSearchStdin(t, h, map[string]string{"TOKENDROP_API_KEY": "k"}, tc.stdin, "-config", cfg)
+			if code != exitUsage {
+				t.Fatalf("exit %d, want %d (%s)", code, exitUsage, out)
+			}
+			env := decodeEnvelope(t, out)
+			if got := envField(t, env, "code"); got != tc.wantCode {
+				t.Errorf("code %q, want %q", got, tc.wantCode)
+			}
+			if got := envField(t, env, "action"); got != actionFixInput {
+				t.Errorf("action %q, want %q", got, actionFixInput)
+			}
+			errMsg, _ := env["error"].(map[string]any)
+			if errMsg == nil || errMsg["message"] == "" {
+				t.Errorf("no diagnostic message: %v", env)
+			}
+			if errOut != "" {
+				t.Errorf("an expected protocol error also explained itself on stderr: %q", errOut)
+			}
+			fr.mu.Lock()
+			defer fr.mu.Unlock()
+			if len(fr.reqs) != 0 {
+				t.Error("a refused request was sent to the router anyway")
+			}
+		})
+	}
+}
+
 // ── §18 the machine envelope, for every process class ───────────────────
 
 func TestEveryProcessClassEmitsACompleteEnvelope(t *testing.T) {

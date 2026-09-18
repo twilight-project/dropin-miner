@@ -130,13 +130,20 @@ type routerAttempt struct {
 	BodyErr error
 }
 
-// searchCall is everything one search sends.
+// searchCall is everything one search sends. Recency, DomainFilter and
+// MaxResults are absent (nil) unless the --stdin caller supplied them:
+// the router accepts their absence as "use your default", and sending a
+// zeroed value instead would silently override that default with one
+// this client chose, not one the caller or the router asked for.
 type searchCall struct {
-	Endpoint string
-	Key      string
-	Query    string
-	Tier     string
-	Trace    *traceEnvelope
+	Endpoint     string
+	Key          string
+	Query        string
+	Tier         string
+	Recency      *string
+	DomainFilter []string
+	MaxResults   *int
+	Trace        *traceEnvelope
 }
 
 // searchOutcome is the structured result of running a search. Both
@@ -202,6 +209,9 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	var query string
+	var recency *string
+	var domainFilter []string
+	var maxResults *int
 	if machine {
 		// No positional query in machine mode: two sources for the same
 		// value is how a caller ends up sending one and escaping the
@@ -222,6 +232,9 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 		if req.tier != "" {
 			*tier = req.tier
 		}
+		recency = req.recency
+		domainFilter = req.domainFilter
+		maxResults = req.maxResults
 	} else {
 		query = strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if query == "" {
@@ -283,11 +296,14 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	defer cancel()
 
 	out := performSearch(ctx, ops.now, searchCall{
-		Endpoint: strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
-		Key:      key,
-		Query:    query,
-		Tier:     *tier,
-		Trace:    searchTrace(ops, cfg.Miner, getenv),
+		Endpoint:     strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
+		Key:          key,
+		Query:        query,
+		Tier:         *tier,
+		Recency:      recency,
+		DomainFilter: domainFilter,
+		MaxResults:   maxResults,
+		Trace:        searchTrace(ops, cfg.Miner, getenv),
 	})
 	if out.Retried {
 		fmt.Fprintln(stderr, "dropin-miner search: the router answered "+traceUnsupportedCode+"; retrying once without the trace")
@@ -470,6 +486,15 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	body := map[string]any{"query": call.Query}
 	if call.Tier != "" {
 		body["tier"] = call.Tier
+	}
+	if call.Recency != nil {
+		body["recency"] = *call.Recency
+	}
+	if call.DomainFilter != nil {
+		body["domain_filter"] = call.DomainFilter
+	}
+	if call.MaxResults != nil {
+		body["max_results"] = *call.MaxResults
 	}
 	out := searchOutcome{Traced: call.Trace != nil}
 	if out.Traced {
