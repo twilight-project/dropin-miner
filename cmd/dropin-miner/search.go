@@ -130,13 +130,20 @@ type routerAttempt struct {
 	BodyErr error
 }
 
-// searchCall is everything one search sends.
+// searchCall is everything one search sends. Recency, DomainFilter and
+// MaxResults are absent (nil) unless the --stdin caller supplied them:
+// the router accepts their absence as "use your default", and sending a
+// zeroed value instead would silently override that default with one
+// this client chose, not one the caller or the router asked for.
 type searchCall struct {
-	Endpoint string
-	Key      string
-	Query    string
-	Tier     string
-	Trace    *traceEnvelope
+	Endpoint     string
+	Key          string
+	Query        string
+	Tier         string
+	Recency      *string
+	DomainFilter []string
+	MaxResults   *int
+	Trace        *traceEnvelope
 }
 
 // searchOutcome is the structured result of running a search. Both
@@ -202,6 +209,10 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	var query string
+	var recency *string
+	var domainFilter []string
+	var maxResults *int
+	var view string
 	if machine {
 		// No positional query in machine mode: two sources for the same
 		// value is how a caller ends up sending one and escaping the
@@ -222,6 +233,10 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 		if req.tier != "" {
 			*tier = req.tier
 		}
+		recency = req.recency
+		domainFilter = req.domainFilter
+		maxResults = req.maxResults
+		view = req.view
 	} else {
 		query = strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if query == "" {
@@ -295,11 +310,14 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 		fmt.Fprintln(stderr, "dropin-miner search: ignoring "+bridgeEnv+": this session's host declared the lineage file ("+lineageEnv+") as its trace channel, so a bridge here was written by something else")
 	}
 	out := performSearch(ctx, ops.now, searchCall{
-		Endpoint: strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
-		Key:      key,
-		Query:    query,
-		Tier:     *tier,
-		Trace:    trace,
+		Endpoint:     strings.TrimRight(cfg.Miner.RouterURL.String(), "/") + "/v1/search",
+		Key:          key,
+		Query:        query,
+		Tier:         *tier,
+		Recency:      recency,
+		DomainFilter: domainFilter,
+		MaxResults:   maxResults,
+		Trace:        trace,
 	})
 	if out.Retried {
 		fmt.Fprintln(stderr, "dropin-miner search: the router answered "+traceUnsupportedCode+"; retrying once without the trace")
@@ -324,7 +342,7 @@ func searchMain(ops searchOps, args []string, stdin io.Reader, stdout, stderr io
 	}
 
 	if machine {
-		env, code := searchEnvelopeOf(out, &mining)
+		env, code := searchEnvelopeOf(out, &mining, view)
 		emitMachine(stdout, env)
 		return code
 	}
@@ -482,6 +500,15 @@ func performSearch(ctx context.Context, now func() time.Time, call searchCall) s
 	body := map[string]any{"query": call.Query}
 	if call.Tier != "" {
 		body["tier"] = call.Tier
+	}
+	if call.Recency != nil {
+		body["recency"] = *call.Recency
+	}
+	if call.DomainFilter != nil {
+		body["domain_filter"] = call.DomainFilter
+	}
+	if call.MaxResults != nil {
+		body["max_results"] = *call.MaxResults
 	}
 	out := searchOutcome{Traced: call.Trace != nil}
 	if out.Traced {
@@ -730,18 +757,56 @@ type routerResponse struct {
 	Session    *struct {
 		ID string `json:"id"`
 	} `json:"session,omitempty"`
-	Usage struct {
-		LatencyMS int64 `json:"latency_ms"`
-	} `json:"usage"`
+	// Decision and Usage are pointers, not values, so a router response
+	// that omits them decodes to nil rather than to a zeroed struct this
+	// client cannot tell apart from a genuine zero — the difference
+	// between "the router said nothing about this" and "the router said
+	// zero", which the machine envelope must preserve (omitempty on the
+	// pointer, never on a value that would print as {} or 0).
+	Decision *routerDecision `json:"decision,omitempty"`
+	Usage    *routerUsage    `json:"usage,omitempty"`
+}
+
+// routerDecision is the router's own account of which arms it ran.
+type routerDecision struct {
+	Tier      string   `json:"tier,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	// Trimmed lists providers the router dropped because the cost
+	// estimate exceeded the tier's ceiling, per the router's own contract
+	// (SKILL.md's "trimmed rather than the request refused"). Absent when
+	// nothing was trimmed.
+	Trimmed []string `json:"trimmed,omitempty"`
+}
+
+// routerUsage is the router's ledger for the whole search: what it cost,
+// whether the answer came from cache, and whether slow-lane arms are
+// still landing.
+type routerUsage struct {
+	CostMicros int64 `json:"cost_micros,omitempty"`
+	CacheHit   bool  `json:"cache_hit,omitempty"`
+	Pending    int   `json:"pending,omitempty"`
+	LatencyMS  int64 `json:"latency_ms,omitempty"`
 }
 
 type routerCandidate struct {
-	Provider  string           `json:"provider"`
-	Kind      string           `json:"kind"`
-	Status    string           `json:"status"`
-	Answer    string           `json:"answer,omitempty"`
-	Error     string           `json:"error,omitempty"`
-	Citations []routerCitation `json:"citations,omitempty"`
+	Provider   string           `json:"provider"`
+	Kind       string           `json:"kind"`
+	Status     string           `json:"status"`
+	Answer     string           `json:"answer,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Citations  []routerCitation `json:"citations,omitempty"`
+	CostMicros int64            `json:"cost_micros,omitempty"`
+	// CostSource is "reported" when it is the provider's own number, and
+	// something else (typically "modeled") otherwise. Carried through
+	// unread by this client's own logic — a participant reading -format
+	// json is the consumer, not a branch here.
+	CostSource string         `json:"cost_source,omitempty"`
+	Latency    *routerLatency `json:"latency,omitempty"`
+}
+
+type routerLatency struct {
+	TTFBMS  int64 `json:"ttfb_ms,omitempty"`
+	TotalMS int64 `json:"total_ms,omitempty"`
 }
 
 type routerCitation struct {
