@@ -141,12 +141,30 @@ func rootsOf(file string) string {
 	return "(no writable_roots line)"
 }
 
+// rootsLineOf is the writable_roots line one installation's config produces,
+// taken from the renderer rather than from a path written out here.
+//
+// The line carries %q-quoted paths, so on Windows every separator inside it
+// is doubled and the native path the test holds is not a substring of it at
+// all: the first version of this file asked `strings.Contains(line, dir)` and
+// was red on both Windows runners over a file production had written
+// correctly. Asked of the renderer, the comparison is exact and the spelling
+// is whatever this OS's spelling is.
+func (m *twoCodexInstallations) rootsLineOf(cfg string) string {
+	m.t.Helper()
+	roots := codexSandboxRoots(binEntry{cfg: cfg}, noEnv)
+	if len(roots) == 0 {
+		m.t.Fatalf("%s names no sandbox roots, so a comparison against its block would prove nothing", cfg)
+	}
+	return rootsOf(sandboxSettings(roots))
+}
+
 func TestASecondInstallationLeavesTheFirstsCodexSandboxBlock(t *testing.T) {
 	m := newTwoCodexInstallations(t)
 	m.install(m.first)
 	before := m.codexConfig()
-	if !strings.Contains(rootsOf(before), filepath.Dir(m.first)) {
-		t.Fatalf("the first installation's own install did not write its roots, so nothing below would prove anything:\n%s", before)
+	if got, want := rootsOf(before), m.rootsLineOf(m.first); got != want {
+		t.Fatalf("the first installation's own install did not write its roots, so nothing below would prove anything\n got %s\nwant %s\n%s", got, want, before)
 	}
 
 	// The second installs: the command `setup -home` names in its closing
@@ -160,8 +178,8 @@ func TestASecondInstallationLeavesTheFirstsCodexSandboxBlock(t *testing.T) {
 	if n := strings.Count(out, m.leftSentence()); n != 1 {
 		t.Errorf("the sentence appears %d times, want 1:\n%s", n, out)
 	}
-	if strings.Contains(rootsOf(m.codexConfig()), filepath.Dir(m.second)) {
-		t.Errorf("the second installation's roots replaced the first's: %s", rootsOf(m.codexConfig()))
+	if got := rootsOf(m.codexConfig()); got == m.rootsLineOf(m.second) {
+		t.Errorf("the second installation's roots replaced the first's: %s", got)
 	}
 
 	// The second uninstalls: what it left it does not then take.
@@ -207,8 +225,11 @@ func TestTheCodexBlockIsLeftEvenWhenTheSkillIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("leaving the block must not stop the rest of the host: %v", err)
 	}
-	if !strings.Contains(string(b), m.second) {
-		t.Errorf("the second installation's skill was not written:\n%s", b)
+	// Read the way production reads an artifact, not by looking for the path
+	// as bytes: the skill renders the config for the shell Codex runs on this
+	// OS, and which quoting that is, is exactly what must not be assumed here.
+	if _, cfgs := namedInArtifact(string(b)); !configsInclude(cfgs, m.second) {
+		t.Errorf("the second installation's skill was not written; it names %q:\n%s", cfgs, b)
 	}
 }
 
