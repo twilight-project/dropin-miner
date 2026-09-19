@@ -213,10 +213,11 @@ func TestHermesInstallUninstallRoundTripsExactly(t *testing.T) {
 				t.Fatalf("the original bytes were not preserved verbatim:\n%q", installed)
 			}
 			// Idempotent: a second install of the same config is a no-op.
-			stripped, had := hermesRemoveBlock(installed)
-			if !had {
-				t.Fatal("our own block was not found for removal")
+			cut := removeOurHermesBlock(installed, refFor(testBinEntry(t, "/home/u/.tokendrop/bin/dropin-miner")))
+			if !cut.had || cut.why != "" {
+				t.Fatalf("our own block was not found for removal: had %v, left because %q", cut.had, cut.why)
 			}
+			stripped := cut.next
 			if again := hermesAppendBlock(stripped, body); string(again) != string(installed) {
 				t.Errorf("a second install produced different bytes:\n%q\n%q", again, installed)
 			}
