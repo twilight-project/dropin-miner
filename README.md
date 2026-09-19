@@ -339,7 +339,10 @@ The request may also carry `tier` (`"fast"`, the default, one provider;
 `"balanced"`, several, attributed), `recency` (`"day"`, `"week"`, `"month"` or
 `"year"`), `domain_filter` (up to 16 bare hostnames) and `max_results` (1-25),
 all optional and passed through to the router unchanged; a malformed value
-answers `fix_input` before any router call. `result.merged` is the citations of
+answers `fix_input` before any router call. `recency` and `domain_filter` are
+preferences the router passes to its providers, not guarantees — results from
+other dates or hosts can still come back, and a caller that needs a strict
+restriction checks each citation itself — while `max_results` is a cap. `result.merged` is the citations of
 every candidate deduplicated across providers, each naming which providers
 found it (`found_by`), where each of them cited it (`found_in`, one
 `candidate`/`citation` position per provider) and its best rank;

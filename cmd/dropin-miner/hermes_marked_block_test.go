@@ -16,7 +16,7 @@ import (
 
 func hermesPlanUninstall(ops agentOps, entry binEntry) agentPlan {
 	var p agentPlan
-	hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, entry, &p)
+	hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, entry, noEnv, &p)
 	return p
 }
 

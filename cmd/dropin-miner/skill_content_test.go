@@ -70,15 +70,49 @@ func TestSkillTeachesTiersOptionsAndMergedList(t *testing.T) {
 					}
 				}
 
+				// Options: what the router actually promises (#131). An
+				// agent that reads domain_filter as a restriction presents
+				// off-host results as the named site's, or reports a
+				// failure that is not one — which is what the 0.2.12
+				// release check watched it do. Asserted inside the section,
+				// because "preferences" said anywhere else in the document
+				// would not be read at the point the field is chosen.
+				options, ok := skillSection(skill, "## Request options", "## What comes back")
+				if !ok {
+					t.Fatal("no ## Request options section found")
+				}
+				for _, want := range []string{
+					"preferences", "not every provider honors them",
+					"other hosts can still come back", "check each",
+					"`max_results` is a cap",
+				} {
+					if !strings.Contains(options, want) {
+						t.Errorf("the Request options section does not say what the router promises: missing %q\n%s", want, options)
+					}
+				}
+
 				// Reading the answer: merged first, found_by as evidence,
-				// view:merged to cut tokens, decision, and cost mentioned
-				// only if asked.
+				// view:merged to cut tokens, what it costs to ask for it,
+				// decision, and cost mentioned only if asked.
 				for _, want := range []string{
 					"result.merged", "found_by", `"view":"merged"`,
 					"decision", "usage.cost_micros", "only if the user asks",
 				} {
 					if !strings.Contains(skill, want) {
 						t.Errorf("skill is missing reading-the-answer guidance %q", want)
+					}
+				}
+				// The merged view is not free and is not the default: it
+				// drops the providers' own answer texts with the candidates
+				// list. The release check watched an agent ask for it on
+				// its very first search, unprompted.
+				reading, ok := skillSection(skill, "## Reading the answer", "## Mining is not search")
+				if !ok {
+					t.Fatal("no ## Reading the answer section found")
+				}
+				for _, want := range []string{"answer texts", "not the default"} {
+					if !strings.Contains(reading, want) {
+						t.Errorf("the Reading the answer section does not say what the merged view costs: missing %q\n%s", want, reading)
 					}
 				}
 

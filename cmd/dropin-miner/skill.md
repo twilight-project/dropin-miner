@@ -39,6 +39,13 @@ Three more fields, each optional, passed straight through to the router:
 - `max_results` — an integer from 1 to 25 — to read less.
   `{"version":1,"query":"quick fact check","max_results":3}`
 
+`recency` and `domain_filter` are preferences: the router passes them to its
+providers, and not every provider honors them, so results from other dates or
+other hosts can still come back. That is not a failure and not something to
+report as one. If the answer must come from one host or one period, check each
+citation's `url` host or date yourself and use only what qualifies.
+`max_results` is a cap and is applied.
+
 ## What comes back
 
 One JSON object on stdout, nothing else. These fields are always present:
@@ -62,7 +69,9 @@ position any of them gave it. `found_in` says where in the per-provider
 result each page came from: one `{candidate, citation}` position per
 `found_by` provider, in the same order. Ask `"view":"merged"` when tokens
 matter: it drops the per-provider `candidates` list and keeps everything
-else, `merged` included. `decision` says which providers ran.
+else, `merged` included. What goes with that list is the providers' own
+answer texts, so ask for it when the pages are what matters — it is
+not the default. `decision` says which providers ran.
 `usage.cost_micros` is what the search cost the network, in millionths of a
 dollar; mention it only if the user asks.
 

@@ -151,7 +151,8 @@ func (fakeIntegrationTarget) Kind() targetKind                                  
 func (fakeIntegrationTarget) Detect(agentOps, agentPaths, func(string) string) string { return "" }
 func (fakeIntegrationTarget) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
-func (fakeIntegrationTarget) PlanUninstall(agentOps, agentPaths, binEntry, *agentPlan) {}
+func (fakeIntegrationTarget) PlanUninstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
+}
 func (fakeIntegrationTarget) Status(agentOps, agentPaths, binEntry) targetStatus {
 	return targetStatus{}
 }

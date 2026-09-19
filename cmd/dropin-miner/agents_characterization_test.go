@@ -380,7 +380,7 @@ func TestUninstallPlanGoldenPerHost(t *testing.T) {
 			if failures := commitPlan(ops, &installPlan, io.Discard, io.Discard); failures != 0 {
 				t.Fatalf("committing the install %s's uninstall is characterized against: %d failures", id, failures)
 			}
-			plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry)
+			plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 			compareGoldenPlan(t, capturePlanForGolden(id, ops, entry, plan), filepath.Join("testdata", "agents", id+".uninstall.golden"))
 		})
 	}
@@ -527,7 +527,7 @@ func TestCodexSandboxPlanGolden(t *testing.T) {
 		if failures := commitPlan(ops, &installPlan, io.Discard, io.Discard); failures != 0 {
 			t.Fatalf("committing the sandboxed install: %d failures", failures)
 		}
-		plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry)
+		plan := buildUninstallPlan(ops, paths, []installTarget{surface}, entry, noEnv)
 		compareGoldenPlan(t, withSkillPlaceholder(normalizeGoldenPlan(capturePlan(plan), home)), filepath.Join("testdata", "agents", "codex-sandbox.uninstall.golden"))
 	})
 }
