@@ -74,16 +74,6 @@ func (s skillShells) terminalLabel(sh shellKind) string {
 	return shellLabel(sh)
 }
 
-// shortLabel names a shell in the space a list item affords: the
-// terminal-profile name where the participant picks, the shell's own name
-// where the tool does.
-func (s skillShells) shortLabel(sh shellKind) string {
-	if s.choice == chosenByParticipant {
-		return s.terminalLabel(sh)
-	}
-	return shellLabel(sh)
-}
-
 // lead is the sentence introducing a multi-shell host's blocks, and it says
 // why there is more than one — a reader who knows which of the two facts
 // applies to them can pick without reading both blocks.

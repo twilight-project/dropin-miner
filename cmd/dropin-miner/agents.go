@@ -680,30 +680,64 @@ func labels(ts []installTarget) []string {
 	return out
 }
 
-// rulesSnippet is the line a host without a skill directory is given —
+// hintIndent is where the hint's prose sits: two spaces, matching the line
+// printPlan has already indented for it.
+const hintIndent = "  "
+
+// indentHintProse moves the skill's prose in under the hint and leaves every
+// byte between a pair of fences exactly where the renderer put it.
+//
+// That is not cosmetic. A quoted heredoc ends only at a line that is exactly
+// its delimiter, and a PowerShell here-string only at a line beginning with
+// '@ — the skill's own quoting note says so. Two spaces in front of either
+// turns the block this hint exists to supply back into something that does
+// not run, which is the half of #122 that would be easiest to reintroduce.
+func indentHintProse(s string) string {
+	lines := strings.Split(s, "\n")
+	inBlock := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			inBlock = !inBlock
+			continue
+		}
+		if inBlock || strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines[i] = hintIndent + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// rulesSnippet is what a host without a skill directory is given —
 // opencode's AGENTS.md note, and the "for any other agent" text. It renders
 // for the shell that host runs tool calls in; a host with no established
 // shell, and the generic "any other agent" case, get the POSIX form, which
 // is what v0.2.9 printed for everyone.
+//
+// The command block is the skill's own — callSection, the same function
+// renderSkill calls, with the same body — so the hint has no command text of
+// its own and cannot drift from what a host WITH a skill directory is handed
+// (#122). What it printed before was a bare command with the request on the
+// line below it: no heredoc, no here-string, no pipe, so nothing carried that
+// line to stdin and a participant pasting the two lines got no search at all.
+// On Windows it also lacked the $OutputEncoding line the rendered skills have
+// carried since 0.2.11, so a model composing the wrapper itself mangles a
+// non-ASCII query — #96's mechanism, reaching the one host whose instructions
+// a participant copies by hand rather than receiving as a file.
 func rulesSnippetFor(entry binEntry, shells skillShells) string {
-	var lines []string
-	for _, sh := range shells.kinds {
-		cmd, err := entry.stdinCommandForShell(sh)
-		if err != nil {
-			continue
-		}
-		if len(shells.kinds) > 1 {
-			lines = append(lines, "    ("+shells.shortLabel(sh)+") "+cmd)
-			continue
-		}
-		lines = append(lines, "    "+cmd)
+	call, err := callSection(entry, shells)
+	if err != nil {
+		// Only POSIX and PowerShell have a block form, and every tool cell
+		// either declares one of those or falls back to POSIX in
+		// toolShellsForSkill, so reaching here means a new declaration
+		// rather than a state a participant is in today. renderSkill
+		// refuses such a host outright; this hint must not, because its
+		// whole job is to hand the participant something that runs, so it
+		// falls back the way an unestablished cell already does.
+		call, _ = callSection(entry, skillShells{kinds: []shellKind{shellPOSIX}, goos: shells.goos})
 	}
-	if len(lines) == 0 {
-		lines = []string{"    " + entry.stdinCommand()}
-	}
-	return "  For public-web search, send one JSON request on stdin:\n" +
-		strings.Join(lines, "\n") + "\n" +
-		"    {\"version\":1,\"query\":\"<exact query text>\"}\n" +
+	return hintIndent + "For public-web search, send one JSON request on stdin:\n" +
+		indentHintProse(call) + "\n" +
 		"  The query goes in the JSON, never in the command line. One JSON object comes\n" +
 		"  back: decide what to do next from ok, retryable and action, never from the\n" +
 		"  message text. Retry only when retryable is true, and honor retry_after_ms.\n" +
