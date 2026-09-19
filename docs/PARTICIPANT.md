@@ -252,8 +252,10 @@ The request may also ask for `"tier":"balanced"` (several providers,
 attributed, instead of the default `fast`'s one), `recency`, `domain_filter`
 or `max_results`, and for `"view":"merged"` — a deduplicated list of pages
 across every provider that answered, each naming which ones found it, in
-place of the full per-provider candidate list. The skill your agent was given
-teaches all of this; you never have to ask for it by hand.
+place of the full per-provider candidate list. `recency` and `domain_filter`
+are preferences the router passes to its providers, so a result from another
+date or host is not a fault; `max_results` is a cap. The skill your agent was
+given teaches all of this; you never have to ask for it by hand.
 
 A search is bounded by `-timeout`, default 60s, covering the whole operation.
 

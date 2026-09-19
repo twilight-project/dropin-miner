@@ -304,8 +304,9 @@ func (fakeIntegration) Detect(agentOps, agentPaths, func(string) string) string 
 func (fakeIntegration) PlanInstall(ops agentOps, _ agentPaths, _ binEntry, _ func(string) string, p *agentPlan) {
 	planWrite(ops, "Fake integration", filepath.Join(ops.home, ".fake-integration"), []byte("x"), 0o600, "marker", p)
 }
-func (fakeIntegration) PlanUninstall(agentOps, agentPaths, binEntry, *agentPlan) {}
-func (fakeIntegration) Status(agentOps, agentPaths, binEntry) targetStatus       { return targetStatus{} }
+func (fakeIntegration) PlanUninstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
+}
+func (fakeIntegration) Status(agentOps, agentPaths, binEntry) targetStatus { return targetStatus{} }
 
 func TestSetupWithReachesEveryTargetKindAndDeduplicates(t *testing.T) {
 	orig := installTargets

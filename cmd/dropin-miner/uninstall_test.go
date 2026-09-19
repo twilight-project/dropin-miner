@@ -326,7 +326,7 @@ func (uninstallIntegrationTarget) Detect(agentOps, agentPaths, func(string) stri
 }
 func (uninstallIntegrationTarget) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
-func (f uninstallIntegrationTarget) PlanUninstall(ops agentOps, _ agentPaths, _ binEntry, p *agentPlan) {
+func (f uninstallIntegrationTarget) PlanUninstall(ops agentOps, _ agentPaths, _ binEntry, _ func(string) string, p *agentPlan) {
 	if pathExists(ops, f.file) {
 		planRemove(p, f.Label(), f.file)
 	}

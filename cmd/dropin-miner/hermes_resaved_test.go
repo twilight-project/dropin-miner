@@ -178,7 +178,7 @@ func TestOurMarkedBlockIsReadAfterHermesFoldsIt(t *testing.T) {
 			}
 
 			var uninstall agentPlan
-			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, &uninstall)
+			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, noEnv, &uninstall)
 			if len(uninstall.writes) != 1 {
 				t.Fatalf("uninstall planned %d writes, want the one that removes the block: %+v", len(uninstall.writes), uninstall.writes)
 			}
@@ -351,7 +351,7 @@ func TestOurHookIsFoundInTheFormHermesWrites(t *testing.T) {
 			}
 
 			var uninstall agentPlan
-			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, &uninstall)
+			hermesTarget{}.PlanUninstall(ops, agentPaths{hermesConfig: hermesConfigPath, hermesSkill: hermesSkillPath}, tc.entry, noEnv, &uninstall)
 			if len(uninstall.writes) != 1 {
 				t.Fatalf("uninstall planned %d writes, want the one that removes the entry; notes: %v", len(uninstall.writes), uninstall.notes)
 			}
