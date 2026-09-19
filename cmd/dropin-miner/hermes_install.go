@@ -62,19 +62,61 @@ const hermesNoEOLNote = "# the configuration above ended without a final newline
 // planHermesHook appends (or refreshes) our marked hooks: block in Hermes'
 // config.yaml. Returns whether it planned a write.
 func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPlan) bool {
+	return planHermesHookFor(ops, label, path, entry, runtime.GOOS == "windows", p)
+}
+
+// planHermesHookFor is planHermesHook with the splitter named, so that both
+// platforms' fixtures can be driven on every runner.
+func planHermesHookFor(ops agentOps, label, path string, entry binEntry, windows bool, p *agentPlan) bool {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
 		return false
 	}
-	body, ok := hermesHookYAML(entry)
+	cmd, ok := hermesHookCommand(entry, windows)
 	if !ok {
 		p.refused = append(p.refused, fmt.Sprintf(
 			"%s: cannot write a hook entry for %s — the path cannot be quoted for this platform's command splitter",
 			label, entry.command))
 		return false
 	}
-	stripped, hadBlock := hermesRemoveBlock(existing)
+	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
+	if hermesMarkedBlockIsCurrent(existing, cmd) {
+		// #105: our block, holding today's entry in whatever bytes Hermes'
+		// round-trip writer left it in. Writing it back would be undone by
+		// Hermes' next save, and would make install report a change on every
+		// run of a host where nothing is wrong.
+		return false
+	}
+	// A refresh is a removal followed by an append, so it answers to the rule
+	// removal answers to (#106, #125). It used not to, and that was #73's
+	// defect at install time: `agents install` from one installation cut
+	// another's block out of the config and wrote its own in its place.
+	// A block that cannot be vouched for is left, and install says so and goes
+	// on with the rest of the host. A sentence and not a refusal, though the
+	// hook does not get written: a refusal in this file ends in four lines to
+	// paste, and there are none to offer here. Hermes reads one hooks: key, so
+	// where another installation's block holds it there is nothing a
+	// participant can add beside it, and nothing they did wrong. What they can
+	// do — uninstall the installation that owns it — is a decision about the
+	// other installation, which this command must not make for them. (S20 is
+	// the other half: a disposable installation's `agents install` on a
+	// machine where the real one already has Hermes still succeeds.)
+	cut := removeOurHermesBlock(existing, refFor(entry))
+	if cut.had && cut.why != "" {
+		note := hermesBlockLeftNote(label, path, cut.why)
+		if cut.live {
+			// Our hook IS in there and Hermes runs it; it is only not spelled
+			// the way the renderer spells it today. Saying it was not added
+			// would send someone to fix a hook that fires.
+			note += "; the pre_tool_call hook in it is this installation's and Hermes goes on running it"
+		} else {
+			note += "; this installation's pre_tool_call hook was not added"
+		}
+		p.notes = append(p.notes, note)
+		return false
+	}
+	stripped, hadBlock := cut.next, cut.had
 	var own hermesOwnEntry
 	if !hadBlock {
 		own = findHermesOwnEntry(existing, refFor(entry))
@@ -124,7 +166,13 @@ func planHermesHook(ops agentOps, label, path string, entry binEntry, p *agentPl
 // "is the hook for THIS binary and THIS config here": a block left behind
 // by a different install is not this installation being complete.
 func hermesHookInstalled(ops agentOps, path string, entry binEntry) bool {
-	body, ok := hermesHookYAML(entry)
+	return hermesHookInstalledFor(ops, path, entry, runtime.GOOS == "windows")
+}
+
+// hermesHookInstalledFor is hermesHookInstalled with the splitter named, so
+// that both platforms' fixtures can be judged on every runner.
+func hermesHookInstalledFor(ops agentOps, path string, entry binEntry, windows bool) bool {
+	cmd, ok := hermesHookCommand(entry, windows)
 	if !ok {
 		return false
 	}
@@ -132,18 +180,205 @@ func hermesHookInstalled(ops agentOps, path string, entry binEntry) bool {
 	if err != nil || b == nil {
 		return false
 	}
-	i := bytes.Index(b, []byte(agentsMarkerBegin))
-	if i < 0 {
+	lines := hermesLines(b)
+	m := hermesFindMarkers(lines)
+	if !m.present {
 		// No block of ours: the hook may still be there under a hooks: block
 		// the participant wrote (#83), and then this installation is complete.
 		return findHermesOwnEntry(b, refFor(entry)).found
 	}
-	j := bytes.Index(b[i:], []byte(agentsMarkerEnd))
-	if j < 0 {
+	if !m.ok {
 		return false
 	}
-	return bytes.Contains(b[i:i+j], []byte(body))
+	// The renderer's own bytes, as before — a block that has come to hold
+	// something more beside them still runs our hook, and what that something
+	// is belongs to removal (#106), not to status. Or the same entry in the
+	// bytes Hermes' round-trip writer leaves it in (#105).
+	var block strings.Builder
+	for _, l := range lines[m.begin+1 : m.end] {
+		block.WriteString(l.raw)
+	}
+	body := strings.Join(hermesHookLines(cmd), "\n") + "\n"
+	return strings.Contains(block.String(), body) || hermesMarkedBlockIsCurrent(b, cmd)
 }
+
+// ── our own block, after Hermes has been at it ──────────────────────────
+//
+// #105. Hermes has more than one writer for config.yaml, and they do
+// different things to us (utils.py at NousResearch/hermes-agent d150fc202463,
+// each caller read there rather than assumed):
+//
+//   - atomic_yaml_write re-dumps the file through PyYAML. Comments go, so our
+//     markers go; that is the unmarked form findHermesOwnEntry reads. Its
+//     callers are save_config, the setup wizard and `hermes config set`
+//     (set_config_value -> _write_user_config).
+//   - atomic_roundtrip_yaml_update and atomic_roundtrip_yaml_save are ruamel
+//     round trips sharing one loader (_roundtrip_load: preserve_quotes,
+//     indent 2/4/2, ruamel's default 80-column width). Comments and quotes
+//     are KEPT, so our markers survive and our matcher keeps its quotes — and
+//     the command, being longer than 80 columns, is folded onto a second line
+//     inside them. Their callers are a model switch (persist_model_selection),
+//     an in-session setting (cli.save_config_value), a personality change and
+//     the TUI gateway's _save_cfg.
+//
+// A folded scalar is the same YAML and different bytes, and the question this
+// used to ask was about bytes: is the rendered entry, byte for byte, between
+// the markers. After one model switch the answer was no. Status said the hook
+// was missing while Hermes ran it on every terminal call, and install wrote
+// the block back on every run until Hermes folded it again.
+//
+// So the block is read, with the reader #83 built for the unmarked form. What
+// it is compared with is deliberately NOT H5's rule, which answers whose an
+// entry is and accepts every spelling this client ever wrote — v0.2.9's %q
+// among them, which neither of Hermes' splitters undoes. The block is ours to
+// rewrite, so the question here is narrower and costs nothing to keep narrow:
+// does it decode to exactly the command the renderer writes today. A block
+// that is this installation's in a spelling that is not is still refreshed.
+
+// hermesMarkers is where our block is, by line.
+type hermesMarkers struct {
+	present    bool // the marker text is somewhere in the file
+	begin, end int  // the two marker lines, when ok
+	ok         bool
+}
+
+// hermesFindMarkers finds our block, and vouches for it only when the file
+// holds exactly one begin marker and one end marker, each a line of its own,
+// in that order. Two blocks are two hooks: keys: PyYAML keeps the last of
+// them, ruamel refuses the file, and there is no saying from here which one
+// Hermes runs — the reason hermesFindStructured wants exactly one hooks: key,
+// applied to our own. And a marker that is part of a longer line is not one
+// this client wrote, whatever it is.
+//
+// By line and not by byte offset because Hermes writes through a text-mode
+// handle (utils.py _atomic_write: os.fdopen(fd, "w")), so on Windows every
+// line it saves ends in CRLF, our marker lines among them.
+func hermesFindMarkers(lines []hermesLine) hermesMarkers {
+	m := hermesMarkers{begin: -1, end: -1}
+	begins, ends, stray := 0, 0, false
+	for i, l := range lines {
+		if !strings.Contains(l.text, agentsMarkerBegin) && !strings.Contains(l.text, agentsMarkerEnd) {
+			continue
+		}
+		m.present = true
+		switch l.text {
+		case agentsMarkerBegin:
+			if begins++; begins == 1 {
+				m.begin = i
+			}
+		case agentsMarkerEnd:
+			if ends++; ends == 1 {
+				m.end = i
+			}
+		default:
+			stray = true
+		}
+	}
+	m.ok = begins == 1 && ends == 1 && !stray && m.begin < m.end
+	return m
+}
+
+// hermesMarkedBlockIsCurrent: does what lies between our markers decode to
+// the entry the renderer writes for cmd?
+func hermesMarkedBlockIsCurrent(b []byte, cmd string) bool {
+	lines := hermesLines(b)
+	m := hermesFindMarkers(lines)
+	if !m.ok {
+		return false
+	}
+	got, bad := hermesReadMarkedBlock(lines[m.begin+1 : m.end])
+	return bad < 0 && got == cmd
+}
+
+// hermesReadMarkedBlock decodes what lies between our markers, and answers
+// only when that is the mapping the renderer writes and nothing besides:
+// hooks:, pre_tool_call:, one entry whose command is a scalar in any of the
+// three styles with its folding undone, and its matcher. Blank lines and
+// comments are passed over between those lines — our own note is one — but
+// not inside the command, where hermesItemCommand stops at the first line
+// that is not a continuation and an unterminated scalar then fails to decode.
+//
+// bad is -1 for that answer. Otherwise it is the line of the block reading
+// stopped at, or len(block) when the block ended before the entry did.
+//
+// The entry's own depth is not checked here because hermesItemCommand reads
+// only a line that begins with the renderer's `    - command:`, spaces
+// included. A tab is checked, on every line: len() of a line's leading
+// whitespace counts a tab as one column, so a matcher or a continuation
+// indented with one passes every depth comparison below and is a file no
+// YAML parser loads.
+func hermesReadMarkedBlock(block []hermesLine) (cmd string, bad int) {
+	var content []int
+	for i, l := range block {
+		if l.hasTabs {
+			return "", i
+		}
+		if l.indent >= 0 {
+			content = append(content, i)
+		}
+	}
+	want := hermesHookLines("")
+	for n := 0; n < 2; n++ {
+		if len(content) <= n {
+			return "", len(block)
+		}
+		if block[content[n]].text != want[n] {
+			return "", content[n]
+		}
+	}
+	if len(content) < 3 {
+		return "", len(block)
+	}
+	at := content[2]
+	cmd, ok := hermesItemCommand(block, at, len(block))
+	if !ok {
+		return "", at
+	}
+	// What follows the command's own continuation lines is the matcher, and
+	// after the matcher there is nothing.
+	k := at + 1
+	for k < len(block) && block[k].indent > 6 {
+		k++
+	}
+	matcher := hermesNextContent(block, k)
+	if matcher < 0 {
+		return "", len(block)
+	}
+	if !hermesIsOurMatcher(block[matcher]) {
+		return "", matcher
+	}
+	if after := hermesNextContent(block, matcher+1); after >= 0 {
+		return "", after
+	}
+	return cmd, -1
+}
+
+// hermesIsOurMatcher: `      matcher: ` and a scalar that decodes to the tool
+// name the renderer writes. ruamel keeps the quotes we wrote and PyYAML drops
+// them; both are the same matcher.
+func hermesIsOurMatcher(l hermesLine) bool {
+	if l.indent != 6 {
+		return false
+	}
+	rest, ok := strings.CutPrefix(l.text[6:], "matcher:")
+	if !ok || rest == "" || rest[0] != ' ' {
+		return false
+	}
+	// Nothing after the scalar, not even a space. Neither writer leaves one,
+	// and until the rendered comparison became a fast path this line was
+	// reached only through that byte-for-byte branch, which refused it — the
+	// `trailing-space-matcher` shape in the differential, left alone since L3.
+	// A space is not ours to delete on the same argument that refuses a
+	// double-quoted scalar: the form is not one either writer produces.
+	v := strings.TrimLeft(rest, " ")
+	if v != strings.TrimRight(v, " \t") {
+		return false
+	}
+	s, ok := hermesDecodeScalar(v)
+	return ok && s == hermesMatcher
+}
+
+const hermesMatcher = "terminal"
 
 // hermesConfigRefusal reports, in a phrase that completes "config.yaml …",
 // why our block must not be appended to this configuration — or "" when
@@ -296,31 +531,213 @@ func hermesAppendBlock(existing []byte, body string) []byte {
 	}
 }
 
-// hermesRemoveBlock strips our block and the separator hermesAppendBlock
-// put in front of it, restoring the surrounding configuration exactly.
-func hermesRemoveBlock(b []byte) ([]byte, bool) {
-	s := string(b)
-	i := strings.Index(s, agentsMarkerBegin)
-	if i < 0 {
-		return b, false
+// ── taking our block out ────────────────────────────────────────────────
+//
+// #106 and #125. This used to be a byte range: everything from our begin
+// marker to our end marker, deleted without a question. It predated #73's
+// rule about whose an integration is and #82's about proving what is about to
+// go, and every other removal in this client had been brought under both.
+// Three things were wrong with it, and the markers vouch for none of them:
+//
+//   - Whose it is. Two installations sharing a binary share this one block in
+//     this one file, so uninstalling a disposable installation removed the
+//     hook the real one relies on: #73, on the one host it was never fixed
+//     for. Install's refresh is the same cut followed by an append, so
+//     `agents install` did it too.
+//   - What is in it. Anything a participant typed between the markers went
+//     with the block, unannounced.
+//   - What follows it. Our end marker is a comment, and Hermes' ruamel writer
+//     keeps a comment attached to the line above it — our matcher. Whatever
+//     Hermes then adds to the hooks: mapping WE opened (a sibling event at
+//     depth two, an entry appended to our list at depth four) lands after the
+//     end marker and is still inside our mapping. Cut marker to marker and
+//     those lines are orphaned under whatever top-level key came before us:
+//     "mapping values are not allowed here", and Hermes no longer starts.
+//     It is L3c's rule for the unmarked form — what follows the run is no
+//     deeper than the run's first line — which the marked path never had.
+//
+// So the block goes only when all three can be vouched for, and otherwise it
+// is left and the plan says which one could not, the way L2 keeps and names a
+// table in the Codex block that this client did not write.
+
+// hermesBlockRemoval is removeOurHermesBlock's answer.
+type hermesBlockRemoval struct {
+	had  bool   // the file holds one well-formed block of ours
+	next []byte // the file without it; the file as it was when it is left
+	why  string // why it was left, in a phrase that completes "because …"
+	// live: the block was left, and an entry in it runs this installation's
+	// hook all the same. Install has nothing to add then and nothing has
+	// failed; without it, a block left for a participant's one line would be
+	// reported as a hook that could not be set up, on every run.
+	live bool
+}
+
+func removeOurHermesBlock(b []byte, ref installationRef) hermesBlockRemoval {
+	lines := hermesLines(b)
+	m := hermesFindMarkers(lines)
+	if !m.ok {
+		return hermesBlockRemoval{next: b}
 	}
-	j := strings.Index(s[i:], agentsMarkerEnd)
-	if j < 0 {
-		return b, false
+	if why := hermesBlockLeftBecause(lines, m, ref); why != "" {
+		return hermesBlockRemoval{had: true, next: b, why: why, live: hermesBlockRunsOurHook(lines[m.begin+1:m.end], ref)}
 	}
-	end := i + j + len(agentsMarkerEnd)
-	if end < len(s) && s[end] == '\n' {
-		end++
+	return hermesBlockRemoval{had: true, next: hermesCutBlock(lines, m)}
+}
+
+// hermesBlockRunsOurHook: is there an entry between the markers, where the
+// renderer puts one, whose command is this installation's hook? Asked only of
+// a block that is being left, and only to choose between two sentences.
+func hermesBlockRunsOurHook(block []hermesLine, ref installationRef) bool {
+	for i, l := range block {
+		if l.indent != 4 {
+			continue
+		}
+		if cmd, ok := hermesItemCommand(block, i, len(block)); ok && hermesCommandIsOurHook(cmd, ref) {
+			return true
+		}
 	}
-	pre, block, post := s[:i], s[i:end], s[end:]
-	drop := 1
-	if strings.Contains(block, hermesNoEOLNote) {
-		drop = 2
+	return false
+}
+
+// hermesBlockLeftNote is the one sentence install and uninstall both say
+// about a block they left. It names the block by what our markers only ever
+// wrap — a pre_tool_call hook — because whose hook it is, or whether what is
+// in there is still a whole one, is exactly what why says next.
+func hermesBlockLeftNote(label, path, why string) string {
+	return fmt.Sprintf("%s: left the dropin-miner pre_tool_call hook block in %s as it is, because %s", label, path, why)
+}
+
+// hermesBlockLeftBecause is the rule: "" when the block may be cut out.
+func hermesBlockLeftBecause(lines []hermesLine, m hermesMarkers, ref installationRef) string {
+	block := lines[m.begin+1 : m.end]
+	named := func(i int) string { // a line of the block, as a participant finds it
+		return fmt.Sprintf("line %d (%s)", m.begin+2+i, hermesShowLine(block[i].text))
 	}
-	for ; drop > 0 && strings.HasSuffix(pre, "\n"); drop-- {
-		pre = pre[:len(pre)-1]
+	// What is in it. The reader passes over blank lines and comments, which is
+	// right for asking whether the entry is current and wrong for deleting
+	// them: the only line of that kind this client writes is its own note,
+	// and only first.
+	for i, l := range block {
+		if l.indent < 0 && (i != 0 || l.text != hermesNoEOLNote) {
+			return named(i) + " is between the markers and is not a line dropin-miner writes, and would go with the block"
+		}
 	}
-	return []byte(pre + post), true
+	cmd, bad := hermesReadMarkedBlock(block)
+	switch {
+	case bad >= len(block):
+		return "it no longer holds the whole entry dropin-miner writes between its markers"
+	case bad >= 0:
+		return named(bad) + " is between the markers and is not a line dropin-miner writes, and would go with the block"
+	}
+	// Whose it is: H5's rule, in any spelling this client ever wrote.
+	if !hermesCommandIsOurHook(cmd, ref) {
+		return hermesWhoseHook(cmd)
+	}
+	// What follows it.
+	if next := hermesNextContent(lines, m.end+1); next >= 0 && lines[next].indent > 0 {
+		return fmt.Sprintf("line %d (%s) comes after the end marker and continues the hooks: mapping the block opened, so without the block config.yaml would no longer parse",
+			next+1, hermesShowLine(lines[next].text))
+	}
+	return ""
+}
+
+// hermesWhoseHook says whose block it is when it is not this installation's,
+// naming the other installation by the config its command names — which is
+// what makes two installations two (ownership_match.go).
+func hermesWhoseHook(cmd string) string {
+	words := renderedWords(cmd)
+	n := len(words)
+	if n >= 4 && words[1] == "hook" && words[n-2] == "hermes" && words[n-1] == "pre_tool_call" {
+		switch {
+		case n == 6 && words[2] == "-config":
+			return "its hook belongs to another installation, the one configured by " + unquoteRenderedPath(words[3])[0] + ", not to this one"
+		case n == 4:
+			return "its hook belongs to another installation, one that runs " + unquoteRenderedPath(words[0])[0] + " with no -config, not to this one"
+		}
+	}
+	return "the command between its markers is not one dropin-miner writes (" + cmd + ")"
+}
+
+func hermesShowLine(text string) string {
+	if s := strings.TrimSpace(text); s != "" {
+		return s
+	}
+	return "a blank line"
+}
+
+// hermesCutBlock takes the block out by line, with the separator
+// hermesAppendBlock put in front of it, and copies every other line as it was
+// read. With nothing after the block the pair is an exact inverse — install
+// then uninstall returns the bytes it started from, final newline or not.
+//
+// By line, because the byte arithmetic this replaces assumed LF and assumed
+// the block came last. It stripped one "\n" before the block whatever that
+// newline ended, and two when our note was there — so once Hermes had put a
+// key of its own after the block, a participant whose config had had no final
+// newline got `model: gptdisplay:` out of uninstall; and on Windows, where
+// Hermes saves CRLF, the "\r" of the separator was left behind.
+func hermesCutBlock(lines []hermesLine, m hermesMarkers) []byte {
+	start := m.begin
+	if start > 0 && lines[start-1].text == "" {
+		start-- // the blank line install put between the participant's file and ours
+	}
+	var out strings.Builder
+	for i, l := range lines {
+		if i < start || i > m.end {
+			out.WriteString(l.raw)
+		}
+	}
+	s := out.String()
+	// Our note says the file ended without a newline, and the one that now
+	// ends it is ours. Only while the block is still the end of the file:
+	// once anything follows it, that newline is what keeps the participant's
+	// last line and the next one apart.
+	if m.end == len(lines)-1 && m.begin+1 < m.end && lines[m.begin+1].text == hermesNoEOLNote {
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "\n"), "\r")
+	}
+	return []byte(s)
+}
+
+// planHermesUnhook plans taking this installation's lineage hook out of
+// Hermes' config.yaml, and is the whole of what uninstall does to that file.
+// removed: a write was planned. noted: something of this installation's — or
+// a block of ours that could not be vouched for — was seen and left, and the
+// plan says so, which makes "not installed" beside it false.
+func planHermesUnhook(ops agentOps, label, path string, entry binEntry, p *agentPlan) (removed, noted bool) {
+	existing, mode, err := readWithMode(ops, path)
+	if err != nil || existing == nil {
+		return false, false
+	}
+	ref := refFor(entry)
+	if cut := removeOurHermesBlock(existing, ref); cut.had {
+		if cut.why != "" {
+			p.notes = append(p.notes, hermesBlockLeftNote(label, path, cut.why))
+			return false, true
+		}
+		planWrite(ops, label, path, cut.next, mode, "remove lineage hook", p)
+		return true, false
+	}
+	own := findHermesOwnEntry(existing, ref)
+	switch {
+	case own.removable():
+		// #83: our entry under a hooks: block this client did not write.
+		// Exactly the lines the renderer writes go; every other line of
+		// the file is copied as it was read.
+		planWrite(ops, label, path, removeHermesOwnEntry(existing, own), mode,
+			"remove lineage hook from a hooks: block dropin-miner did not write; every other line is kept as it is", p)
+		return true, false
+	case own.found:
+		p.notes = append(p.notes, fmt.Sprintf(
+			"%s: this installation's pre_tool_call hook is in %s at %s, and was left there because it %s; remove that entry by hand, or Hermes keeps running it",
+			label, path, own.where(), own.why))
+		return false, true
+	case own.mention > 0:
+		p.notes = append(p.notes, fmt.Sprintf(
+			"%s: line %d of %s names this installation's pre_tool_call hook command, in a place or a form dropin-miner cannot read reliably, so nothing there was changed; if Hermes still runs it, remove it by hand",
+			label, own.mention, path))
+		return false, true
+	}
+	return false, false
 }
 
 // ── the hook entry itself ───────────────────────────────────────────────
@@ -677,42 +1094,62 @@ func hermesFindStructured(b []byte, ref installationRef) hermesOwnEntry {
 	if len(hits) > 1 {
 		return leave("appears there more than once")
 	}
-	if _, ok := hermesDecodeCommandLine(lines[at].text); !ok {
-		return leave("is not written the way dropin-miner writes it — Hermes rewrites config.yaml in its own style when it saves it")
-	}
-	if at+1 >= len(lines) || lines[at+1].text != want[3] {
+	// Where our entry ends. One line and its matcher when we wrote it; the
+	// command's folded continuation lines in between once Hermes has (#108).
+	// The matcher must be the next content line either way: a comment or a
+	// blank line between the two is the participant's and stops the run.
+	end, ok := hermesEntrySpan(lines, at, listEnd)
+	if !ok {
 		return leave("does not have the matcher line dropin-miner writes under it, so it has been edited")
 	}
-	if next := hermesNextContent(lines, at+2); next >= 0 && lines[next].indent > 4 {
+	if next := hermesNextContent(lines, end); next >= 0 && lines[next].indent > 4 {
 		return leave("has a further key inside it that dropin-miner did not write")
 	}
 
-	// How much goes. Our two lines when another entry shares the list; the
-	// pre_tool_call: line with them when ours was its only entry, since a key
-	// left with no value is a null where Hermes expects a list; and hooks:
+	// How much goes. Our entry's own lines when another entry shares the list;
+	// the pre_tool_call: line with them when ours was its only entry, since a
+	// key left with no value is a null where Hermes expects a list; and hooks:
 	// too when that was its only key, for the same reason. Each is a suffix
 	// of what the renderer writes, and each must be contiguous: a comment or
 	// a blank line in between belongs to the participant and cannot be
 	// stepped over.
 	start := at
-	if !hermesHasOther(lines, parent+1, listEnd, at, at+2, 4) {
+	if !hermesHasOther(lines, parent+1, listEnd, at, end, 4) {
 		if parent != at-1 {
 			return leave("is the only pre_tool_call entry and is separated from its pre_tool_call: line, so removing it cleanly cannot be done by line")
 		}
 		start = parent
-		if !hermesHasOther(lines, top+1, blockEnd, parent, at+2, 2) {
+		if !hermesHasOther(lines, top+1, blockEnd, parent, end, 2) {
 			if top != parent-1 {
 				return leave("is the only hook and is separated from its hooks: line, so removing it cleanly cannot be done by line")
 			}
 			start = top
 		}
 	}
-	entry.start, entry.end = start, at+2
-	if !hermesRunIsRendered(lines, entry, at) {
+	entry.start, entry.end = start, end
+	if !hermesRunIsOurs(lines, entry, at, ref) {
 		entry.start, entry.end = 0, 0
-		return leave("is not written exactly as dropin-miner writes it")
+		return leave("is not written exactly as dropin-miner writes it, nor as Hermes rewrites it when it saves config.yaml")
 	}
 	return entry
+}
+
+// hermesEntrySpan is one line past our entry: its command line, the folded
+// continuation lines of that command, and its matcher. ok is false when the
+// next content line under the command is not a matcher line at the entry's
+// own key depth.
+//
+// The continuation test is hermesItemCommand's own (deeper than a key of the
+// entry), so what this counts as the command is exactly what that decoded.
+func hermesEntrySpan(lines []hermesLine, at, listEnd int) (int, bool) {
+	k := at + 1
+	for k < listEnd && lines[k].indent > 6 {
+		k++
+	}
+	if k >= listEnd || k >= len(lines) || !hermesIsOurMatcher(lines[k]) {
+		return 0, false
+	}
+	return k + 1, true
 }
 
 // hermesEntryIsOurs: does a list entry begin at i whose command is this
@@ -904,31 +1341,46 @@ func hermesCommandIsOurHook(cmd string, ref installationRef) bool {
 	return false
 }
 
-// hermesRunIsRendered is the net. Whatever the scan above concluded, the
-// lines about to go must be, byte for byte, the last lines of what the
-// renderer writes for this command. If they are not, the scan was wrong
-// about something, and the only safe reading of that is to touch nothing.
-func hermesRunIsRendered(lines []hermesLine, e hermesOwnEntry, at int) bool {
-	cmd, ok := hermesDecodeCommandLine(lines[at].text)
-	if !ok {
+// hermesRunIsOurs is the net. Whatever the scan above concluded, the lines
+// about to go must be the last lines of ONE entry of ours and nothing else.
+// If they are not, the scan was wrong about something, and the only safe
+// reading of that is to touch nothing.
+//
+// Two forms qualify, and the difference between them is #108. What this
+// client renders is compared byte for byte against the renderer's own output,
+// as it always was. What HERMES leaves when it re-dumps config.yaml cannot be
+// — its emitter decides where an 80-column scalar folds, and reproducing that
+// in Go would mean carrying a copy of PyYAML's line breaker, which is the
+// parser this file refuses to grow, in the one place where being wrong
+// deletes somebody's hook. So that form is held to what can be established
+// exactly instead:
+//
+//   - the run is the command line, the continuation lines of that one scalar,
+//     and the matcher — hermesEntrySpan's own span, so nothing else can be in
+//     it and no line of it can belong to a neighbor;
+//   - the command line begins with the renderer's `    - command:`, spaces
+//     included, so the entry sits at the depth the renderer puts one;
+//   - the scalar, with its folding undone the way YAML undoes it, decodes to
+//     this installation's hook under H5's rule — the same question, asked of
+//     the text rather than of the bytes;
+//   - the matcher decodes to the tool name the renderer writes;
+//   - and every rule below this comment, which both forms share.
+//
+// That is weaker than byte equality and it is the weakest this may ever get:
+// the decode is exact, it round-trips (hermesUnquoteSingle), and a line the
+// scan did not account for lands in the span and fails it. A form neither of
+// the two is left alone and reported, as before.
+func hermesRunIsOurs(lines []hermesLine, e hermesOwnEntry, at int, ref installationRef) bool {
+	if !hermesEntryLinesAreOurs(lines, e, at, ref) {
 		return false
-	}
-	rendered := hermesHookLines(cmd)
-	n := e.end - e.start
-	if n < 2 || n > len(rendered) {
-		return false
-	}
-	want := rendered[len(rendered)-n:]
-	for k := 0; k < n; k++ {
-		if lines[e.start+k].text != want[k] {
-			return false
-		}
 	}
 	// The run must also BEGIN under what the renderer puts above it. A run
 	// of two lines carries no heading of its own to compare, so without this
 	// our two lines under `  post_tool_call:` pass every comparison above:
 	// walk up from the run, and each ancestor must be the rendered line for
-	// its depth.
+	// its depth. Both forms answer to this: Hermes' dumper writes these two
+	// lines exactly as the renderer does.
+	heading := hermesHookLines("")
 	for level, idx := lines[e.start].indent, e.start; level > 0; {
 		p := idx - 1
 		for p >= 0 && (lines[p].indent < 0 || lines[p].indent >= level) {
@@ -939,11 +1391,11 @@ func hermesRunIsRendered(lines []hermesLine, e hermesOwnEntry, at int) bool {
 		}
 		switch lines[p].indent {
 		case 2:
-			if lines[p].text != rendered[1] {
+			if lines[p].text != heading[1] {
 				return false
 			}
 		case 0:
-			if lines[p].text != rendered[0] {
+			if lines[p].text != heading[0] {
 				return false
 			}
 		default:
@@ -961,6 +1413,114 @@ func hermesRunIsRendered(lines []hermesLine, e hermesOwnEntry, at int) bool {
 	// run's own first line — nothing after it belongs to what went.
 	if next := hermesNextContent(lines, e.end); next >= 0 && lines[next].indent > lines[e.start].indent {
 		return false
+	}
+	return true
+}
+
+// hermesLinesAre: are these lines, byte for byte, these texts?
+func hermesLinesAre(lines []hermesLine, want []string) bool {
+	if len(lines) != len(want) {
+		return false
+	}
+	for i := range want {
+		if lines[i].text != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hermesRunIsRenderedExactly: are the lines about to go, byte for byte, the
+// last lines of what the renderer writes for the command on this line?
+func hermesRunIsRenderedExactly(lines []hermesLine, e hermesOwnEntry, at int) bool {
+	cmd, ok := hermesDecodeCommandLine(lines[at].text)
+	if !ok {
+		return false
+	}
+	rendered := hermesHookLines(cmd)
+	n := e.end - e.start
+	if n < 2 || n > len(rendered) {
+		return false
+	}
+	want := rendered[len(rendered)-n:]
+	for k := 0; k < n; k++ {
+		if lines[e.start+k].text != want[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// hermesEntryLinesAreOurs judges the lines of the entry itself, in whichever
+// of the two forms it is written. The heading lines above the run and what
+// follows it are the caller's.
+func hermesEntryLinesAreOurs(lines []hermesLine, e hermesOwnEntry, at int, ref installationRef) bool {
+	// Where the entry's own lines start inside the run: the run may carry the
+	// pre_tool_call: and hooks: lines above it, and those are the caller's to
+	// compare.
+	if at < e.start || e.end <= at || e.end > len(lines) {
+		return false
+	}
+	// The renderer's own form, on one line: byte for byte against what the
+	// renderer writes, as this file's deletion rule has been since L3.
+	//
+	// A fast path and not a gate. On Windows the command carries the quotes
+	// and backslashes of its own argv quoting, which a plain scalar cannot
+	// hold, so BOTH writers single-quote it and the two forms' command lines
+	// are byte-identical; they differ only in the matcher, ours quoted and
+	// Hermes' not. Deciding between the two branches on the command line
+	// alone therefore sent every Windows file Hermes had saved into this one
+	// and failed it there, on a line that was never the difference. So a run
+	// that is not exactly ours falls through to the form Hermes leaves rather
+	// than being refused here.
+	if hermesRunIsRenderedExactly(lines, e, at) {
+		return true
+	}
+	// The form Hermes leaves (#108). The span is already exactly the command
+	// line, that one scalar's continuations and the matcher; what is left to
+	// establish is that each of those lines is what it is claimed to be.
+	//
+	// Whatever of the run lies ABOVE the command line first. The byte-for-byte
+	// branch compared the whole run, so it established this on the way past;
+	// this branch reads the entry from `at` onward and would otherwise take
+	// the caller's word for the rest — and a run reaching back over the entry
+	// ABOVE ours satisfies every test below while deleting somebody else's
+	// hook. Those lines can only be what the renderer puts over an entry, as
+	// many of them as the run reaches back over.
+	heading := hermesHookLines("")[:2]
+	if above := at - e.start; above < 0 || above > len(heading) {
+		return false
+	} else if want := heading[len(heading)-above:]; !hermesLinesAre(lines[e.start:at], want) {
+		return false
+	}
+	if !strings.HasPrefix(lines[at].text, hermesCommandPrefix) {
+		return false
+	}
+	// And in one of the two scalar styles Hermes' dumper actually produces:
+	// plain, or single-quoted where the command holds something plain cannot
+	// carry (a Windows path's backslashes and quotes). A double-quoted scalar
+	// decodes to the same command and is written by neither this renderer nor
+	// that dumper, so removing on its say-so would widen deletion past the
+	// evidence for it — the one thing this file may not do. It is left and
+	// reported, as it was before #108.
+	if v := strings.TrimSpace(strings.TrimPrefix(lines[at].text, hermesCommandPrefix)); v == "" || v[0] == '"' {
+		return false
+	}
+	end, ok := hermesEntrySpan(lines, at, len(lines))
+	if !ok || end != e.end {
+		return false
+	}
+	cmd, ok := hermesItemCommand(lines, at, len(lines))
+	if !ok || !hermesCommandIsOurHook(cmd, ref) {
+		return false
+	}
+	// Nothing between the command and the matcher but that command: every
+	// line of the span is a continuation deeper than a key of the entry, and
+	// the last is the matcher hermesEntrySpan already read.
+	for k := at + 1; k < e.end-1; k++ {
+		if lines[k].indent <= 6 {
+			return false
+		}
 	}
 	return true
 }

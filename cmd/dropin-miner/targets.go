@@ -1028,29 +1028,8 @@ func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEnt
 		planRemove(p, t.Label(), filepath.Dir(paths.hermesSkill))
 		removed = true
 	}
-	if existing, mode, err := readWithMode(ops, paths.hermesConfig); err == nil && existing != nil {
-		if next, had := hermesRemoveBlock(existing); had {
-			planWrite(ops, t.Label(), paths.hermesConfig, next, mode, "remove lineage hook", p)
-			removed = true
-		} else if own := findHermesOwnEntry(existing, refFor(entry)); own.removable() {
-			// #83: our entry under a hooks: block this client did not write.
-			// Exactly the lines the renderer writes go; every other line of
-			// the file is copied as it was read.
-			planWrite(ops, t.Label(), paths.hermesConfig, removeHermesOwnEntry(existing, own), mode,
-				"remove lineage hook from a hooks: block dropin-miner did not write; every other line is kept as it is", p)
-			removed = true
-		} else if own.found {
-			p.notes = append(p.notes, fmt.Sprintf(
-				"%s: this installation's pre_tool_call hook is in %s at %s, and was left there because it %s; remove that entry by hand, or Hermes keeps running it",
-				t.Label(), paths.hermesConfig, own.where(), own.why))
-			noted = true
-		} else if own.mention > 0 {
-			p.notes = append(p.notes, fmt.Sprintf(
-				"%s: line %d of %s names this installation's pre_tool_call hook command, in a place or a form dropin-miner cannot read reliably, so nothing there was changed; if Hermes still runs it, remove it by hand",
-				t.Label(), own.mention, paths.hermesConfig))
-			noted = true
-		}
-	}
+	unhooked, said := planHermesUnhook(ops, t.Label(), paths.hermesConfig, entry, p)
+	removed, noted = removed || unhooked, said
 	if !removed && !noted {
 		p.skipped = append(p.skipped, t.Label()+": not installed")
 	}

@@ -424,14 +424,23 @@ added a `timeout:` to, one with a comment between it and its heading, the
 same entry twice — it leaves where it is and tells you, because a hook left
 for you to delete is a smaller mistake than somebody else's hook deleted.
 
-Hermes rewrites `config.yaml` in its own style when it saves it: comments go,
-so dropin-miner's markers go with them, and the long command is folded over two
-lines. The hook still fires, and install and `agents status` still see it
-there. Uninstall will not edit that form — it removes lines only when they are
-exactly the ones it writes — so it tells you which lines hold the entry and
-asks you to remove them. If your file names the hook command somewhere
-uninstall cannot make sense of at all, it says so, with the line, rather than
-reporting that Hermes is not installed.
+Hermes rewrites `config.yaml` in its own style when it saves it, and which
+style depends on which save. `hermes config set`, the setup wizard and its own
+`save_config` re-dump the whole file: comments go, so dropin-miner's markers go
+with them, and the long command becomes a plain scalar folded over two lines.
+A model switch, a setting changed in session and a personality change keep the
+comments — markers and all — and fold the command inside them. The hook fires
+either way, install and `agents status` see it either way, and uninstall
+removes it either way: it recognizes both forms, undoes the folding, and takes
+out the same lines it would have taken out before Hermes touched the file.
+
+What it still will not do is edit a third form. The lines have to be the ones
+dropin-miner writes, or the ones Hermes' own dumper writes, and to name this
+installation; anything else — an entry you added a `timeout:` to, a command
+written in a quoting style neither produces, the same entry twice — is left
+where it is and reported with its line numbers. If your file names the hook
+command somewhere uninstall cannot make sense of at all, it says so, with the
+line, rather than reporting that Hermes is not installed.
 
 `dropin-miner agents uninstall` removes exactly those files and entries.
 

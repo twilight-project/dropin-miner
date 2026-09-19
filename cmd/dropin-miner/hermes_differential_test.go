@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -81,9 +82,41 @@ func TestHermesDifferential(t *testing.T) {
 	foreignNull := "    - command: 'nullkey'\n      extra:\n"
 	foreignMulti := "    - command: 'multi'\n      description: long text\n        continues here\n"
 	post := foreignPostTool
+	// Another installation's hook, made by the same renderer from the same
+	// entry with another config: this installation's binary, somebody else's
+	// installation, which is exactly the pair #73 is about.
+	otherEntry, _ := ourHermesEntry(t)
+	otherEntry.cfg = "/tmp/disposable/tokendrop.toml"
+	otherInstallCmd, ok := hermesHookCommand(otherEntry, runtime.GOOS == "windows")
+	if !ok {
+		t.Fatal("could not render another installation's command")
+	}
 	postZero := "  post_tool_call:\n  - command: 'zero-indented'\n    matcher: y\n"
 	head := "hooks:\n  pre_tool_call:\n"
-	plain := "    - command: " + cmd + "\n      matcher: terminal\n"
+	plain := hermesCommandPrefix + hermesWrittenScalar(cmd) + "\n      matcher: terminal\n"
+
+	// #106 and #125: the same generator, with our own markers around the body.
+	// A marked block is removed only when it is provably ours and provably
+	// only ours, and only when nothing after the end marker continues the
+	// mapping it opened — so for every shape here the config must come back
+	// untouched by INSTALL, whether uninstall takes the block or leaves it.
+	// below is what Hermes' ruamel writer added to our mapping after the end
+	// marker; testdata/hermes holds that writer's real output for these two,
+	// and this is the same two shapes through every prefix and suffix.
+	marked := map[string]struct {
+		text  string
+		below string
+		want  hermesOutcome
+	}{
+		"ours":              {head + ours, "", edited},
+		"foreign-entry":     {head + ours + foreign, "", left},
+		"foreign-first":     {head + foreign + ours, "", left},
+		"comment-inside":    {head + ours + "# mine\n", "", left},
+		"deeper-after-ours": {head + ours + "      timeout: 5\n", "", left},
+		"another-install":   {head + entryLines(otherInstallCmd), "", left},
+		"sibling-below":     {head + ours, post, left},
+		"item-below":        {head + ours, foreign, left},
+	}
 
 	bodies := map[string]struct {
 		text string
@@ -140,7 +173,8 @@ func TestHermesDifferential(t *testing.T) {
 
 		// L3d: the plain form Hermes writes, and shapes whose command is ours
 		// but whose place is not one the structured find reads.
-		"plain-only":             {head + plain, left},
+		// #108: the form Hermes leaves, now removed like any other.
+		"plain-only":             {head + plain, edited},
 		"literal-plain":          {head + "    |\n" + plain, left},
 		"folded-plain":           {head + "    >-\n" + plain, left},
 		"first-of-two-null":      {head + ours + "  pre_tool_call: null\n", left},
@@ -156,7 +190,7 @@ func TestHermesDifferential(t *testing.T) {
 	}
 
 	var pairs []hermesDifferentialPair
-	run := func(name, before string, want hermesOutcome) {
+	run := func(name, before string, want hermesOutcome, isMarked bool) {
 		m, ops := newFakeMachine("hermes")
 		m.files[hermesConfigPath] = []byte(before)
 		code, out, errOut := runAgents(t, ops, nil, "uninstall", "-config", testCfg, "-yes")
@@ -169,6 +203,14 @@ func TestHermesDifferential(t *testing.T) {
 		pairs = append(pairs, hermesDifferentialPair{Name: name, Cmd: cmd, Before: before, After: after, Out: out,
 			InstallOut: installOut, InstallChanged: installChanged})
 
+		// A marked block is ours to rewrite, so install has one job here and
+		// it is to leave the file alone: the block either holds today's entry
+		// (nothing to do) or cannot be vouched for (nothing that may be cut).
+		// Before #106 install cut every one of these out and wrote its own
+		// block in its place, which is #73's defect at install time.
+		if isMarked && installChanged {
+			t.Errorf("%s: install rewrote a marked block:\n%s", name, installOut)
+		}
 		// Install and uninstall read the same file with the same finder, and
 		// their verdicts must be the same verdict. What uninstall could only
 		// MENTION, install may not call set up, may not write beside, and may
@@ -183,7 +225,13 @@ func TestHermesDifferential(t *testing.T) {
 				t.Errorf("%s: install advised pasting a second copy with no warning:\n%s", name, installOut)
 			}
 		}
-		if (after != before || strings.Contains(out, "was left there because")) && !strings.Contains(installOut, "already set up —") {
+		// The same rule for the unmarked form, where install's way of saying
+		// it is the #83 note. Our OWN block does not get that note: install's
+		// answer to a block of ours it will not rewrite is either silence —
+		// there is nothing to do, and the plan's "already installed" says so —
+		// or the one sentence naming what it left, which is asserted above by
+		// installChanged and in hermes_marked_block_test.go by wording.
+		if !isMarked && (after != before || strings.Contains(out, "was left there because")) && !strings.Contains(installOut, "already set up —") {
 			t.Errorf("%s: uninstall found our hook and install did not call it set up:\n%s", name, installOut)
 		}
 		if code != exitOK {
@@ -208,16 +256,53 @@ func TestHermesDifferential(t *testing.T) {
 			}
 		}
 	}
+	// #108: every shape above, again with our entry in the form Hermes leaves
+	// when it re-dumps config.yaml — a plain scalar folded at 80 columns and an
+	// unquoted matcher. The structural rules do not care which form the entry
+	// is in, so each shape keeps its outcome; what changes is which of the two
+	// readers has to recognize it.
+	//
+	// hermesWrittenEntry emulates PyYAML's emitter rather than being its
+	// output: the real thing is in testdata/hermes, generated by resave.py and
+	// pinned by hermes_resaved_test.go, and this is the generator exercising
+	// the reader across every prefix, suffix and line ending. The two
+	// properties that matter here are the ones it reproduces — a plain scalar,
+	// broken at a space with the continuation indented under the key.
+	writtenBodies := map[string]struct {
+		text string
+		want hermesOutcome
+	}{}
+	for bn, b := range bodies {
+		if !strings.Contains(b.text, ours) {
+			continue // a shape that takes our two lines apart; it stays as it is
+		}
+		writtenBodies[bn] = struct {
+			text string
+			want hermesOutcome
+		}{strings.Replace(b.text, ours, hermesWrittenEntry(cmd), 1), b.want}
+	}
+	if len(writtenBodies) == 0 {
+		t.Fatal("no shape holds our whole entry, so the Hermes-written dimension would test nothing")
+	}
+
+	every := func(name, cfg string, want hermesOutcome, isMarked bool) {
+		run(name+"/lf", cfg, want, isMarked)
+		run(name+"/crlf", strings.ReplaceAll(cfg, "\n", "\r\n"), want, isMarked)
+		if strings.HasSuffix(cfg, "\n") {
+			run(name+"/noeol", strings.TrimSuffix(cfg, "\n"), want, isMarked)
+		}
+	}
 	for pn, p := range prefixes {
-		for bn, b := range bodies {
-			for sn, s := range suffixes {
-				cfg := p + b.text + s
-				name := fmt.Sprintf("%s/%s/%s", pn, bn, sn)
-				run(name+"/lf", cfg, b.want)
-				run(name+"/crlf", strings.ReplaceAll(cfg, "\n", "\r\n"), b.want)
-				if strings.HasSuffix(cfg, "\n") {
-					run(name+"/noeol", strings.TrimSuffix(cfg, "\n"), b.want)
-				}
+		for sn, s := range suffixes {
+			for bn, b := range bodies {
+				every(fmt.Sprintf("%s/%s/%s", pn, bn, sn), p+b.text+s, b.want, false)
+			}
+			for bn, b := range writtenBodies {
+				every(fmt.Sprintf("%s/written-%s/%s", pn, bn, sn), p+b.text+s, b.want, false)
+			}
+			for bn, b := range marked {
+				cfg := p + agentsMarkerBegin + "\n" + b.text + agentsMarkerEnd + "\n" + b.below + s
+				every(fmt.Sprintf("%s/marked-%s/%s", pn, bn, sn), cfg, b.want, true)
 			}
 		}
 	}
@@ -232,6 +317,71 @@ func TestHermesDifferential(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// hermesWrittenScalar is cmd in the style a dumper would give it: plain when
+// a plain scalar reads back as itself, single-quoted otherwise — the simplest
+// form that round-trips, which is the rule PyYAML follows and which
+// testdata/hermes shows it following (POSIX plain, Windows single-quoted,
+// because a Windows command begins with the double quote of its own argv
+// quoting and a scalar that begins with one is a double-quoted scalar).
+//
+// Typing the command bare instead is what made two Windows-only CI failures
+// on this PR: the generated file was not the YAML it was meant to be, the
+// reader read a double-quoted scalar and refused it exactly as it should, and
+// only the runners that quote paths that way could see it.
+func hermesWrittenScalar(cmd string) string {
+	if got, ok := hermesDecodeScalar(cmd); ok && got == cmd {
+		return cmd
+	}
+	return hermesYAMLSingleQuoted(cmd)
+}
+
+// The rule above, on every runner, for both platforms' commands — the
+// generator takes its own command from the runner it is on, so without this
+// the Windows shape is only ever seen by a Windows runner.
+func TestTheGeneratorWritesAScalarThatReadsBackAsTheCommand(t *testing.T) {
+	for name, tc := range hermesResavedEntries {
+		cmd, ok := hermesHookCommand(tc.entry, tc.windows)
+		if !ok {
+			t.Fatalf("%s: could not render the command", name)
+		}
+		scalar := hermesWrittenScalar(cmd)
+		quoted := strings.HasPrefix(scalar, "'")
+		if quoted == !tc.windows {
+			// POSIX commands are plain, Windows commands single-quoted,
+			// exactly as testdata/hermes shows the dumper writing them.
+			t.Errorf("%s: single-quoted = %v for a windows = %v command: %s", name, quoted, tc.windows, scalar)
+		}
+		got, ok := hermesDecodeScalar(scalar)
+		if !ok || got != cmd {
+			t.Errorf("%s: the scalar does not read back as the command\n got %q, %v\nwant %q", name, got, ok, cmd)
+		}
+	}
+}
+
+// hermesWrittenEntry is our entry as Hermes' PyYAML re-dump leaves it: the
+// command a plain scalar broken at a space before column 80 with each
+// continuation indented under the key, and the matcher unquoted. An emulation
+// of the emitter, not its output — testdata/hermes holds the real thing — kept
+// here so the generator can put this form through every shape it builds.
+func hermesWrittenEntry(cmd string) string {
+	const (
+		width = 80
+		cont  = "        " // PyYAML indents a folded scalar under its key
+	)
+	line := hermesCommandPrefix + hermesWrittenScalar(cmd)
+	var out []string
+	for len(line) > width {
+		brk := strings.LastIndex(line[:width+1], " ")
+		if brk <= len(cont) {
+			break // nowhere to fold: leave the rest on one line
+		}
+		out = append(out, line[:brk])
+		line = cont + line[brk+1:]
+	}
+	out = append(out, line, "      matcher: terminal")
+	return strings.Join(out, "\n") + "\n"
 }
 
 // linesSurviveInOrder: is every line of after a line of before, in order?
