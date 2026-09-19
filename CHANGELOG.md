@@ -49,7 +49,10 @@ first.
   one command that finishes the job. `-rollback` does the same with the
   binary it restores. And `dropin-miner agents status` now names any
   file an earlier version rendered that this one would write
-  differently, which is the diagnosis that did not exist before.
+  differently, which is the diagnosis that did not exist before — a
+  skill of this installation's included when it names a binary at
+  another path, since for a file a host has only one of it is the config
+  that decides whose it is.
 
 - **Two installations on one machine leave each other's files alone.** A
   host has one skill directory, and opencode and Pi one adapter file
@@ -60,7 +63,12 @@ first.
   says whose it is, and goes on with the rest of that host; `agents
   uninstall` asks the same question the same way, and `agents status`
   says which installation a host belongs to instead of calling it
-  installed.
+  installed. Codex's sandbox block is one of these files too, and it
+  names directories rather than a config, so it is attributed by the
+  four an installation's config names — `state_dir`, `spool_dir`,
+  `intake_dir` and `sessions_dir`. Another installation's block is left
+  and named; this installation's is refreshed wherever those directories
+  happen to live, rather than only under its own home.
 
 - **Claude Code's allow rules stop accumulating.** A rule naming this
   installation's binary and config is one rule in any spelling this
@@ -84,9 +92,10 @@ first.
   lock file DropinMiner commands coordinate through that is still
   present — the lifecycle gate, `setup.lock`, `connect.lock`,
   `flush.lock` and the binary's update lock — in both modes, and says
-  each is safe to delete. They are named rather than removed because an
-  ordinary operation cannot remove its own lock file: unlinking one is
-  safe only while the gate is held, and an operation has released the
+  each is safe to delete. `-dry-run` prints that same section, from the
+  files present when it runs. They are named rather than removed because
+  an ordinary operation cannot remove its own lock file: unlinking one
+  is safe only while the gate is held, and an operation has released the
   gate by the time it holds its own lock, so taking the gate back at the
   end would reverse the one lock order.
 
@@ -172,12 +181,17 @@ first.
 
 - **The skill teaches what is now true.** Fast is the default and
   answers from one provider; balanced is for when the user needs to see
-  several sources. Each option is named with one example, `merged` is
-  what to read first, and cost is mentioned only if the user asks. The
-  skill's frontmatter description is now encoded as a YAML scalar rather
-  than quoted by the template around it, so a description carrying the
-  examples' own quotes and colons is still valid YAML for every consumer
-  that parses it.
+  several sources. Each option is named with one example, and `recency`
+  and `domain_filter` are stated as preferences the router passes to its
+  providers rather than restrictions it enforces: a page from another
+  date or another host coming back is not a failure to report, while
+  `max_results` is a cap and is applied. `merged` is what to read first,
+  and `"view":"merged"` is described as dropping the providers' own
+  answer texts — ask for it when the pages are what matters. Cost is
+  mentioned only if the user asks. The skill's frontmatter description
+  is now encoded as a YAML scalar rather than quoted by the template
+  around it, so a description carrying the examples' own quotes and
+  colons is still valid YAML for every consumer that parses it.
 
 - **The hint for a host without a skill directory is the skill's own
   block.** opencode's `AGENTS.md` note, and the line any unknown agent
@@ -220,9 +234,9 @@ first.
   been run live on Windows; on macOS and Linux they still rest on
   reading each host's own source, not a live run. The upgrade acceptance
   from 0.2.11 into this release runs after this tag, so this entry does
-  not claim it — and it is this release's acceptance that proves the
-  re-render above, because the *next* upgrade is the first one carried
-  out by a binary that has it.
+  not claim it — and it cannot prove the re-render above either. The
+  re-render runs inside an upgrade, and the first upgrade carried out by
+  a binary that has it is the one *from* 0.2.12.
 
 ## v0.2.11 — 2026-09-18
 
