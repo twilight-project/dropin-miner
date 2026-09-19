@@ -258,6 +258,17 @@ each line names the file that owns the rule and the test that proves it.
   a refusal instead of a lost table, and the two are tested independently on purpose. `codex_block_ownership_test.go` drives install and uninstall against
   the shapes Codex produces; `marked_block_sections_test.go` tests the split on its own first,
   because getting it wrong in the removing direction destroys a participant's settings.
+  **Where the block sits is also ours to preserve** (#99): install writes it **where it finds
+  it** — `replaceBlockInPlace` over `markedRegion`'s own pre and post — and appends only when
+  there is none, so **no byte outside our markers ever moves**. It used to strip and append on
+  every write, which reordered a file for a change that was only ever to our own table. L2's
+  rule is unchanged, and "below the block" now means directly below rather than at the end,
+  which also keeps a block that is no longer last from collecting Codex's next append.
+  The position is not recorded anywhere, and that is a decision with a stated cost: uninstall
+  erases it, so an uninstall-then-install round trip is byte-identical only for a block where
+  our own writes put it, at the end. `codex_block_position_test.go` asserts that case by bytes
+  and the other by the guarantee that does hold there — not one line of the participant's own
+  moves relative to any other.
 - **Our entry in a Hermes `hooks:` block we did not write** — `cmd/dropin-miner/hermes_install.go`
   owns it (`findHermesOwnEntry`, `hermesRunIsRendered`), in the file that already owns the rule it
   follows: there is no YAML parser, so a false-positive refusal is cheap and an ambiguous mutation
@@ -296,7 +307,21 @@ each line names the file that owns the rule and the test that proves it.
 - **What a destructive run may leave behind** — `cmd/dropin-miner/lifecycle.go` owns the
   exclusion: which operation locks it takes, which of those files it created, and the rule that
   `release` removes exactly those and only when the operation never proceeded (`proceeded()`).
-  `excludeForUpgrade` opts out, in its own words, at its own construction. `install.sh`'s EXIT
+  `excludeForUpgrade` opts out, in its own words, at its own construction, and that opt-out
+  survived review of #103: **an ordinary operation cannot remove its own lock file.** Removing one
+  is safe only while the GATE is held, because the gate is what every contender passes before it
+  opens an operation lock — with it held nobody can be between opening that file and locking it,
+  so unlinking the name cannot strand a contender on an inode that no longer has one. An ordinary
+  operation has released the gate by the time it holds its own lock (connect gives it up before
+  its poll loop), and taking the gate back at the end is the reverse of the one lock order, which
+  `TestSetupConnectsUnderItsOwnAdmission` exists to forbid — a first attempt at removing these in
+  place tripped it on its first run. So the destructive exclusion is the only place L5's removal
+  can live, and the locks an upgrade, a setup or a connect leaves are named instead:
+  `uninstall`'s `sayLeftoverLocks` lists the gate, `setup.lock`, `connect.lock`, `flush.lock` and
+  the binary's update lock that still exist, as safe to delete, in both modes (#103, #115).
+  `lock_leftover_test.go` holds it to the invariant either way round — a lock still on disk is
+  named, one the run removed is not — and scopes its search to that section, because a purge plan
+  prints the full path of everything it removes. `install.sh`'s EXIT
   trap and `install.ps1`'s try/finally are the same rule for the download: the temporary directory
   goes on every exit path, because a checksum failure is the one case where what is left behind is
   the file just called untrustworthy. `lifecycle_created_locks_test.go` and
@@ -443,6 +468,34 @@ each line names the file that owns the rule and the test that proves it.
   disposable installation's purge deleted the main installation's copy. An artifact naming no
   installation is left and reported, never deleted on the assumption it is ours — with the file
   named and the one `agents install` that would stamp it, so the dead end self-heals.
+  **The rule holds at install time too** (#112). A host has one skill directory, and opencode and
+  Pi one adapter file; a hook file holds a list, which is why hook entries never had the problem.
+  `agents install` for a second installation overwrote the first's skill silently, so the later
+  `agents uninstall` removed a skill that did by then name its config: the removal was correct
+  and the damage was done at install. `leaveToItsOwner` (`agents.go`) sits in the two planners
+  every writer of those files goes through — `agents prefer` included — and `buildUninstallPlan`
+  takes another installation's files out of a host's removal, both through one reading,
+  `foreignOwner`, and both in `uninstall`'s own sentence (`leftForeign`). Here the **config**
+  decides and the binary does not: an installation whose binary moved still names its config and
+  must be able to refresh its own skill.   `agents status` asks the same question through `foreignHost` and says
+  `belongsTo` — uninstall's own sentence without the removal verb — where it used to say
+  "installed", because `Status` answers from the file existing and a host another installation
+  set up read as this one's. `agents_skill_ownership_test.go` guards it on real files;
+  `TestUninstallingOneInstallationLeavesAnothersIntegrations` changed direction with it, since
+  its old premise — the second install's files name the second — was the defect.
+  **An allow rule has one current spelling** (#114). A rule was added when its exact text was
+  absent, so a rule whose text had changed was never seen as the same rule and stayed beside
+  its replacement for ever; the count settled only because today's three forms happen to be a
+  superset of v0.2.9's two. `mergeAllowRules` replaces the rules `ruleIsOurs` recognizes — any
+  spelling this client has written, for this installation's binary and config — with the
+  current set, as a set, because `claudeAllowRules` writes three prefix forms of one permission
+  and there is no pairing between old spellings and new. A set already equal to the current one
+  is left exactly as it lies, so a second install still writes nothing. The removing half
+  needed no change: `planHooksRemove` already asked `ruleIsOurs`.
+  `agents_allow_rules_test.go` guards both, and takes its fixtures from `resolveEntry` rather
+  than typing a config path — `resolveEntry` puts the path through `filepath.Abs`, so a typed
+  POSIX path is a *different installation* on Windows, and the first version of that file was
+  red on both Windows runners for exactly that reason.
   **One function reads a rendered path**, `unquoteRenderedPath`, and both halves of an
   attribution go through it: the earlier pair disagreed, because the binary half's helper read a
   double-quoted word only through `strconv.Unquote`, which a cmd-rendered Windows path fails on
@@ -453,7 +506,12 @@ each line names the file that owns the rule and the test that proves it.
   JSON rather than scanning bytes — a raw native path never appears in a JSON-escaped file, which
   is the mistake `79ea5ba`, `f97df97` and `41faaac` each made once.
   `TestARenderedPathIsReadBackWhicheverShellQuotedIt` pins every renderer's spelling as a unit
-  case, so that defect no longer needs a Windows runner to surface.
+  case, so that defect no longer needs a Windows runner to surface. **Naming a path is one
+  reading too**: `describeOther` shows the DECODED reading, the last `unquoteRenderedPath`
+  returns, because a double-quoted word yields the literal one first and a JSON-quoted Windows
+  path is then spelled with every separator doubled. Matching was never affected — `samePath`
+  reads them all — so the file was correctly left alone and only the sentence was wrong;
+  `TestTheInstallationNamedInAMessageIsTheDecodedReading` pins it as a unit case.
   **`namedInArtifact` is the one place that decides HOW an artifact is read** — a file that
   decodes as JSON is decoded, anything else is scanned as rendered text — and production and the
   tests both go through it. Leaving that distinction implicit cost three defects of one shape:
@@ -478,7 +536,18 @@ each line names the file that owns the rule and the test that proves it.
   after the transaction commits, `Prepared.DiscardAfterInstall` as the only cleanup, and failure
   classes from typed kinds. `upgrade_test.go`'s
   `TestUpgradeCarriesOneOperationDeadlineThroughEveryStage` and
-  `TestUpgradeCommandPrintsSuccessOnlyAfterTheCanonicalPathValidates` guard the command. `replace_test.go`'s
+  `TestUpgradeCommandPrintsSuccessOnlyAfterTheCanonicalPathValidates` guard the command.
+  `cmd/dropin-miner/upgrade_rerender.go` owns what follows a committed replacement (#111): the
+  host integrations **this installation owns** — `ownedHosts`, which is `ownership_match.go`'s
+  rule read off the files through uninstall's own attribution, because `Status` calls a skill
+  installed when the file merely exists — are rendered again by a **child process, the binary now
+  at the launch path**, since the process running `upgrade` is the version being replaced and its
+  tables are the old ones. Never before the transaction commits, never as a condition of the exit
+  code, never a host that is another installation's or names none, and never a host that was not
+  set up (the child is handed `-client` per owned host). `upgrade_rerender_test.go` records which
+  version was at the path when the render was asked for — the observable that tells after-commit
+  from before — in `TestAnUpgradeThatIsRolledBackLeavesTheHostFilesAsTheyWere` and
+  `TestRollbackReRendersWithTheBinaryRolledBackTo`. `replace_test.go`'s
   `TestAFailedSecondUpgradeLeavesPreviousByteIdentical` and `acceptance_test.go`'s
   `TestReplacementAcceptanceWithTheRunningImage` (real processes, on every CI runner including
   Windows arm64) guard them. Two bounded retries, and no others. `candidate.go`: a candidate that

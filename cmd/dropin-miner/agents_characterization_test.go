@@ -562,7 +562,7 @@ func statusOutputFor(t *testing.T, id string, install bool, remove func(agentPat
 		}
 	}
 	var out bytes.Buffer
-	printAgentStatus(ops, paths, entry, nil, &out)
+	printAgentStatus(ops, paths, entry, nil, noEnv, &out)
 	return out.String()
 }
 

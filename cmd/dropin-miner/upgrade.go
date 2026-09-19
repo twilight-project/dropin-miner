@@ -14,6 +14,10 @@ package main
 // followed by Prepared.DiscardAfterInstall(err), so a copy an error reports
 // as surviving is never removed.
 //
+// Only then, and never as a condition of success, are the host integrations
+// this installation owns rendered again by the binary now installed
+// (upgrade_rerender.go, #111).
+//
 // Failures print one class token — retry, release_invalid, ownership,
 // filesystem, lifecycle_busy, refused or manual_intervention — chosen from
 // typed errors, never from message text, each with its own exit code where
@@ -113,6 +117,11 @@ type upgradeDeps struct {
 	runner           selfupdate.CommandRunner
 	goos, goarch     string
 	operationTimeout time.Duration
+	// agents and environ serve the re-render that follows a committed
+	// replacement: where the host files are, and what the child that renders
+	// them runs with.
+	agents  agentOps
+	environ func() []string
 }
 
 func cmdUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -129,6 +138,8 @@ func cmdUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 		goos:             runtime.GOOS,
 		goarch:           runtime.GOARCH,
 		operationTimeout: selfupdate.OperationTimeout,
+		agents:           realAgentOps(),
+		environ:          upgradeEnviron,
 	}, args)
 }
 
@@ -223,6 +234,7 @@ func upgradeRun(d upgradeDeps, homeFlag string, requested *selfupdate.Version, r
 		}
 		fmt.Fprintf(d.stdout, "rolled back %s from %s to %s\nthe binary it replaced is now %s; run `dropin-miner upgrade -rollback` again to swap back\n",
 			rolled.Executable, rolled.From, rolled.To, selfupdate.PreviousPath(rolled.Executable))
+		d.rerenderOwned(ctx, exe, resolved, home)
 		return exitOK
 	}
 
@@ -242,6 +254,7 @@ func upgradeRun(d upgradeDeps, homeFlag string, requested *selfupdate.Version, r
 	}
 	fmt.Fprintf(d.stdout, "upgraded %s from %s to %s\nthe binary it replaced is kept as %s; `dropin-miner upgrade -rollback` restores it\n",
 		prepared.Executable, prepared.From, prepared.To, selfupdate.PreviousPath(prepared.Executable))
+	d.rerenderOwned(ctx, exe, resolved, home)
 	return exitOK
 }
 

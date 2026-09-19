@@ -39,7 +39,13 @@ and leaves your shell profile (Windows: user environment) and your coding
 agents alone, `-yes` or not — they belong to the machine's own installation,
 and the documented way to make a disposable installation must not repoint your
 real agents at it. It names `dropin-miner agents install -config
-<dir>/tokendrop.toml` as the way to configure agents for that one.
+<dir>/tokendrop.toml` as the way to configure agents for that one. That command
+adds the second installation's hook entries beside the first's, but a host has
+one skill directory (and opencode and Pi one adapter file), and it belongs to
+the installation that wrote it: `agents install` leaves it, says whose it is,
+and goes on with the rest of the host, and `agents uninstall` and `agents prefer`
+leave it the same way. So on a host the machine installation already set up,
+searches keep running under the machine installation's config.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an
 identity is the installation, and nothing set aside is offered. Your wallet,
@@ -242,7 +248,11 @@ is executed to find out whether it exists.
 | anything else | rules line | not detected; `setup -with <id>` names one | Bash | per-shell | printed for you to paste |
 
 Uninstall removes exactly those, and only what belongs to the installation
-being uninstalled: a hook entry, an allow rule or a skill is this
+being uninstalled -- and, since a superseded spelling is replaced rather than
+added beside it, at install too: a rule for this installation's binary and
+config in any spelling this client has written is the same rule, so the file
+carries one current set per host instead of one more rule per renderer change.
+A hook entry, an allow rule or a skill is this
 installation's only when it runs one of this installation's binaries **and**
 names this installation's config. Two installations on one machine commonly
 share a binary — `setup -home <dir>` run from an existing one makes exactly
@@ -262,7 +272,16 @@ this client writes and keeps every other table in the block, in its original
 bytes, moved below where the block was; the plan says how many it is keeping
 and names them. Install does the same rather than rewriting over them, and
 moves any it finds inside the markers out below them, so the host's next append
-lands outside our block. A block that cannot be read as TOML tables is left
+lands outside our block. Install writes the block **where it finds it** and
+appends only when there is none, so no byte outside our markers ever moves and
+a reinstall does not reorder a file it shares with its host; "below them" is
+therefore directly below the block rather than at the end of the file, which
+also stops a block that is no longer last from collecting the host's next
+append at all. One thing this cannot restore: an uninstall removes the block
+and with it the record of where it stood, so an install afterwards appends. A
+block where this client's own writes put it, at the end, comes back byte for
+byte; one that had been moved comes back at the end, with every line of the
+participant's own still in its original order. A block that cannot be read as TOML tables is left
 exactly as it is and reported, because deleting a region this client cannot
 parse is how a config gets destroyed. Before anything classified as ours is
 deleted or rewritten it is decoded and must be exactly our one table, with
@@ -612,6 +631,44 @@ Your first reward takes an hour or two: you join an epoch two ahead, and it
 has to close and settle. One verified search per epoch makes you eligible,
 and the pot splits equally among everyone eligible.
 
+## Known limits
+
+Three things to know because you will meet them and looking for a setting to
+change would waste your time. The first two are limits of Claude Code itself,
+and this client has no workaround for either.
+
+**Claude Code: the sentence written just before a search does not travel.**
+The trace carries the assistant text of the turn a search belongs to, and
+Claude Code appends the message containing a tool call to its transcript
+*after* the `PreToolUse` hook has run. So when the model narrates and searches
+in the same message — the common shape — the hook reads a transcript that does
+not hold that text yet, and the envelope goes out identity-only. Narration in
+an earlier message of the same turn does travel. The lineage itself, the
+session, turn and call ids, is correct either way; it is the text that is one
+message stale or absent (#93). Nothing here can read a line the host has not
+written yet.
+
+**Claude Code's PowerShell tool asks for approval every time.** The skill
+renders a PowerShell form and the hook rewrites PowerShell calls, so searches
+run — but the `permissions.allow` rules `agents install` writes are Bash
+rules. What a PowerShell-tool rule must look like is not established by Claude
+Code's own documentation: the rendered command is a compound statement, and
+nothing says whether the assignment in it needs a rule of its own, nor how the
+call operator's invocation is canonicalized before matching. A rule written
+from a guess would very likely never match, which is worse than none — it
+would look installed while every search still prompted. So none is written
+(#77). Where Git for Windows is present, a search Claude Code sends through
+its Bash tool is covered by the rules that are written; which tool it uses is
+the model's choice per call, not something this client can set.
+
+**Windows, in the Cursor editor with a PowerShell terminal profile: keep
+queries ASCII.** A query containing non-ASCII characters can reach the router
+corrupted, so a search may quietly answer a different question rather than
+fail. A Git Bash terminal profile is unaffected. This is a warning and not a
+fix: the cause is still being measured (#117). What you can do today is set
+Cursor's `terminal.integrated.defaultProfile.windows` to Git Bash, or keep
+queries to ASCII.
+
 ## Upgrading
 
 ```
@@ -637,10 +694,18 @@ refuses a development build, and a copy npm installed. The whole operation is
 bounded at three minutes, and it will not run while setup or another upgrade of
 the same binary is running. Your wallet, registration and config are not touched.
 
-**After `dropin-miner upgrade`, run `dropin-miner agents install` once.** The
-upgrade replaces the binary and touches no host file, so a fix that lives in
-the skill text or in a hook entry does not reach your agents until they are
-rendered again (#111).
+Once the replacement has succeeded — and only then, so an upgrade that is put
+back leaves them as they were — `upgrade` has the new binary render again the
+skills and hooks **this installation already set up**, because that text comes
+from the binary and a fix that lives in it would otherwise wait for a second
+command. It prints what `agents install` prints. It sets up no agent that was
+not set up, and leaves, by name, anything that belongs to another installation
+or names none. If it fails, the upgrade has still succeeded: the line says so
+and gives the one command that finishes the job. `-rollback` does the same with
+the binary it restores. `dropin-miner agents status` names any file an earlier
+version rendered that this one would write differently. An upgrade *from* 0.2.11
+or earlier is run by that older binary, which does none of this: after it, run
+`dropin-miner agents install` once.
 
 A new binary that has not answered its `version` check within five seconds is
 asked once more, and only on a timeout — a wrong version, or anything on
@@ -698,6 +763,12 @@ would register this machine anew.
 
 `-binary` also removes `~/.tokendrop/bin/dropin-miner`, only when that is the
 binary running and no package manager owns it, together with the
+the lock files DropinMiner commands coordinate through — the lifecycle gate beside the
+installation, `setup.lock`, `state/connect.lock`, `flush.lock` and `bin/<binary>.update.lock`.
+Each is created by the command that needs it and holds nothing once that command has finished;
+they are left rather than deleted because removing one is only safe while the lifecycle gate is
+held, and a command holding its own lock has already let the gate go. `uninstall` lists the ones
+still present and says they are safe to delete. Also
 `dropin-miner.previous` an upgrade kept and anything an interrupted upgrade left
 beside it — nothing else in that directory. A copy npm installed is refused with
 the npm command to use instead. On Windows a running binary cannot be deleted,

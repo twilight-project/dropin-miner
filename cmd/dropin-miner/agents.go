@@ -130,7 +130,14 @@ func renderAgentScript(template string, sh shellKind, cfg string) string {
 // planAgentScript renders a JavaScript host's artifact for the shell that
 // host runs tool calls in on this OS, or refuses in the plan rather than
 // installing an adapter that writes the wrong syntax.
-func planAgentScript(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) bool {
+func planAgentScript(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) (changed, left bool) {
+	if leaveToItsOwner(ops, t, path, entry, p) {
+		return false, true
+	}
+	return planAgentScriptWrite(ops, t, path, template, why, entry, p), false
+}
+
+func planAgentScriptWrite(ops agentOps, t installTarget, path, template, why string, entry binEntry, p *agentPlan) bool {
 	shells, err := declaredShells(t, runtime.GOOS, channelTool)
 	if err != nil || len(shells) != 1 {
 		if err == nil {
@@ -435,7 +442,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	if sub == "status" {
-		printAgentStatus(ops, paths, entry, signals, stdout)
+		printAgentStatus(ops, paths, entry, signals, getenv, stdout)
 		return exitOK
 	}
 
@@ -788,7 +795,15 @@ func renderSkill(entry binEntry, prefer, note string, shells skillShells) ([]byt
 // refuses in the plan rather than writing a command for a shell nobody has
 // shown runs it. A host whose shell is not established keeps the Bash form
 // and the plan says so (H-R5).
-func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefer, note string, p *agentPlan) bool {
+//
+// left is the third answer, and it is not "unchanged": the file is there, it is
+// another installation's, and nothing was planned for it (leaveToItsOwner).
+// A caller that read it as unchanged would print "already installed" over a
+// host this installation's skill is not on.
+func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefer, note string, p *agentPlan) (changed, left bool) {
+	if leaveToItsOwner(ops, t, path, entry, p) {
+		return false, true
+	}
 	shells, shellNote := toolShellsForSkill(t, runtime.GOOS)
 	if shellNote != "" {
 		p.notes = append(p.notes, shellNote)
@@ -796,9 +811,79 @@ func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefe
 	skill, err := renderSkill(entry, prefer, note, shells)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+		return false, false
+	}
+	return planWrite(ops, t.Label(), path, skill, 0o600, "skill", p), false
+}
+
+// leaveToItsOwner is the rule for a file a host has exactly one of: when what
+// is there names another installation's config, it is that installation's,
+// and this one plans nothing for it and says whose it is.
+//
+// A host has one skill directory, and the skill in it names one installation's
+// config. `agents install` for a second installation — the command `setup
+// -home` names in its own closing line — used to overwrite the machine
+// installation's skill with its own, silently; the later `agents uninstall`
+// then removed a skill that did by then name its config, so the removal was
+// correct and the damage had been done here, at install time (#112). Hook
+// entries never had the problem, because a hook file holds a list and each
+// installation's entries sit beside the other's. This is the same ownership
+// rule applied to the files that cannot sit beside each other: the skill, and
+// the JavaScript adapters, which carry INSTALL_CONFIG for exactly this
+// attribution and were clobbered the same way.
+//
+// The CONFIG decides, not the binary, and deliberately. Two installations are
+// told apart by the config each names (#73); one installation whose binary
+// moved — npm to native, a reinstall somewhere else — still names the same
+// config, and its reinstall must be able to refresh its own skill. A file that
+// names no config at all is not refused either: it is a discovery
+// installation's or a hand-edited one, there is no other installation to name
+// as its owner, and refusing would strand it.
+//
+// It sits in the two planners rather than in each host because every writer
+// of these files goes through them — `agents prefer` included, which rewrites
+// every installed skill and would otherwise carry the same clobber.
+func leaveToItsOwner(ops agentOps, t installTarget, path string, entry binEntry, p *agentPlan) bool {
+	other, foreign := foreignOwner(ops, path, entry)
+	if !foreign {
 		return false
 	}
-	return planWrite(ops, t.Label(), path, skill, 0o600, "skill", p)
+	noteOnce(p, t.Label()+": "+leftForeign(other))
+	return true
+}
+
+// foreignOwner names the other installation a file, or the files directly in
+// a directory, belong to — and answers false when any of them names this
+// installation's config or none of them names a config at all. It is the one
+// reading of "whose is this" that install's refusal and `agents uninstall`'s
+// removal share, so what one leaves the other cannot then take.
+func foreignOwner(ops agentOps, path string, entry binEntry) (string, bool) {
+	other := ""
+	for _, content := range readRemoved(ops, path) {
+		_, cfgs := namedInArtifact(content)
+		if len(cfgs) == 0 {
+			continue
+		}
+		if configsInclude(cfgs, entry.cfg) {
+			return "", false
+		}
+		if other == "" {
+			other = describeOther(nil, cfgs, refFor(entry))
+		}
+	}
+	return other, other != ""
+}
+
+// noteOnce adds a note the plan does not already carry. A host with two
+// single-slot files — Pi's skill and its extension — belonging to the same
+// other installation is one fact, and uninstall's sentence says it once.
+func noteOnce(p *agentPlan, note string) {
+	for _, n := range p.notes {
+		if n == note {
+			return
+		}
+	}
+	p.notes = append(p.notes, note)
 }
 
 func buildInstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry, getenv func(string) string) agentPlan {
@@ -1067,29 +1152,89 @@ func planHooksMerge(ops agentOps, label, path string, p *agentPlan, entry binEnt
 		hooks[ev] = append(kept, spec.entries[ev])
 		changed = true
 	}
-	if len(spec.allow) > 0 {
-		perms := child(m, "permissions")
-		list, _ := perms["allow"].([]any)
-		for _, rule := range spec.allow {
-			present := false
-			for _, e := range list {
-				if e == rule {
-					present = true
-					break
-				}
-			}
-			if !present {
-				list = append(list, rule)
-				changed = true
-			}
-		}
-		perms["allow"] = list
+	if len(spec.allow) > 0 && mergeAllowRules(m, entry, spec.allow) {
+		changed = true
 	}
 	if !changed {
 		return false
 	}
 	next, _ := json.MarshalIndent(m, "", "  ")
 	return planWrite(ops, label, path, append(next, '\n'), mode, "hooks", p)
+}
+
+// mergeAllowRules brings this installation's permission rules to exactly
+// want, and reports whether it changed anything.
+//
+// A rule was added when its exact text was absent, and a rule whose text had
+// changed was therefore never recognized as the same rule: it stayed, beside
+// its replacement, for good. On the Windows machine of the 0.2.11 release
+// check that file held two rules for this binary and this config before the
+// check and three after one uninstall-and-install cycle, differing only in
+// quoting (#114). Today's three happen to be a superset of v0.2.9's two, so
+// the count settles; the defect is that nothing MAKES it settle, and the next
+// renderer change -- a spelling dropped, a quote changed, the PowerShell rule
+// #77 is waiting on -- adds one per host for ever, with nothing in the file
+// to say which is current.
+//
+// So a rule for this installation's binary and config, in any spelling this
+// client has ever written, is the same rule. ruleIsOurs already decides that,
+// through the same commandIsOurs that tells a hook entry of ours from another
+// installation's, so an old spelling is recognized and another installation's
+// rule -- which shares our binary -- is not touched. This is H3b for allow
+// rules: recognizing the old spelling is what makes the replacement possible,
+// and it is the thing exact-text matching cannot do.
+//
+// Ours are replaced as a set rather than one by one, because they ARE a set:
+// claudeAllowRules writes three prefix forms of one permission, and which of
+// them a given Claude Code build matches is not this client's to predict. A
+// set already equal to want is left exactly as it lies -- order, position
+// among the participant's own rules, and bytes -- so a second install still
+// writes nothing at all.
+func mergeAllowRules(m map[string]any, entry binEntry, want []string) bool {
+	perms := child(m, "permissions")
+	list, _ := perms["allow"].([]any)
+	ref := refFor(entry)
+	kept := make([]any, 0, len(list))
+	ours := make([]string, 0, len(list))
+	for _, e := range list {
+		if ruleIsOurs(e, ref) {
+			if r, isString := e.(string); isString {
+				ours = append(ours, r)
+			}
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if sameRuleSet(ours, want) {
+		perms["allow"] = list
+		return false
+	}
+	for _, rule := range want {
+		kept = append(kept, rule)
+	}
+	perms["allow"] = kept
+	return true
+}
+
+// sameRuleSet: do these name the same rules, whatever their order? A rule
+// appearing twice is not the same set as one appearing once, so this counts
+// rather than just testing membership -- a duplicate is one of the states
+// #114 leaves behind, and it has to be collapsed like any other.
+func sameRuleSet(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(got))
+	for _, r := range got {
+		seen[r]++
+	}
+	for _, r := range want {
+		seen[r]--
+		if seen[r] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // planHooksRemove drops this installation's entries and nothing else; an
@@ -1196,10 +1341,31 @@ func hooksFileIsNowOnlyOurs(m map[string]any, root string) bool {
 
 // ── uninstall / status ──────────────────────────────────────────────────
 
+// buildUninstallPlan plans each host's removal and then takes out of it any
+// file that is another installation's, saying whose it is in the words
+// `uninstall` already uses for the same situation (#112). A host's
+// PlanUninstall removes its skill directory because it is there; whether it is
+// THIS installation's is decided here, once, for every host, by the reading
+// install's refusal uses (foreignOwner). Hook entries need none of this: they
+// were always removed entry by entry, by the command each one runs.
 func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry) agentPlan {
 	var p agentPlan
 	for _, t := range selected {
-		t.PlanUninstall(ops, paths, entry, &p)
+		var tp agentPlan
+		t.PlanUninstall(ops, paths, entry, &tp)
+		ours := make([]agentRemove, 0, len(tp.removes))
+		for _, r := range tp.removes {
+			if other, foreign := foreignOwner(ops, r.path, entry); foreign {
+				noteOnce(&tp, t.Label()+": "+leftForeign(other))
+				continue
+			}
+			ours = append(ours, r)
+		}
+		p.writes = append(p.writes, tp.writes...)
+		p.removes = append(p.removes, ours...)
+		p.skipped = append(p.skipped, tp.skipped...)
+		p.refused = append(p.refused, tp.refused...)
+		p.notes = append(p.notes, tp.notes...)
 	}
 	return p
 }
@@ -1215,7 +1381,7 @@ func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget
 // printAgentStatus names the detection signal per host rather than the old
 // "on PATH" / "not on PATH", which was a lie for any host detected by its
 // config directory and was the line #61 was filed against.
-func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals map[string]string, stdout io.Writer) {
+func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals map[string]string, getenv func(string) string, stdout io.Writer) {
 	fmt.Fprintln(stdout, "dropin-miner agents status")
 	fmt.Fprintf(stdout, "  search default: %s\n", preferLabel(readPrefer(ops, entry)))
 	for _, t := range targetsByKind(targetHost) {
@@ -1223,13 +1389,140 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 		state := "not installed"
 		if st.installed {
 			state = "installed (" + st.detail + ")"
+			// A host has one skill directory whoever wrote into it, and
+			// Status answers from the file existing. So a host set up by
+			// another installation read as this one's "installed (skill)",
+			// which is the reading #112 fixed at the writing end and left
+			// standing here: the participant whose searches all go through
+			// the other installation was told this one was installed.
+			if other := foreignHost(ops, paths, t, entry); other != "" {
+				state = belongsTo(other)
+			}
 		}
 		found := "not found"
 		if sig := signals[t.ID()]; sig != "" {
 			found = "found: " + sig
 		}
 		fmt.Fprintf(stdout, "  %-12s %-26s %s\n", t.Label(), found, state)
+		if !st.installed {
+			continue
+		}
+		for _, path := range staleRenderings(ops, paths, t, entry, getenv) {
+			fmt.Fprintf(stdout, "  %-12s %s: rendered by an earlier version; `agents install` refreshes it\n", "", tilde(ops.home, path))
+		}
 	}
+}
+
+// foreignHost names the installation a host's single-slot files belong to,
+// or "" when none of them is another installation's. It asks the same
+// question at the same grain as the install-time refusal and the removal
+// filter, through the one reading all three share (foreignOwner), over the
+// files a removal would take -- which are exactly the files that are wholly
+// one installation's when they are anyone's.
+func foreignHost(ops agentOps, paths agentPaths, t installTarget, entry binEntry) string {
+	var agnostic agentPlan
+	t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, &agnostic)
+	for _, r := range agnostic.removes {
+		if other, foreign := foreignOwner(ops, r.path, entry); foreign {
+			return other
+		}
+	}
+	return ""
+}
+
+// staleRenderings is the files of an installed host that are this
+// installation's and are not what this binary would write now.
+//
+// It is the diagnosis #111 had no command for. A skill and a hook entry are
+// rendered from the binary's own tables when `agents install` runs, so a fix
+// that lives in a rendered file ships in a release and reaches a host only
+// when something renders it again. A participant on the fixed binary whose
+// host still misbehaves needs to be told that the host is not on it.
+//
+// The question is asked of install's own plan rather than of a second
+// comparison beside it: what `agents install` would rewrite is by
+// construction what is stale, and the two cannot come to disagree. Two kinds
+// of planned write are not staleness and are left out. A file that is not
+// there yet is a missing half, which Status's detail already names ("skill
+// only"). And a file that names no command of this installation's is either
+// the host's own — a settings.json our hooks were never merged into — or
+// another installation's skill, which is not this one's to call out of date.
+func staleRenderings(ops agentOps, paths agentPaths, t installTarget, entry binEntry, getenv func(string) string) []string {
+	var probe agentPlan
+	t.PlanInstall(ops, paths, entry, getenv, &probe)
+	ref := refFor(entry)
+	var out []string
+	for _, w := range probe.writes {
+		existing, err := ops.readFile(w.path)
+		if err != nil {
+			continue
+		}
+		bins, cfgs := namedInArtifact(string(existing))
+		if len(bins) == 0 && len(cfgs) == 0 {
+			// binsInclude and configsInclude read silence as "contradicts
+			// nothing", which is right for a file already known to be ours
+			// and wrong here: a file naming nothing is not ours at all.
+			continue
+		}
+		if binsInclude(bins, ref.bins, runtime.GOOS == "windows") && configsInclude(cfgs, ref.cfg) {
+			out = append(out, w.path)
+		}
+	}
+	return out
+}
+
+// ownedHosts is the hosts whose installed integration is THIS installation's,
+// and a sentence for each host found installed and left because it is not.
+//
+// It exists for the one caller that writes into host files nobody asked it to
+// by name: an upgrade re-rendering what it finds (#111). "Installed" alone is
+// not enough of an answer there. Status says a skill is installed when the
+// file exists, and a host has one skill directory whichever installation
+// wrote into it, so a second installation upgrading would re-render the
+// machine installation's skill as its own — #112's clobber, arrived at by a
+// command the participant did not even run against that host. So what is
+// there is read and H5's rule applied to it, through the same attribution
+// uninstall uses: this installation's binary AND this installation's config.
+//
+// A host with one foreign or unattributable artifact is left whole, hook
+// entries of ours included. That is the conservative direction on purpose:
+// re-rendering is host-granular (`agents install -client`), the binary that
+// does it after a rollback may predate the skill refusal, and a host file
+// left stale is reported by `agents status`, while one overwritten is gone.
+func ownedHosts(ops agentOps, paths agentPaths, bins []string, cfg string, windows bool) (owned []installTarget, left []string) {
+	ref := installationRef{bins: bins, cfg: cfg}
+	for _, t := range targetsByKind(targetHost) {
+		installed := false
+		for _, bin := range bins {
+			if t.Status(ops, paths, binEntry{command: bin, cfg: cfg}).installed {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			continue
+		}
+		// The same agnostic plan uninstall attributes by: what a removal
+		// would take away is exactly the set of files that are wholly ours
+		// when they are ours at all. A host with none — Hermes with its hook
+		// and no skill — was found installed by a check that already reads
+		// the command's binary and config.
+		var agnostic agentPlan
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: cfg}, &agnostic)
+		if len(agnostic.removes) == 0 {
+			owned = append(owned, t)
+			continue
+		}
+		switch kind, other := attributeRemoved(ops, agnostic.removedPaths(), ref, windows); kind {
+		case attributionOurs:
+			owned = append(owned, t)
+		case attributionForeign:
+			left = append(left, t.Label()+": "+leftForeign(other))
+		default:
+			left = append(left, t.Label()+": left in place; "+unattributedPaths(ops, agnostic)+" names no installation, so this one cannot claim it")
+		}
+	}
+	return owned, left
 }
 
 // ── plan mechanics ──────────────────────────────────────────────────────
@@ -1370,7 +1663,7 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 	}
 
 	want := codexSandboxBlock(roots)
-	if _, region, _, ok := markedRegion(existing); ok {
+	if pre, region, post, ok := markedRegion(existing); ok {
 		have, readable := splitCodexBlock(region)
 		if !readable {
 			p.refused = append(p.refused, fmt.Sprintf(
@@ -1389,7 +1682,7 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 			p.notes = append(p.notes, fmt.Sprintf("%s: moving %s out of the dropin-miner block in %s, below it, so a later append by Codex lands outside ours: %s",
 				label, tables(len(have.foreign)), path, strings.Join(have.foreignNames(), ", ")))
 		}
-		next := appendTables(appendMarkedBlock(stripped, want), have.foreignText())
+		next := replaceBlockInPlace(pre, want, have.foreignText(), post)
 		planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
 		return
 	}
@@ -1453,6 +1746,46 @@ func codexSandboxBlock(roots []string) []byte {
 // markedRegion, which hands back the surrounding text as well — markedBlock,
 // which returned only the middle, had no callers left once #82 made every
 // one of them need the other two pieces too.
+// replaceBlockInPlace writes want where the block already is, keeping every
+// byte around it exactly as it was read (#99).
+//
+// The block used to be taken out and appended: strip, append, and -- when
+// Codex had put tables inside our markers -- append those after it. That
+// rewrote a file's ORDER for a change that was only ever to our own block,
+// so a participant diffing their own config saw their [projects] and
+// [windows] tables above a block that had been below them, and an
+// uninstall-and-install round trip could not be checked by comparing bytes.
+// Every install did it, not just a round trip: our block walked to the end
+// of the file each time anything about it changed.
+//
+// The rule now is: our block is written WHERE IT IS FOUND, appended only
+// when there is none, and no byte outside our markers ever moves. That
+// second clause is the one a person auditing a machine can actually use --
+// "nothing else changed" is a claim about their bytes, not about ours.
+//
+// Tables Codex appended inside our markers still come out and go BELOW the
+// block, which is L2's rule (#82) and unchanged: below it now means directly
+// below it rather than at the end of the file, and that serves the same
+// purpose better, since a block that is no longer last cannot collect
+// Codex's next append at all.
+//
+// What this does NOT do is make an uninstall followed by an install
+// byte-identical for a block that was not last. Uninstall removes the block,
+// and with it the only record of where it stood; a later install has nothing
+// to read and appends. Restoring that would mean keeping the position
+// somewhere outside the participant's file, which uninstall -purge-state
+// would then have to remove as well -- state invented to hold a fact that
+// only matters to a file we are asked to touch as little as possible. The
+// case that does round-trip byte for byte is the one our own writes produce,
+// a block at the end, and that is asserted.
+func replaceBlockInPlace(pre string, want []byte, foreign, post string) []byte {
+	body := pre + string(want)
+	if strings.TrimRight(foreign, "\n") != "" {
+		body = string(appendTables([]byte(body), foreign))
+	}
+	return []byte(body + post)
+}
+
 func removeMarkedBlock(b []byte) ([]byte, bool) {
 	s := string(b)
 	i := strings.Index(s, agentsMarkerBegin)

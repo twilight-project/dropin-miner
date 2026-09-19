@@ -966,8 +966,13 @@ func TestPurgeRemovesStateAfterTheExactTypedConfirmation(t *testing.T) {
 	if !lexists(filepath.Join(outside, "keep.json")) || !strings.Contains(out, outside) {
 		t.Error("a configured directory outside the installation must survive and be reported")
 	}
-	if !lexists(lifecycleGatePath(s.home)) || !strings.Contains(out, lifecycleGatePath(s.home)+" — it coordinates") {
-		t.Error("the lifecycle gate survives a purge, and the closing output names it")
+	// The gate survives a purge and the closing output names it. Since #103
+	// and #115 it is named in the same list as every other lock still there,
+	// so the search is scoped to that section rather than to the whole
+	// output, which also prints the full path of everything removed.
+	gateIdx := strings.Index(out, leftoverHeading)
+	if !lexists(lifecycleGatePath(s.home)) || gateIdx < 0 || !strings.Contains(out[gateIdx:], lifecycleGatePath(s.home)) {
+		t.Error("the lifecycle gate survives a purge, and the closing output names it as safe to delete")
 	}
 	if !lexists(s.exe) {
 		t.Error("-purge-state must not remove the binary")

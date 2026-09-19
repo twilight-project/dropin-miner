@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -157,6 +158,14 @@ type upgradeFixture struct {
 	build       string
 	sourcesMade int
 	timeout     time.Duration
+	// runnerOverride, when set, replaces runner as what the command runs
+	// processes with: the re-render cases need one that tells a version
+	// check from an `agents install`.
+	runnerOverride selfupdate.CommandRunner
+	// agents is where the re-render looks for host files: a user home inside
+	// this fixture's own root, with nothing on PATH, so no case can read or
+	// write the machine's real agent configuration.
+	agents agentOps
 }
 
 func newUpgradeFixture(t *testing.T, lr *localRelease) *upgradeFixture {
@@ -167,6 +176,11 @@ func newUpgradeFixture(t *testing.T, lr *localRelease) *upgradeFixture {
 	}
 	f := &upgradeFixture{t: t, home: filepath.Join(root, "custom-home"), lr: lr, runner: &contentRunner{}, env: map[string]string{}, build: "0.3.0", timeout: selfupdate.OperationTimeout}
 	f.exe = filepath.Join(f.home, "bin", "dropin-miner")
+	f.agents = realAgentOps()
+	f.agents.home = root
+	f.agents.lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	f.agents.executable = func() (string, error) { return f.exe, nil }
+	f.agents.isTerminal = func() bool { return false }
 	writeFileT(t, filepath.Join(f.home, setupConfigFile), "")
 	f.write(f.exe, "0.3.0")
 	return f
@@ -191,6 +205,10 @@ func (f *upgradeFixture) content(path string) string {
 func (f *upgradeFixture) run(args ...string) (int, string, string) {
 	f.t.Helper()
 	var out, errOut bytes.Buffer
+	var runner selfupdate.CommandRunner = f.runner
+	if f.runnerOverride != nil {
+		runner = f.runnerOverride
+	}
 	d := upgradeDeps{
 		stdout: &out, stderr: &errOut, getenv: envOf(f.env), userHome: filepath.Dir(f.home),
 		executable: func() (string, error) { return f.exe, nil },
@@ -199,7 +217,8 @@ func (f *upgradeFixture) run(args ...string) (int, string, string) {
 			f.sourcesMade++
 			return f.lr.source()
 		},
-		runner: f.runner, goos: "linux", goarch: "amd64", operationTimeout: f.timeout,
+		runner: runner, goos: "linux", goarch: "amd64", operationTimeout: f.timeout,
+		agents: f.agents, environ: func() []string { return nil },
 	}
 	code := upgradeMain(d, append([]string{"-home", f.home}, args...))
 	return code, out.String(), errOut.String()

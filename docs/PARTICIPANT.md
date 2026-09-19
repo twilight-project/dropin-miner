@@ -80,7 +80,11 @@ machine's installation". `setup -home <dir>` by itself, for any other directory,
 a separate installation there: it leaves your shell profile and your coding agents
 alone, even with `-yes`, because those belong to the machine's own installation, and
 tells you the `agents install -config` command that sets agents up for the new one.
-That is what makes `-home` safe for a disposable installation.
+That is what makes `-home` safe for a disposable installation. One limit to know:
+an agent has room for one dropin-miner skill, and it stays with the installation
+that put it there. If your main installation already set an agent up, the second
+one's `agents install` leaves that skill alone and tells you whose it is, so that
+agent keeps searching through your main installation.
 
 The installation in `~/.tokendrop` is used as it is: a directory holding an identity
 is the installation, and nothing set aside is offered. Your existing wallet,
@@ -334,7 +338,9 @@ context compaction, and one on Stop that flushes. It also adds three
 `permissions.allow` rules for the search command — the single-quoted, quoted
 and bare spellings of the same command, because a shell may strip the quotes
 — so Claude Code runs it without asking each time; nothing else the binary
-does is allowed by those rules.
+does is allowed by those rules. Running `agents install` again replaces those
+rules rather than adding more beside them, so the list does not grow each time
+you reinstall or upgrade.
 
 The hook that threads the search also answers the permission question, for
 exactly the search command your own skill renders and nothing else. It has to,
@@ -358,7 +364,9 @@ search reads it. The shell hook also allows our command, so Cursor never
 prompts for it.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
-block in `~/.codex/config.toml` that widens its sandbox just enough: network
+block in `~/.codex/config.toml` that widens its sandbox just enough (and,
+when it rewrites that block later, leaves it exactly where it already sits, so
+nothing else in the file moves): network
 on, and a short list of writable directories. Codex writes its own tables into
 that file too — a project's folder trust, a `[windows] sandbox` choice — and
 because it appends them at the end they can land between dropin-miner's
@@ -459,6 +467,34 @@ people join. That is the design.
 next search or the next agent session. If neither happens before the epoch's
 verification deadline, that epoch's evidence is late. `dropin-miner flush` by
 hand submits whatever is pending.
+
+## Known limits
+
+Three things worth knowing before you go looking for a setting that is not
+there. The first two are limits of Claude Code itself; DropinMiner cannot work
+around either.
+
+**In Claude Code, the sentence right before a search does not reach the
+trace.** If the model writes something and searches in the same message — the
+usual shape — Claude Code only records that message after the search hook has
+already run, so the hook cannot see the text. Narration in an earlier message
+of the same turn does travel. Your search, your session and your rewards are
+unaffected; it is only the text that goes with the trace (#93).
+
+**In Claude Code on Windows, a search through its PowerShell tool asks for
+approval each time.** The search itself works. The permission rules setup
+writes only cover its Bash tool, and Claude Code's documentation does not
+establish what a PowerShell rule would have to look like — a guessed one would
+look installed and never match, which is worse — so none is written (#77). If
+you have Git for Windows, the searches Claude Code sends through its Bash tool
+are approved automatically; which tool it picks is up to the model.
+
+**In the Cursor editor on Windows with a PowerShell terminal profile, keep
+your queries to plain ASCII.** A query with accented or non-Latin characters
+can arrive at the router corrupted, which means a search can quietly answer a
+different question instead of failing. A Git Bash terminal profile does not
+have the problem. We are still measuring the cause (#117); until then, set
+Cursor's terminal profile to Git Bash, or keep the query ASCII.
 
 ## When `doctor` says `recording UNKNOWN`
 
@@ -585,10 +621,17 @@ it again swaps back. `-version X.Y.Z` picks an exact release, but never an older
 one than you have. Installed with npm? Use `npm install -g dropin-miner@latest`
 instead; `upgrade` will tell you so.
 
-**After an upgrade, run `dropin-miner agents install` once.** The upgrade
-replaces the program and nothing else, so a fix that lives in the skill your
-agent reads, or in a hook entry, does not reach your agents until they are set
-up again (#111).
+When the new binary is in place, `upgrade` has it write again the skills and
+hooks you had already set up, so a fix in that text reaches your agents without
+a second command. It adds no agent you had not set up, and it leaves alone, and
+names, anything that belongs to another installation. If that step fails your
+upgrade has still succeeded, and the message gives the one command to finish
+it. Restart any agent that was open. If an agent still behaves like the old
+version, `dropin-miner agents status` names any file an earlier version wrote
+that this one would write differently, and `dropin-miner agents install`
+refreshes it. One exception: an upgrade *from* 0.2.11 or earlier is carried out
+by that older binary, which does not do this — run `dropin-miner agents
+install` once afterwards.
 
 If the new program is slow to answer the first time it is run — a virus
 scanner inspecting a file it has never seen — the upgrade asks it once more
@@ -613,7 +656,10 @@ stay, nothing is revoked, and it tells you how to keep using them. Run it with
 dropin-miner` removes the binary.
 
 `-binary` also deletes `~/.tokendrop/bin/dropin-miner`, its
-`dropin-miner.previous`, and anything an interrupted upgrade left beside it. On
+`dropin-miner.previous`, and anything an interrupted upgrade left beside it. You will also find
+small `.lock` files — beside the installation, in it, and next to the binary. They are how
+DropinMiner's commands avoid running over each other, they hold nothing once a command has
+finished, and `uninstall` lists the ones still there and says they are safe to delete. On
 Windows, which cannot delete a running program, it moves the binary out of the
 way instead and tells you the file to delete later. `-purge-state` is the one that
 destroys things: the wallet, your registration and key, unsent searches and

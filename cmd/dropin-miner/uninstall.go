@@ -553,7 +553,7 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 		}
 		switch kind {
 		case attributionForeign:
-			hold("left in place; it belongs to " + other + ", not this installation")
+			hold(leftForeign(other))
 		case attributionUnknown:
 			// #73: an uninstall that cannot attribute a file leaves it and
 			// says so. The case is narrow — every skill and hook command has
@@ -628,6 +628,24 @@ var installedCommand = regexp.MustCompile(`(` + renderedWordRe + `) (?:search|ho
 // hermesQuoteArg deliberately leaves an ordinary POSIX path unquoted because
 // the same string is the snippet a participant is asked to paste by hand.
 var installedConfig = regexp.MustCompile(`(?:-config\s+|INSTALL_CONFIG\s*=\s*)(` + renderedWordRe + `|[^\s"'\n]+)`)
+
+// leftForeign is the sentence for an integration that is another
+// installation's. One function, because every command that finds one says
+// the same thing about it: uninstall's plan, and an upgrade's re-render.
+func leftForeign(other string) string {
+	return "left in place; " + belongsTo(other)
+}
+
+// belongsTo is that sentence without the removal verb, for the command that
+// is not removing anything: `agents status`, which reports what is on this
+// machine and had been calling another installation's skill "installed".
+// The words after the semicolon are the same words in both places on
+// purpose -- a participant reading status and then uninstall should be told
+// the same thing about the same file -- and "left in place" is dropped here
+// because status leaves everything in place and the phrase would be noise.
+func belongsTo(other string) string {
+	return "it belongs to " + other + ", not this installation"
+}
 
 // attribution is what the files a target would remove say about who they
 // belong to.
@@ -815,16 +833,53 @@ func configsInclude(named []string, cfg string) bool {
 // describeOther names the other installation the way the profile block's
 // refusal does: by what the artifact actually says, so the participant can
 // see which one it is.
+//
+// It shows the DECODED reading of the word it names, which is the LAST one
+// unquoteRenderedPath returns: a double-quoted word yields the literal
+// reading first -- what cmd would run, and what a %q- or JSON-quoted Windows
+// path spells with every separator doubled -- and the escaped reading after
+// it. Every reading of one word names the same file and matching reads them
+// all (samePath), so nothing about attribution changed when this printed the
+// first one; only the sentence was wrong, and only on Windows, where
+// opencode's INSTALL_CONFIG line is JSON-quoted and came out as
+// C:\\Users\\... on both runners (#123, and #112's own message before it).
+// Taking the last reading of the last word that is not ours is decoded
+// whichever word it comes from, because a word's readings are contiguous and
+// its decoded one is last.
+//
+// filepath.Clean is the second step and not the fix: it would collapse those
+// doubled separators on Windows and do nothing at all on any other OS, where
+// the same wrong reading would still be printed. It is here to tidy a path a
+// participant wrote, not to undo a quoting this function should not have been
+// reading in the first place.
 func describeOther(bins, cfgs []string, ref installationRef) string {
-	for _, c := range cfgs {
-		if !samePath(c, ref.cfg) {
-			return "the installation configured by " + c
-		}
+	if c := lastNotOurs(cfgs, ref.cfg); c != "" {
+		return "the installation configured by " + c
 	}
-	for _, b := range bins {
-		return b
+	if len(bins) > 0 {
+		return displayNamedPath(bins[len(bins)-1])
 	}
 	return "another installation"
+}
+
+// lastNotOurs is the last reading in named that does not name cfg, ready to
+// show, or "" when every reading is ours.
+func lastNotOurs(named []string, cfg string) string {
+	for i := len(named) - 1; i >= 0; i-- {
+		if !samePath(named[i], cfg) {
+			return displayNamedPath(named[i])
+		}
+	}
+	return ""
+}
+
+// displayNamedPath is a path read out of an artifact, in the spelling to show
+// a person.
+func displayNamedPath(p string) string {
+	if p == "" {
+		return p
+	}
+	return filepath.Clean(p)
 }
 
 // readRemoved is the text of a file, or of the regular files directly in a
@@ -1448,6 +1503,7 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("\nTo come back, reinstall and run setup; it finds this state and uses it.\n")
 		}
 		r.printf("Nothing was revoked: uninstall without -purge-state leaves every authorization as it is.\n")
+		r.sayLeftoverLocks()
 		return
 	}
 	r.printf("\n%s\n", revocation)
@@ -1464,10 +1520,68 @@ func (r *uninstallRun) closing(revocation string) {
 			r.printf("  %s\n", p)
 		}
 	}
-	r.printf("\nLeft: %s — it coordinates DropinMiner commands, holds nothing, and is safe to delete.\n",
-		lifecycleGatePath(r.home))
+	r.sayLeftoverLocks()
 	r.printf("Other commands were excluded while the locks were held; an agent session still open can\n" +
 		"recreate intake/ or sessions/ by searching, which is harmless.\n")
+}
+
+// sayLeftoverLocks names every lock file this installation still carries and
+// says it is safe to delete. The gate always said this of itself; #103 and
+// #115 are the same sentence owed by the rest of them -- the update lock an
+// upgrade leaves in bin/, and the setup.lock and connect.lock a setup or a
+// connect leaves in the installation.
+//
+// Named rather than removed, and that is a conclusion rather than an
+// omission. Removing an operation lock is only safe while the GATE is held,
+// because the gate is what every contender passes before it opens one: with
+// it held, nobody can be between opening a lock file and locking it, so
+// unlinking the name cannot strand a contender on an inode that no longer
+// has one. An ordinary operation has deliberately released the gate by the
+// time it holds its own lock -- connect gives it up before its poll loop --
+// and taking it back at the end would be the reverse of the one lock order
+// (gate, setup.lock, connect.lock, flush.lock). That reversal is not a
+// hypothetical: it is what TestSetupConnectsUnderItsOwnAdmission exists to
+// forbid, and a first attempt at removing these files in place tripped it on
+// the first run. The destructive exclusion is the one operation that holds
+// the gate throughout, which is why L5's removal lives there and only there.
+//
+// The reason recorded at excludeForUpgrade therefore still holds, and this
+// is the half of it that was missing: a reader of the installation is told.
+func (r *uninstallRun) sayLeftoverLocks() {
+	locks := r.leftoverLocks()
+	if len(locks) == 0 {
+		return
+	}
+	r.printf("\nLeft, and safe to delete — the lock files DropinMiner commands coordinate through.\n" +
+		"Each holds nothing once the command that made it has finished, and is made again by the\n" +
+		"next command that needs it:\n")
+	for _, p := range locks {
+		r.printf("  %s\n", p)
+	}
+}
+
+// leftoverLocks is the lock files that still exist for this installation, in
+// lock order: the gate, setup.lock, connect.lock, flush.lock, and the
+// binary's update lock. A path that is gone -- uninstall -binary takes the
+// update lock with the binary -- is left out rather than named.
+func (r *uninstallRun) leftoverLocks() []string {
+	candidates := []string{lifecycleGatePath(r.home), filepath.Join(r.home, setupLockFile)}
+	if connectLock, flushLock, err := operationLockPaths(r.home, r.d.getenv); err == nil {
+		candidates = append(candidates, connectLock, flushLock)
+	}
+	if owned := r.ownedBinary(); owned != "" {
+		candidates = append(candidates, owned+updateLockSuffix)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range candidates {
+		if p == "" || seen[p] || !lexists(p) {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // ── the dry-run overlay ─────────────────────────────────────────────────
