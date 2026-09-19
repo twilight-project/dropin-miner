@@ -146,7 +146,7 @@ func planAgentScriptWrite(ops agentOps, t installTarget, path, template, why str
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
 		return false
 	}
-	return planWrite(ops, t.Label(), path, []byte(renderAgentScript(template, shells[0], entry.cfg)), 0o600, why, p)
+	return planSlotWrite(ops, t.Label(), path, []byte(renderAgentScript(template, shells[0], entry.cfg)), 0o600, why, p)
 }
 
 const (
@@ -344,6 +344,12 @@ type agentWrite struct {
 	contents []byte
 	mode     os.FileMode
 	why      string
+	// slot marks a file the host has exactly one of -- a skill, opencode's
+	// plugin, Pi's extension. It is set by the two planners that go through
+	// leaveToItsOwner, because a single slot is precisely what that rule is
+	// about, and it is read where the OWNER of a file decides something:
+	// U2's reading, where the config decides and the binary does not.
+	slot bool
 }
 
 // agentRemove carries the same surface a write does. It has to: printPlan
@@ -847,7 +853,7 @@ func planSkill(ops agentOps, t installTarget, path string, entry binEntry, prefe
 		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
 		return false, false
 	}
-	return planWrite(ops, t.Label(), path, skill, 0o600, "skill", p), false
+	return planSlotWrite(ops, t.Label(), path, skill, 0o600, "skill", p), false
 }
 
 // leaveToItsOwner is the rule for a file a host has exactly one of: when what
@@ -1442,10 +1448,17 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 			continue
 		}
 		for _, path := range staleRenderings(ops, paths, t, entry, getenv) {
-			fmt.Fprintf(stdout, "  %-12s %s: rendered by an earlier version; `agents install` refreshes it\n", "", tilde(ops.home, path))
+			fmt.Fprintf(stdout, "  %-12s %s: %s\n", "", tilde(ops.home, path), staleSentence)
 		}
 	}
 }
+
+// staleSentence is what status says about a file of ours that is not what
+// this binary would write now. It names both reasons it can be that, because
+// after #130 both reach it: an earlier version rendered it, or a binary at
+// another path did — the moved-binary case, where the file is still this
+// installation's because its config says so.
+const staleSentence = "rendered by an earlier version or by a binary at another path; `agents install` refreshes it"
 
 // foreignHost names the installation a host's single-slot files belong to,
 // or "" when none of them is another installation's. It asks the same
@@ -1478,9 +1491,22 @@ func foreignHost(ops agentOps, paths agentPaths, t installTarget, entry binEntry
 // construction what is stale, and the two cannot come to disagree. Two kinds
 // of planned write are not staleness and are left out. A file that is not
 // there yet is a missing half, which Status's detail already names ("skill
-// only"). And a file that names no command of this installation's is either
-// the host's own — a settings.json our hooks were never merged into — or
-// another installation's skill, which is not this one's to call out of date.
+// only"). And a file that names no installation at all is either the host's
+// own — a settings.json our hooks were never merged into — or an artifact
+// from before this version, which is not this one's to call out of date.
+//
+// Whose a file is, is asked at the grain the file has (#130). For a file the
+// host has exactly one of, U2's reading decides, as it does at install: the
+// CONFIG says whose it is, and the binary does not, so a skill this
+// installation's config names is this installation's even when it names a
+// binary somewhere else — which is the moved-binary case U2 was written for,
+// and is exactly a rendering out of date. Asking H5's question of it named a
+// stale skill as another installation's and printed nothing at all, which is
+// the one answer a participant cannot act on. For a hook file H5 stands
+// unchanged: a hook entry is attributed by the command it runs, entries of
+// two installations sit side by side in one file, and an entry naming
+// another binary is another installation's or stale without status being able
+// to tell which.
 func staleRenderings(ops agentOps, paths agentPaths, t installTarget, entry binEntry, getenv func(string) string) []string {
 	var probe agentPlan
 	t.PlanInstall(ops, paths, entry, getenv, &probe)
@@ -1496,6 +1522,16 @@ func staleRenderings(ops agentOps, paths agentPaths, t installTarget, entry binE
 			// binsInclude and configsInclude read silence as "contradicts
 			// nothing", which is right for a file already known to be ours
 			// and wrong here: a file naming nothing is not ours at all.
+			continue
+		}
+		if w.slot {
+			// Silence about the config is not a claim either: an artifact
+			// that names no config is unattributable, and leaveToItsOwner
+			// would write over it rather than leave it, so it is not
+			// reported as an out-of-date rendering of ours.
+			if len(cfgs) > 0 && configsInclude(cfgs, ref.cfg) {
+				out = append(out, w.path)
+			}
 			continue
 		}
 		if binsInclude(bins, ref.bins, runtime.GOOS == "windows") && configsInclude(cfgs, ref.cfg) {
@@ -1572,6 +1608,18 @@ func planWrite(ops agentOps, surface, path string, contents []byte, mode os.File
 		return false
 	}
 	p.writes = append(p.writes, agentWrite{surface: surface, path: path, contents: contents, mode: mode, why: why})
+	return true
+}
+
+// planSlotWrite is planWrite for a file the host has exactly one of, marking
+// what it plans as such. It sits beside the two planners that ask
+// leaveToItsOwner rather than inside planWrite, so the mark and the ownership
+// rule it belongs to are decided in the same place and cannot drift apart.
+func planSlotWrite(ops agentOps, surface, path string, contents []byte, mode os.FileMode, why string, p *agentPlan) bool {
+	if !planWrite(ops, surface, path, contents, mode, why, p) {
+		return false
+	}
+	p.writes[len(p.writes)-1].slot = true
 	return true
 }
 
