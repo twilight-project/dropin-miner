@@ -271,7 +271,8 @@ func TestAnotherInstallationsBlockIsStillLeftAloneWithHostTablesInIt(t *testing.
 	cfgPath, _ := sandboxTestConfig(t)
 	m, ops := newFakeMachine("codex")
 	other := filepath.Join(t.TempDir(), "other-install")
-	block := string(codexSandboxBlock([]string{filepath.Join(other, "state")}))
+	otherRoots := []string{filepath.Join(other, "state")}
+	block := string(codexSandboxBlock(otherRoots))
 	i := strings.LastIndex(block, agentsMarkerEnd)
 	seeded := "model = \"gpt-5\"\n\n" + block[:i] + codexWindows + block[i:]
 	m.files["/home/u/.codex/config.toml"] = []byte(seeded)
@@ -283,8 +284,12 @@ func TestAnotherInstallationsBlockIsStillLeftAloneWithHostTablesInIt(t *testing.
 	if got := string(m.files["/home/u/.codex/config.toml"]); got != seeded {
 		t.Errorf("another installation's block was touched:\n--- before ---\n%s\n--- after ---\n%s", seeded, got)
 	}
-	if !strings.Contains(out, "another installation's") {
-		t.Errorf("the reason was not reported:\n%s", out)
+	// The reason names the owner, in the words a left skill is named in
+	// (#128). Taken from the production reading rather than typed: the
+	// sentence spells the home the roots lie under, and a typed copy of it
+	// would pass while production named something else.
+	if want := belongsTo(describeSandboxOwner(otherRoots)); !strings.Contains(out, want) {
+		t.Errorf("the reason was not reported\nwant to find: %s\ngot:\n%s", want, out)
 	}
 }
 

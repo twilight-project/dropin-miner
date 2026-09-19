@@ -603,7 +603,7 @@ func TestNoHookFileCanEnterTheAttributionPlan(t *testing.T) {
 	hookFiles := map[string]bool{slash(paths.claudeSettings): true, slash(paths.cursorHooks): true}
 	for _, tg := range all {
 		var agnostic agentPlan
-		tg.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, &agnostic)
+		tg.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, noEnv, &agnostic)
 		for _, rm := range agnostic.removes {
 			if hookFiles[slash(rm.path)] {
 				t.Errorf("%s's agnostic plan would remove the hook file %s, which attribution then reads as raw bytes", tg.Label(), rm.path)
@@ -677,24 +677,60 @@ func writeJSONFile(t *testing.T, m *fakeMachine, path string, v any) {
 // ── Codex's sandbox block ───────────────────────────────────────────────
 
 // The block names no binary and no config; it names DIRECTORIES. So it is
-// attributed by them: its writable roots are one installation's state, intake,
-// sessions and spool, all under that installation's home.
-func TestTheCodexSandboxBlockIsAttributedByItsWritableRoots(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "install")
-	cfg := filepath.Join(home, setupConfigFile)
+// attributed by them — against the directories THIS config names, which are
+// four config keys and not a layout.
+//
+// The first version of this test asserted the layout ("all under that
+// installation's home") and passed, because the default layout does put them
+// there. That is what made the reading look right: it is true of every
+// installation nobody has configured otherwise, and false of the first one
+// that relocates a directory. The cases below therefore include a config whose
+// state_dir is nowhere near its home.
+func TestTheCodexSandboxBlockIsAttributedByTheDirectoriesItsConfigNames(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "install")
+	cfg := writeMiningHomeConfig(t, home)
 	entry := binEntry{command: filepath.Join(home, "bin", "dropin-miner"), cfg: cfg}
 
-	ours := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(home, "state"), filepath.Join(home, "intake")}))
-	theirs := appendMarkedBlock(nil, codexSandboxBlock([]string{filepath.Join(t.TempDir(), "other", "state")}))
+	blockOf := func(dirs ...string) []byte { return appendMarkedBlock(nil, codexSandboxBlock(dirs)) }
 
-	if r := removeOurSandboxBlock(ours, entry); !r.had || !r.ours {
+	// A subset of the four is ours: with [miner] off only the state dir is
+	// written, and that rendering stays ours after `mining enable`.
+	if r := removeOurSandboxBlock(blockOf(filepath.Join(home, "state")), entry, noEnv); !r.had || !r.ours {
+		t.Errorf("a state-dir-only block of ours was not recognized (had=%v ours=%v)", r.had, r.ours)
+	}
+	if r := removeOurSandboxBlock(blockOf(filepath.Join(home, "intake"), filepath.Join(home, "state")), entry, noEnv); !r.had || !r.ours {
 		t.Errorf("this installation's own sandbox block was not recognized (had=%v ours=%v)", r.had, r.ours)
 	}
-	if r := removeOurSandboxBlock(theirs, entry); !r.had || r.ours {
+	// Another installation's, and a mixture: one root that is not one of
+	// ours is enough, because the renderer writes one config's roots as one
+	// list and never a mixture.
+	if r := removeOurSandboxBlock(blockOf(filepath.Join(root, "other", "state")), entry, noEnv); !r.had || r.ours {
 		t.Errorf("another installation's sandbox block was claimed (had=%v ours=%v)", r.had, r.ours)
 	}
-	if r := removeOurSandboxBlock([]byte("[nothing]\n"), entry); r.had {
+	if r := removeOurSandboxBlock(blockOf(filepath.Join(home, "state"), filepath.Join(root, "other", "state")), entry, noEnv); !r.had || r.ours {
+		t.Errorf("a block mixing our root with a foreign one was claimed (had=%v ours=%v)", r.had, r.ours)
+	}
+	// A directory this config names, nowhere near the home that holds it.
+	// The home-prefix reading called this one another installation's.
+	elsewhere := filepath.Join(root, "relocated-state")
+	relocated := filepath.Join(root, "installB")
+	cfgB := writeRelocatedStateConfig(t, relocated, elsewhere)
+	entryB := binEntry{command: entry.command, cfg: cfgB}
+	if r := removeOurSandboxBlock(blockOf(elsewhere), entryB, noEnv); !r.had || !r.ours {
+		t.Errorf("a block naming this config's own relocated state_dir was not recognized (had=%v ours=%v)", r.had, r.ours)
+	}
+	if r := removeOurSandboxBlock([]byte("[nothing]\n"), entry, noEnv); r.had {
 		t.Error("a config with no marked block reported one")
+	}
+	// No config to compare against names nothing, so nothing can be claimed.
+	missing := binEntry{command: entry.command, cfg: filepath.Join(root, "gone", setupConfigFile)}
+	r := removeOurSandboxBlock(blockOf(filepath.Join(home, "state")), missing, noEnv)
+	if !r.had || r.ours {
+		t.Errorf("a block was claimed by an installation whose config cannot be read (had=%v ours=%v)", r.had, r.ours)
+	}
+	if !strings.Contains(r.why, "own config cannot be read") {
+		t.Errorf("the reason does not say the config could not be read: %q", r.why)
 	}
 }
 

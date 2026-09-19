@@ -53,7 +53,7 @@ type installTarget interface {
 	Kind() targetKind
 	Detect(ops agentOps, paths agentPaths, getenv func(string) string) string
 	PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan)
-	PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan)
+	PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan)
 	Status(ops agentOps, paths agentPaths, entry binEntry) targetStatus
 }
 
@@ -469,7 +469,7 @@ func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 	}
 }
 
-func (t claudeTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
+func (t claudeTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.claudeSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.claudeSkill))
@@ -536,26 +536,34 @@ func (codexTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) str
 	return detectCommand(ops, "codex")
 }
 
+// Codex has two halves — a skill and the sandbox block — and "already
+// installed" is a claim about both. It used to be decided by the skill alone
+// and printed before the block was even planned, so a host whose block is
+// another installation's was reported as already installed AND left in place,
+// in one plan, for one host. Both halves answer now, and the line is printed
+// only when neither of them had anything to do.
 func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
-	if changed, left := planSkill(ops, t, paths.codexSkill, entry, prefer, "", p); !changed && !left {
-		p.skipped = append(p.skipped, t.Label()+": already installed")
-	}
+	skillChanged, skillLeft := planSkill(ops, t, paths.codexSkill, entry, prefer, "", p)
+	blockChanged, blockLeft := false, false
 	if roots := codexSandboxRoots(entry, getenv); len(roots) > 0 {
-		planCodexSandbox(ops, t.Label(), paths.codexConfig, roots, p)
+		blockChanged, blockLeft = planCodexSandbox(ops, t.Label(), paths.codexConfig, roots, entry, getenv, p)
 	} else {
 		p.notes = append(p.notes, t.Label()+": shell commands run sandboxed; if searches record nothing, allow this command network access and let it write to your tokendrop home")
 	}
+	if !skillChanged && !skillLeft && !blockChanged && !blockLeft {
+		p.skipped = append(p.skipped, t.Label()+": already installed")
+	}
 }
 
-func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
+func (t codexTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.codexSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.codexSkill))
 		removed = true
 	}
 	if existing, mode, err := readWithMode(ops, paths.codexConfig); err == nil && existing != nil {
-		switch r := removeOurSandboxBlock(existing, entry); {
+		switch r := removeOurSandboxBlock(existing, entry, getenv); {
 		case r.had && r.ours:
 			if len(r.kept) > 0 {
 				p.notes = append(p.notes, fmt.Sprintf("%s: keeping %s in %s that dropin-miner did not write: %s",
@@ -603,7 +611,7 @@ type sandboxRemoval struct {
 // only our own block. So the tables inside the markers are separated by who
 // wrote them, ours go, and every other one survives in its original bytes,
 // appended below where the block was.
-func removeOurSandboxBlock(existing []byte, entry binEntry) sandboxRemoval {
+func removeOurSandboxBlock(existing []byte, entry binEntry, getenv func(string) string) sandboxRemoval {
 	stripped, had := removeMarkedBlock(existing)
 	if !had {
 		return sandboxRemoval{next: existing}
@@ -614,22 +622,15 @@ func removeOurSandboxBlock(existing []byte, entry binEntry) sandboxRemoval {
 		return sandboxRemoval{next: existing, had: true,
 			why: "it cannot be read as TOML tables, so which of them are ours cannot be decided; remove it by hand"}
 	}
-	if entry.cfg != "" {
-		// Discovery (an empty cfg) has no installation directory to compare
-		// against, and v0.2.9 wrote the block from whatever config it found;
-		// keep that rather than strand a block nothing can attribute.
-		home := filepath.Dir(entry.cfg)
-		roots := markedSandboxRoots(contents.oursText())
-		if len(roots) == 0 {
-			return sandboxRemoval{next: existing, had: true,
-				why: "its writable roots cannot be read, so it cannot be attributed to this installation"}
+	// The one reading install refuses by (codexBlockOwner), so a block this
+	// installation's install left cannot be one its uninstall then removes.
+	// Where the owner can be named, the reason is the sentence the skill's
+	// own refusal uses; where it cannot, it says what it could not read.
+	if ours, other, why := codexBlockOwner(contents.oursText(), entry, getenv); !ours {
+		if other != "" {
+			why = belongsTo(other)
 		}
-		for _, r := range roots {
-			if !pathUnder(r, home) {
-				return sandboxRemoval{next: existing, had: true,
-					why: "its writable roots are another installation's, not this one's"}
-			}
-		}
+		return sandboxRemoval{next: existing, had: true, why: why}
 	}
 	return sandboxRemoval{
 		next:    appendTables(stripped, contents.foreignText()),
@@ -803,7 +804,7 @@ func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 	}
 }
 
-func (t cursorTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
+func (t cursorTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.cursorSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.cursorSkill))
@@ -883,7 +884,7 @@ func (t opencodeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEnt
 	p.notes = append(p.notes, t.Label()+": has no skill directory — add to AGENTS.md:\n"+rulesSnippetFor(entry, shells))
 }
 
-func (t opencodeTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
+func (t opencodeTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, getenv func(string) string, p *agentPlan) {
 	if pathExists(ops, paths.opencodePlugin) {
 		planRemove(p, t.Label(), paths.opencodePlugin)
 		return
@@ -938,7 +939,7 @@ func (t piTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ 
 	}
 }
 
-func (t piTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, p *agentPlan) {
+func (t piTarget) PlanUninstall(ops agentOps, paths agentPaths, _ binEntry, getenv func(string) string, p *agentPlan) {
 	removed := false
 	if pathExists(ops, filepath.Dir(paths.piSkill)) {
 		planRemove(p, t.Label(), filepath.Dir(paths.piSkill))
@@ -1018,7 +1019,7 @@ func (t hermesTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry
 	p.notes = append(p.notes, t.Label()+": takes effect next session; Hermes asks once to approve the hook the first time it fires — approve it, or launch with --accept-hooks. Its shell tool is in the terminal/coding toolsets.")
 }
 
-func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, p *agentPlan) {
+func (t hermesTarget) PlanUninstall(ops agentOps, paths agentPaths, entry binEntry, getenv func(string) string, p *agentPlan) {
 	removed := false
 	// noted: something of this installation's was seen and left, and said so.
 	// "not installed" beside that sentence would be false (and was printed).

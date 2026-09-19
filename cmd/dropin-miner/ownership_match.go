@@ -25,6 +25,7 @@ package main
 // `agents install`.
 
 import (
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -188,4 +189,133 @@ func (ref installationRef) commandIsOurs(command string) bool {
 		return false
 	}
 	return ref.namesOurConfig(rest)
+}
+
+// ── the one integration that names directories ──────────────────────────
+
+// codexBlockOwner answers, for our marked block in Codex's config.toml, the
+// question commandIsOurs answers for everything else: is this integration
+// this installation's, and if not, whose?
+//
+// The block runs no command, so it names no binary and no config. What it
+// names is DIRECTORIES — the roots a sandboxed search must be able to write —
+// so the roots are the reading, and they are attributed against the
+// directories this installation's config NAMES: state_dir, spool_dir,
+// intake_dir and sessions_dir, compared as paths (codexOwnedRoots). Every
+// root in the block must be one of them.
+//
+// They are config keys, not a layout, and that is the whole correction here.
+// The first version of this asked whether every root lay under the directory
+// holding the config, which is true of the default layout and of nothing
+// else: a participant whose state_dir points outside their tokendrop home has
+// a block their own install wrote and could then no longer recognize, so the
+// refresh their config change had just made necessary printed "it belongs to
+// another installation" and did nothing, and their uninstall left it. The
+// home-prefix reading survives only in describeSandboxOwner, to DESCRIBE a
+// block that is somebody else's — never to decide whether one is ours.
+//
+// A partial match is not a match: the renderer writes one config's roots as
+// one list, so a block holding some of ours and some of another
+// installation's is not one this installation wrote, and rewriting it would
+// replace roots another installation's searches depend on. Left and named is
+// recoverable by hand; replaced is a Codex that earns nothing and says
+// nothing (#128).
+//
+// Two cases answer "not ours" without naming an owner, because neither can be
+// attributed at all: a block with no readable roots, and an installation
+// whose config cannot be read. The second is new with this reading and is the
+// safe direction — a block left is recoverable, a block taken from another
+// installation is not — and the sentence says which of the two it was.
+//
+// Discovery — an installation running with no config at all — has nothing to
+// compare against, and v0.2.9 wrote the block from whatever config it found,
+// so it keeps the block rather than strand one nothing can attribute.
+func codexBlockOwner(ourTable string, entry binEntry, getenv func(string) string) (ours bool, other, why string) {
+	if entry.cfg == "" {
+		return true, "", ""
+	}
+	roots := markedSandboxRoots(ourTable)
+	if len(roots) == 0 {
+		return false, "", "its writable roots cannot be read, so it cannot be attributed to this installation"
+	}
+	owned := codexOwnedRoots(entry, getenv)
+	if len(owned) == 0 {
+		return false, "", "this installation's own config cannot be read, so the directories to compare its roots against are unknown"
+	}
+	for _, r := range roots {
+		if !dirsInclude(owned, r) {
+			return false, describeSandboxOwner(roots), ""
+		}
+	}
+	return true, "", ""
+}
+
+// dirsInclude asks whether one directory is among a set of them, as paths:
+// v0.2.9's %q hands Windows a path with doubled separators naming the same
+// directory, and Windows paths differ in case without differing — the same
+// reason namesOurConfig compares with samePath rather than bytes.
+func dirsInclude(dirs []string, dir string) bool {
+	for _, d := range dirs {
+		if samePath(d, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeSandboxOwner names the installation a block's roots belong to, in
+// the words describeOther uses for every other artifact — so a host whose
+// skill and whose block are both another installation's is told about in one
+// sentence, not two (noteOnce collapses them).
+//
+// This is the ONLY thing the home-prefix reading is for. The block has already
+// been decided not to be ours, by the directories our own config names, and
+// all that is left is to say something useful about whose it is; a guess that
+// is merely likely is the right kind of answer to that question and the wrong
+// kind to "may this be rewritten".
+//
+// The home is the deepest directory every root lies under, and it is called
+// an installation only when a config is actually there: the block names
+// directories, and a directory holding no tokendrop.toml is a place, not an
+// installation. Roots with no common home short of the filesystem root name
+// nobody, and the sentence says that rather than pointing at "/".
+func describeSandboxOwner(roots []string) string {
+	home := commonParentDir(roots)
+	if home == "" {
+		return "another installation"
+	}
+	if cfg := filepath.Join(home, setupConfigFile); lexists(cfg) {
+		return "the installation configured by " + displayNamedPath(cfg)
+	}
+	return "the installation under " + displayNamedPath(home)
+}
+
+// commonParentDir is the deepest directory every path lies strictly under, or
+// "" when that would be the filesystem root.
+//
+// It walks up asking pathUnder, the same ancestor test the attribution itself
+// uses, rather than comparing path text: a prefix taken by bytes would put
+// /home/user-two under /home/user, and the two readings must not disagree
+// about what "under" means.
+func commonParentDir(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	dir := filepath.Dir(filepath.Clean(paths[0]))
+	for {
+		if parent := filepath.Dir(dir); parent == dir {
+			return "" // the filesystem root names no installation
+		}
+		covers := true
+		for _, p := range paths {
+			if samePath(p, dir) || !pathUnder(p, dir) {
+				covers = false
+				break
+			}
+		}
+		if covers {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
 }

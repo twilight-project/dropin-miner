@@ -5,6 +5,7 @@ package main
 // always named itself as safe to delete; these are the rest of them.
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,6 +81,94 @@ func TestUninstallNamesEveryLockItLeavesAsSafeToDelete(t *testing.T) {
 				t.Errorf("-purge-state left %s behind", want[2])
 			}
 		})
+	}
+}
+
+// #129: the dry run is the form a participant reads before deciding, so it
+// says what the real run says about what will still be there. It listed
+// nothing, in both modes, because sayLeftoverLocks was reached only from
+// closing(), which a dry run does not reach.
+func TestTheDryRunNamesTheSameLocksTheRealRunWould(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		name := "plain"
+		if purge {
+			name = "purge-state"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := installed(t)
+			update := updateLockFor(s)
+			writeFileT(t, update, "")
+
+			want := []string{
+				lifecycleGatePath(s.home),
+				filepath.Join(s.home, setupLockFile),
+				connectLockPath(filepath.Join(s.home, "state")),
+				update,
+			}
+			for _, p := range want {
+				if !lexists(p) {
+					t.Fatalf("this case is meant to find %s already there, and it is not, so naming it would prove nothing", p)
+				}
+			}
+
+			args := []string{"-dry-run", "-home", s.home}
+			if purge {
+				args = append([]string{"-purge-state"}, args...)
+			}
+			code, out, errOut := s.uninstall(t, nil, false, nil, args...)
+			if code != exitOK {
+				t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+			}
+			// Scoped to the section, as the real run's case is and for the
+			// same reason: -purge-state's plan prints the full path of
+			// everything it would remove, so a search over the whole output
+			// would match a removal line and call that "named as left".
+			idx := strings.Index(out, leftoverHeading)
+			if idx < 0 {
+				t.Fatalf("the dry run does not say what it would leave:\n%s", out)
+			}
+			section := out[idx:]
+			for _, p := range want {
+				if !strings.Contains(section, p) {
+					t.Errorf("the dry run does not name %s, which is there now:\n%s", p, out)
+				}
+			}
+			// A dry run changes nothing, the locks included.
+			for _, p := range want {
+				if !lexists(p) {
+					t.Errorf("the dry run removed %s", p)
+				}
+			}
+		})
+	}
+}
+
+// And it says nothing where there is nothing to say: the section is computed
+// from the files present, not printed as a fixed paragraph.
+func TestTheDryRunNamesNoLocksWhenThereAreNone(t *testing.T) {
+	s := installed(t)
+	for _, p := range []string{
+		lifecycleGatePath(s.home),
+		filepath.Join(s.home, setupLockFile),
+		connectLockPath(filepath.Join(s.home, "state")),
+	} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	if connectLock, flushLock, err := operationLockPaths(s.home, s.getenv); err == nil {
+		for _, p := range []string{connectLock, flushLock} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+	}
+	code, out, errOut := s.uninstall(t, nil, false, nil, "-dry-run", "-home", s.home)
+	if code != exitOK {
+		t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if strings.Contains(out, leftoverHeading) {
+		t.Errorf("the dry run printed the section with no lock file on disk:\n%s", out)
 	}
 }
 

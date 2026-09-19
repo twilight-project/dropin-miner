@@ -47,7 +47,8 @@ func (powerShellDeclaringHost) Detect(agentOps, agentPaths, func(string) string)
 }
 func (powerShellDeclaringHost) PlanInstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
 }
-func (powerShellDeclaringHost) PlanUninstall(agentOps, agentPaths, binEntry, *agentPlan) {}
+func (powerShellDeclaringHost) PlanUninstall(agentOps, agentPaths, binEntry, func(string) string, *agentPlan) {
+}
 func (powerShellDeclaringHost) Status(agentOps, agentPaths, binEntry) targetStatus {
 	return targetStatus{}
 }
