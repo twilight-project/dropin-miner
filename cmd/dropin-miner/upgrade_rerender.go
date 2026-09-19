@@ -76,7 +76,7 @@ func (d upgradeDeps) rerenderOwned(ctx context.Context, exe, resolved, home stri
 		bins = append(bins, resolved)
 	}
 	ops := d.agents
-	owned, left := ownedHosts(ops, ops.paths(d.getenv), bins, cfg, runtime.GOOS == "windows")
+	owned, left := ownedHosts(ops, ops.paths(d.getenv), bins, cfg, runtime.GOOS == "windows", d.getenv)
 	for _, l := range left {
 		fmt.Fprintf(d.stdout, "  %s\n", l)
 	}

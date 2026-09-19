@@ -456,7 +456,7 @@ func agentsMain(ops agentOps, args []string, stdin io.Reader, stdout, stderr io.
 	if sub == "install" {
 		plan = buildInstallPlan(ops, paths, selected, entry, getenv)
 	} else {
-		plan = buildUninstallPlan(ops, paths, selected, entry)
+		plan = buildUninstallPlan(ops, paths, selected, entry, getenv)
 	}
 
 	fmt.Fprintf(stdout, "dropin-miner agents %s\n", sub)
@@ -1388,11 +1388,11 @@ func hooksFileIsNowOnlyOurs(m map[string]any, root string) bool {
 // THIS installation's is decided here, once, for every host, by the reading
 // install's refusal uses (foreignOwner). Hook entries need none of this: they
 // were always removed entry by entry, by the command each one runs.
-func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry) agentPlan {
+func buildUninstallPlan(ops agentOps, paths agentPaths, selected []installTarget, entry binEntry, getenv func(string) string) agentPlan {
 	var p agentPlan
 	for _, t := range selected {
 		var tp agentPlan
-		t.PlanUninstall(ops, paths, entry, &tp)
+		t.PlanUninstall(ops, paths, entry, getenv, &tp)
 		ours := make([]agentRemove, 0, len(tp.removes))
 		for _, r := range tp.removes {
 			if other, foreign := foreignOwner(ops, r.path, entry); foreign {
@@ -1435,7 +1435,7 @@ func printAgentStatus(ops agentOps, paths agentPaths, entry binEntry, signals ma
 			// which is the reading #112 fixed at the writing end and left
 			// standing here: the participant whose searches all go through
 			// the other installation was told this one was installed.
-			if other := foreignHost(ops, paths, t, entry); other != "" {
+			if other := foreignHost(ops, paths, t, entry, getenv); other != "" {
 				state = belongsTo(other)
 			}
 		}
@@ -1466,9 +1466,9 @@ const staleSentence = "rendered by an earlier version or by a binary at another 
 // filter, through the one reading all three share (foreignOwner), over the
 // files a removal would take -- which are exactly the files that are wholly
 // one installation's when they are anyone's.
-func foreignHost(ops agentOps, paths agentPaths, t installTarget, entry binEntry) string {
+func foreignHost(ops agentOps, paths agentPaths, t installTarget, entry binEntry, getenv func(string) string) string {
 	var agnostic agentPlan
-	t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, &agnostic)
+	t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: entry.cfg}, getenv, &agnostic)
 	for _, r := range agnostic.removes {
 		if other, foreign := foreignOwner(ops, r.path, entry); foreign {
 			return other
@@ -1559,7 +1559,7 @@ func staleRenderings(ops agentOps, paths agentPaths, t installTarget, entry binE
 // re-rendering is host-granular (`agents install -client`), the binary that
 // does it after a rollback may predate the skill refusal, and a host file
 // left stale is reported by `agents status`, while one overwritten is gone.
-func ownedHosts(ops agentOps, paths agentPaths, bins []string, cfg string, windows bool) (owned []installTarget, left []string) {
+func ownedHosts(ops agentOps, paths agentPaths, bins []string, cfg string, windows bool, getenv func(string) string) (owned []installTarget, left []string) {
 	ref := installationRef{bins: bins, cfg: cfg}
 	for _, t := range targetsByKind(targetHost) {
 		installed := false
@@ -1578,7 +1578,7 @@ func ownedHosts(ops agentOps, paths agentPaths, bins []string, cfg string, windo
 		// and no skill — was found installed by a check that already reads
 		// the command's binary and config.
 		var agnostic agentPlan
-		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: cfg}, &agnostic)
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: cfg}, getenv, &agnostic)
 		if len(agnostic.removes) == 0 {
 			owned = append(owned, t)
 			continue
@@ -1673,41 +1673,76 @@ func readWithMode(ops agentOps, path string) ([]byte, os.FileMode, error) {
 // writable because the claim resume and the flush rotate the refresh token
 // there — a deletion-only exposure, not an exfiltration one.
 func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
-	cfg := entry.rendered
+	cfg := configForEntry(entry, getenv)
 	if cfg == nil {
-		if entry.cfg == "" {
-			return nil
-		}
-		var err error
-		cfg, _, err = loadConfig(entry.cfg, getenv)
-		if err != nil || cfg == nil {
-			return nil
-		}
-	}
-	seen := map[string]bool{}
-	var roots []string
-	add := func(d string) {
-		if d == "" {
-			return
-		}
-		d = filepath.Clean(d)
-		if d == "." || d == string(filepath.Separator) || seen[d] {
-			return
-		}
-		seen[d] = true
-		roots = append(roots, d)
+		return nil
 	}
 	// Always: the claim resume writes here after every search, mining or not.
-	add(cfg.Mining.StateDir)
+	dirs := []string{cfg.Mining.StateDir}
 	// Only where the miner records searches — the static flag, not the
 	// runtime decision, so a later `mining enable` earns without a reinstall.
 	if cfg.Miner.Enabled {
-		add(cfg.Miner.IntakeDir)
-		add(cfg.Miner.SessionsDir)
-		add(cfg.Mining.SpoolDir)
+		dirs = append(dirs, cfg.Miner.IntakeDir, cfg.Miner.SessionsDir, cfg.Mining.SpoolDir)
 	}
-	sort.Strings(roots)
-	return roots
+	return cleanDirs(dirs)
+}
+
+// codexOwnedRoots is every directory THIS config names that our block may
+// carry: the state dir and the three the miner writes, whatever [miner]
+// enabled says.
+//
+// It is the set the block's own roots are attributed against, and it is
+// deliberately wider than what codexSandboxRoots would write right now. The
+// roots are config KEYS — state_dir, spool_dir, intake_dir, sessions_dir —
+// so a rendering from before `mining enable` holds one of them and a
+// rendering from after holds four; both are this installation's, and an
+// attribution that only accepted today's gating would call a participant's
+// own block another installation's the moment the flag changed.
+func codexOwnedRoots(entry binEntry, getenv func(string) string) []string {
+	cfg := configForEntry(entry, getenv)
+	if cfg == nil {
+		return nil
+	}
+	return cleanDirs([]string{cfg.Mining.StateDir, cfg.Mining.SpoolDir, cfg.Miner.IntakeDir, cfg.Miner.SessionsDir})
+}
+
+// configForEntry is the config an entry names, parsed: the one setup's dry
+// run handed over (entry.rendered) or the bytes at entry.cfg. nil is "there
+// is none to read", which every caller has to answer for itself.
+func configForEntry(entry binEntry, getenv func(string) string) *config.Config {
+	if entry.rendered != nil {
+		return entry.rendered
+	}
+	if entry.cfg == "" {
+		return nil
+	}
+	cfg, _, err := loadConfig(entry.cfg, getenv)
+	if err != nil {
+		return nil
+	}
+	return cfg
+}
+
+// cleanDirs is one cleaning rule for both root sets: no empty name, no "."
+// and no filesystem root, each named once, sorted — the order the renderer
+// writes them in, so what is written and what is compared cannot differ by
+// the order alone.
+func cleanDirs(dirs []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		d = filepath.Clean(d)
+		if d == "." || d == string(filepath.Separator) || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // planCodexSandbox writes (or refreshes) our marked sandbox block in Codex's
@@ -1739,18 +1774,24 @@ func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 // writable (codexBlockOwner); one that is not this installation's is left
 // exactly as it is, named in the sentence a left skill uses, and the rest of
 // the host is installed as usual.
-func planCodexSandbox(ops agentOps, label, path string, roots []string, entry binEntry, p *agentPlan) {
+//
+// It answers planSkill's three answers for the same reason planSkill has them.
+// "left" is not "unchanged": the block is there, this run did not make it
+// ours, and a caller that read that as unchanged would print "already
+// installed" over a host whose sandbox belongs to somebody else — which is
+// exactly what it did, both lines at once, until this returned an answer.
+func planCodexSandbox(ops agentOps, label, path string, roots []string, entry binEntry, getenv func(string) string, p *agentPlan) (changed, left bool) {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
-		return
+		return false, true
 	}
 	stripped, _ := removeMarkedBlock(existing)
 	if bytes.Contains(stripped, []byte("["+codexSandboxTable+"]")) {
 		p.refused = append(p.refused, fmt.Sprintf(
 			"%s: %s already defines [%s]; add these settings to it by hand so searches can record:\n%s",
 			label, path, codexSandboxTable, indentBlock(sandboxSettings(roots))))
-		return
+		return false, true
 	}
 
 	want := codexSandboxBlock(roots)
@@ -1760,23 +1801,22 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, entry bi
 			p.refused = append(p.refused, fmt.Sprintf(
 				"%s: the dropin-miner block in %s cannot be read as TOML tables, so it is left as it is; "+
 					"remove the block between its two markers by hand and run this again", label, path))
-			return
+			return false, true
 		}
 		wantContents, _ := splitCodexBlock(mustRegion(want))
 		if have.oursText() == wantContents.oursText() && len(have.foreign) == 0 {
-			return // already what we would write, wherever in the file it sits
+			return false, false // already what we would write, wherever in the file it sits
 		}
-		// Asked only of a block we are about to change, and after the
-		// no-op above: a block that already reads as this binary would
-		// write it needs no owner, and a participant whose own roots sit
-		// outside their home keeps their silent second install.
-		if ours, other, why := codexBlockOwner(have.oursText(), entry); !ours {
+		// Asked only of a block we are about to change, and after the no-op
+		// above: a block that already reads as this binary would write it
+		// needs no owner.
+		if ours, other, why := codexBlockOwner(have.oursText(), entry, getenv); !ours {
 			if other == "" {
 				p.notes = append(p.notes, fmt.Sprintf("%s: left the sandbox block in %s: %s", label, path, why))
-				return
+				return false, true
 			}
 			noteOnce(p, label+": "+leftForeign(other))
-			return
+			return false, true
 		}
 		if extra := keysWeDidNotWrite(have.oursText()); len(extra) > 0 {
 			p.notes = append(p.notes, droppedKeysNote(label, path, extra))
@@ -1786,11 +1826,10 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, entry bi
 				label, tables(len(have.foreign)), path, strings.Join(have.foreignNames(), ", ")))
 		}
 		next := replaceBlockInPlace(pre, want, have.foreignText(), post)
-		planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
-		return
+		return planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p), false
 	}
 	next := appendMarkedBlock(stripped, want)
-	planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p)
+	return planWrite(ops, label, path, next, mode, "sandbox: network + writable_roots so searches can record", p), false
 }
 
 // droppedKeysNote is the one sentence both plans use for a key a participant

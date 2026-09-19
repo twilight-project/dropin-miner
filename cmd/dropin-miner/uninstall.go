@@ -540,7 +540,7 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 	ref := installationRef{bins: r.candidates, cfg: r.cfgPath}
 	for _, t := range r.d.targets {
 		var agnostic agentPlan
-		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: r.cfgPath}, &agnostic)
+		t.PlanUninstall(ops, paths, binEntry{command: uninstallProbeCommand, cfg: r.cfgPath}, r.d.getenv, &agnostic)
 		skip := map[string]bool{}
 		hold := func(why string) {
 			for _, w := range agnostic.writes {
@@ -579,7 +579,7 @@ func (r *uninstallRun) uninstallTargets(ops agentOps, apply func(p *agentPlan)) 
 		}
 		for _, c := range r.candidates {
 			var p agentPlan
-			t.PlanUninstall(ops, paths, binEntry{command: c, cfg: r.cfgPath}, &p)
+			t.PlanUninstall(ops, paths, binEntry{command: c, cfg: r.cfgPath}, r.d.getenv, &p)
 			p = planWithout(p, skip)
 			if p.empty() && len(p.refused) == 0 {
 				continue

@@ -11,14 +11,21 @@ package main
 // and nothing said to run `agents install` again.
 //
 // On real files, and with real configs: the roots are read out of the block
-// and compared against the directory each installation's config sits in, so
-// a fake filesystem would be testing the fixture rather than the rule.
+// and compared against the four directories each installation's config NAMES
+// — state_dir, spool_dir, intake_dir, sessions_dir — so a fake filesystem
+// would be testing the fixture rather than the rule.
+//
+// Not against the home its config sits in. That was this file's first
+// reading, and it is true of the default layout and of nothing else;
+// TestAnInstallationWhoseStateDirIsElsewhereStillOwnsItsBlock is the
+// installation it was false for.
 
 import (
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -83,6 +90,42 @@ router_url = "https://router.example.invalid"
 intake_dir = %q
 sessions_dir = %q
 `, filepath.ToSlash(filepath.Join(home, "state")), filepath.ToSlash(filepath.Join(home, "spool")),
+		filepath.ToSlash(filepath.Join(home, "intake")), filepath.ToSlash(filepath.Join(home, "sessions")))
+	cfg := filepath.Join(home, setupConfigFile)
+	writeFileT(t, cfg, doc)
+	return cfg
+}
+
+// writeRelocatedStateConfig is the shape the home-prefix reading got wrong:
+// an ordinary installation whose state_dir is somewhere else entirely. The
+// three mining directories stay under the home, so the block this config
+// produces holds roots on both sides of it and no common home at all.
+//
+// It is a supported configuration, not a contrivance: mining.state_dir is a
+// config key, and a participant who puts it on another volume — a bigger
+// disk, a synced directory, anything — has one.
+func writeRelocatedStateConfig(t *testing.T, home, stateDir string) string {
+	t.Helper()
+	for _, d := range []string{stateDir, filepath.Join(home, "spool"), filepath.Join(home, "intake"), filepath.Join(home, "sessions")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := fmt.Sprintf(`
+[mining]
+enabled = true
+as_url = "https://as.example.invalid"
+chain_id = "twilight-1"
+slot_id = 7
+state_dir = %q
+spool_dir = %q
+
+[miner]
+enabled = true
+router_url = "https://router.example.invalid"
+intake_dir = %q
+sessions_dir = %q
+`, filepath.ToSlash(stateDir), filepath.ToSlash(filepath.Join(home, "spool")),
 		filepath.ToSlash(filepath.Join(home, "intake")), filepath.ToSlash(filepath.Join(home, "sessions")))
 	cfg := filepath.Join(home, setupConfigFile)
 	writeFileT(t, cfg, doc)
@@ -233,6 +276,78 @@ func TestTheCodexBlockIsLeftEvenWhenTheSkillIsGone(t *testing.T) {
 	}
 }
 
+// The review's own probe of Y1, which is the regression that commit caused:
+// an ordinary installation whose state_dir is outside its home wrote a block
+// its own next install could no longer recognize. The home-prefix reading
+// called it another installation's, so the refresh the config change had just
+// made necessary printed "it belongs to …" and did nothing — and the plan
+// managed to say "already installed" in the same breath.
+//
+// Driven end to end, both commands, because that is where it was seen.
+func TestAnInstallationWhoseStateDirIsElsewhereStillOwnsItsBlock(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "user", ".tokendrop")
+	state := filepath.Join(root, "elsewhere", "state")
+	cfg := writeRelocatedStateConfig(t, home, state)
+
+	m, ops := newFakeMachine("codex")
+	if code, out, errOut := runAgents(t, ops, nil, "install", "-yes", "-config", cfg); code != exitOK {
+		t.Fatalf("install: exit %d\n%s%s", code, out, errOut)
+	}
+	installed := string(m.files["/home/u/.codex/config.toml"])
+	if !strings.Contains(installed, strconv.Quote(state)) {
+		t.Fatalf("this case is about a relocated state_dir and the block does not carry it:\n%s", installed)
+	}
+
+	// Something to refresh: the participant's config has not changed, so the
+	// block is made stale the way an earlier version's rendering would be.
+	stale := strings.Replace(installed, "network_access = true", "network_access = false", 1)
+	if stale == installed {
+		t.Fatal("the block fixture did not change, so nothing about a refresh is being tested")
+	}
+	m.files["/home/u/.codex/config.toml"] = []byte(stale)
+
+	_, out, errOut := runAgents(t, ops, nil, "install", "-yes", "-config", cfg)
+	plan := out + errOut
+	if got := string(m.files["/home/u/.codex/config.toml"]); got != installed {
+		t.Errorf("the installation was refused its own block\n%s\n--- file ---\n%s", plan, got)
+	}
+	if strings.Contains(plan, "left in place") || strings.Contains(plan, "belongs to") {
+		t.Errorf("an installation's own block was called another's:\n%s", plan)
+	}
+
+	// And its uninstall takes it: what install calls ours, uninstall removes.
+	if code, out, errOut := runAgents(t, ops, nil, "uninstall", "-yes", "-config", cfg); code != exitOK {
+		t.Fatalf("uninstall: exit %d\n%s%s", code, out, errOut)
+	}
+	if left := string(m.files["/home/u/.codex/config.toml"]); strings.Contains(left, agentsMarkerBegin) {
+		t.Errorf("uninstall left this installation's own block behind:\n%s", left)
+	}
+}
+
+// One block, one answer. "Already installed" is a claim about the whole host,
+// and it used to be decided by the skill before the block was planned at all,
+// so the probe above saw both lines for one host in one plan.
+func TestAHostIsNeverBothAlreadyInstalledAndLeftInPlace(t *testing.T) {
+	m := newTwoCodexInstallations(t)
+	m.install(m.first)
+	// The second installation's skill is written, its block is not; then a
+	// second run of the same install, where the skill is now current and the
+	// block is still the first's — the shape that printed both lines.
+	m.install(m.second)
+	out := m.install(m.second)
+
+	if !strings.Contains(out, m.leftSentence()) {
+		t.Fatalf("this case needs the block to be left as the first's, and the plan does not say it is:\n%s", out)
+	}
+	if strings.Contains(out, "Codex: already installed") {
+		t.Errorf("Codex is reported as already installed and as left in place, in one plan:\n%s", out)
+	}
+}
+
 // An installation refreshing its own block is what it always was: a stale
 // block is rewritten, and a current one is a no-op.
 func TestAnInstallationStillRefreshesItsOwnCodexSandboxBlock(t *testing.T) {
@@ -255,6 +370,32 @@ func TestAnInstallationStillRefreshesItsOwnCodexSandboxBlock(t *testing.T) {
 	}
 	if out = m.install(m.first); !strings.Contains(out, "nothing to do") {
 		t.Errorf("a second identical install is not a no-op:\n%s", out)
+	}
+}
+
+// A partial match is not a match. One root that is not one of ours is enough
+// to leave the whole block: the renderer writes one config's roots as one
+// list and never a mixture, so a mixed block was not written by this
+// installation, and rewriting it would take away a root another
+// installation's searches depend on.
+func TestABlockMixingOurRootsWithAForeignOneIsLeftAndNamed(t *testing.T) {
+	m := newTwoCodexInstallations(t)
+	m.install(m.first)
+
+	mixed := codexSandboxRoots(binEntry{cfg: m.first}, noEnv)
+	mixed = append(mixed, filepath.Join(filepath.Dir(m.second), "state"))
+	seeded := string(appendMarkedBlock([]byte("model = \"gpt-5\"\n"), codexSandboxBlock(mixed)))
+	writeFileT(t, m.paths.codexConfig, seeded)
+
+	out := m.install(m.first)
+	if got := m.codexConfig(); got != seeded {
+		t.Errorf("a block holding a root that is not ours was rewritten:\n--- before ---\n%s\n--- after ---\n%s", seeded, got)
+	}
+	if !strings.Contains(out, "belongs to") {
+		t.Errorf("the plan does not say the block is somebody else's:\n%s", out)
+	}
+	if strings.Contains(out, "Codex: already installed") {
+		t.Errorf("Codex is reported as already installed over a block that was left:\n%s", out)
 	}
 }
 
