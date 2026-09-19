@@ -341,8 +341,10 @@ The request may also carry `tier` (`"fast"`, the default, one provider;
 all optional and passed through to the router unchanged; a malformed value
 answers `fix_input` before any router call. `result.merged` is the citations of
 every candidate deduplicated across providers, each naming which providers
-found it (`found_by`) and its best rank; `view: "merged"` asks for it alone,
-dropping the per-provider `candidates` list.
+found it (`found_by`), where each of them cited it (`found_in`, one
+`candidate`/`citation` position per provider) and its best rank;
+`view: "merged"` asks for it alone, dropping the per-provider `candidates`
+list.
 
 `connect` means the registration/setup/claim workflow needs attention — no
 registration, an unclaimed one, an expired one, or a step only a person can

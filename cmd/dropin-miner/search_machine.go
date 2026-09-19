@@ -364,11 +364,30 @@ type machineResult struct {
 // machineMergedPage is one page after S3's cross-provider merge: the
 // citations of every "ok" candidate, deduplicated by normalized URL.
 type machineMergedPage struct {
-	URL      string   `json:"url"`
-	Title    string   `json:"title,omitempty"`
-	Snippet  string   `json:"snippet,omitempty"`
-	FoundBy  []string `json:"found_by"`
-	BestRank int      `json:"best_rank"`
+	URL     string   `json:"url"`
+	Title   string   `json:"title,omitempty"`
+	Snippet string   `json:"snippet,omitempty"`
+	FoundBy []string `json:"found_by"`
+	// FoundIn is where those providers cited the page in the result the
+	// router stores under request_id: one entry per FoundBy provider, in
+	// the same order. It is what keeps a merged-only envelope joinable
+	// (#126). With "view":"merged" the candidates list is omitted, so
+	// without these positions nothing maps a page back into the stored
+	// result — and the router's own feedback events (result.fetched,
+	// result.cited) name a candidate and a citation, not a URL. The merge
+	// knows the positions while it runs; it used to throw them away.
+	FoundIn  []machineMergedPosition `json:"found_in"`
+	BestRank int                     `json:"best_rank"`
+}
+
+// machineMergedPosition is one (candidate, citation) position in the
+// router's own result: the candidate's index in result.candidates —
+// every candidate, not only the "ok" ones the merge reads — and the
+// citation's index within that candidate's list, which is the same
+// 0-based rank best_rank is measured in.
+type machineMergedPosition struct {
+	Candidate int `json:"candidate"`
+	Citation  int `json:"citation"`
 }
 
 // machineDecision is the router's decision block, carried through: which
@@ -527,10 +546,15 @@ func normalizeMergeKey(raw string) (key string, ok bool) {
 // 0-based rank any one of them gave it, then by which page this walk saw
 // first. sort.SliceStable is what makes that last rule free: accs starts
 // in first-appearance order, and a stable sort never reorders equal keys.
+//
+// It also records, for each page, where every provider that found it cited
+// it. The candidate index is this walk's own, over r.Candidates entire, so
+// it names the position in the result the router stores rather than a
+// position in the "ok" subsequence the merge happens to read (#126).
 func mergedPagesOf(r routerResponse) []machineMergedPage {
 	byKey := make(map[string]*mergePage)
 	var accs []*mergePage
-	for _, c := range r.Candidates {
+	for i, c := range r.Candidates {
 		if c.Status != "ok" {
 			continue
 		}
@@ -562,6 +586,11 @@ func mergedPagesOf(r routerResponse) []machineMergedPage {
 			if !acc.foundSet[c.Provider] {
 				acc.foundSet[c.Provider] = true
 				acc.page.FoundBy = append(acc.page.FoundBy, c.Provider)
+				// The same occurrence found_by counts: a provider whose
+				// own list cites one page more than once contributes the
+				// position of its FIRST citation of it, which is what
+				// keeps found_in and found_by parallel entry for entry.
+				acc.page.FoundIn = append(acc.page.FoundIn, machineMergedPosition{Candidate: i, Citation: rank})
 			}
 		}
 	}

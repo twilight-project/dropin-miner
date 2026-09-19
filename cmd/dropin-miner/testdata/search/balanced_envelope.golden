@@ -30,6 +30,20 @@
         "parallel-search",
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 5
+        },
+        {
+          "candidate": 6,
+          "citation": 2
+        },
+        {
+          "candidate": 7,
+          "citation": 4
+        }
+      ],
       "best_rank": 2
     },
     {
@@ -41,6 +55,20 @@
         "brave",
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 5
+        },
+        {
+          "candidate": 4,
+          "citation": 7
+        },
+        {
+          "candidate": 7,
+          "citation": 6
+        }
+      ],
       "best_rank": 5
     },
     {
@@ -50,6 +78,16 @@
       "found_by": [
         "brave",
         "you"
+      ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 0
+        },
+        {
+          "candidate": 7,
+          "citation": 0
+        }
       ],
       "best_rank": 0
     },
@@ -61,6 +99,16 @@
         "brave",
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 1
+        },
+        {
+          "candidate": 7,
+          "citation": 1
+        }
+      ],
       "best_rank": 1
     },
     {
@@ -70,6 +118,16 @@
       "found_by": [
         "brave",
         "you"
+      ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 2
+        },
+        {
+          "candidate": 7,
+          "citation": 2
+        }
       ],
       "best_rank": 2
     },
@@ -81,6 +139,16 @@
         "brave",
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 3
+        },
+        {
+          "candidate": 7,
+          "citation": 3
+        }
+      ],
       "best_rank": 3
     },
     {
@@ -91,6 +159,16 @@
         "brave",
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 4
+        },
+        {
+          "candidate": 7,
+          "citation": 5
+        }
+      ],
       "best_rank": 4
     },
     {
@@ -99,6 +177,12 @@
       "snippet": "Large language models are powerful, but they have a nasty habit of making things up. You ask them a question about your company's internal policy, and they give you a confident answer that sounds right but is completely wrong. This is the \"hallucination\" problem that has plagued **Generative AI**, which relies on static training data that quickly becomes outdated. The solution isn't just bigger mo…",
       "found_by": [
         "linkup"
+      ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 0
+        }
       ],
       "best_rank": 0
     },
@@ -109,6 +193,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 0
+        }
+      ],
       "best_rank": 0
     },
     {
@@ -117,6 +207,12 @@
       "snippet": "# Title: Retrieval-Augmented Generation: A Comprehensive Survey of Architectures, Enhancements, and Robustness Frontiers \u003e Abstract: Retrieval-Augmented Generation (RAG) has emerged as a powerful paradigm to enhance large language models (LLMs) by conditioning generation on external evidence retrieved at inference time. ... This survey provides a comprehensive synthesis of recent advances in RAG s…",
       "found_by": [
         "parallel-search"
+      ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 0
+        }
       ],
       "best_rank": 0
     },
@@ -127,6 +223,12 @@
       "found_by": [
         "linkup"
       ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 1
+        }
+      ],
       "best_rank": 1
     },
     {
@@ -135,6 +237,12 @@
       "snippet": ", A. Pavani, K. Devi Priya, N. Murali Mohan, K. Prasanth Page No. : 2208-2214 Certificate 25 View Paper IJRASET79731 A Study on Facial Emotion Based Song Recommendations Systems Prof. Asha Gaikar, Vaishnavi Khaire, Snehal Gorad, Payal Chavan, Sambodhi Gaikwad Page No. : 2215-2218 Certificate 19 View Paper IJRASET79732 A Review on Agrofarm: A Farm-to-Buyer E-Commerce Platform Vedangi Bajage, Saloni…",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 1
+        }
       ],
       "best_rank": 1
     },
@@ -145,6 +253,12 @@
       "found_by": [
         "parallel-search"
       ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 1
+        }
+      ],
       "best_rank": 1
     },
     {
@@ -153,6 +267,12 @@
       "snippet": "Zhang JLei SYang ZLiu BWang ZWeng XAmaratunga GLin YWang H(2026)Self-Knowledge Retrieval Augmented Generation Framework for Patent Matching2026 29th International Conference on Computer Supported Cooperative Work in Design (CSCWD)10.1109/CS... SIGIR '22: The 45th International ACM SIGIR Conference on Research and Development in Information Retrieval ... Downloads (Last 12 months)Advanced metrics (…",
       "found_by": [
         "linkup"
+      ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 2
+        }
       ],
       "best_rank": 2
     },
@@ -163,6 +283,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 2
+        }
+      ],
       "best_rank": 2
     },
     {
@@ -171,6 +297,12 @@
       "snippet": "In 2026, enterprise RAG increasingly combines hybrid retrieval, reranking, multimodal data, access controls, evaluation, and observability to support reliable production AI applications. RAG has evolved dramatically between 2024 and 2026. What once began as a relatively simple retriever–generator pipeline has now matured into a sophisticated enterprise intelligence architecture with multimodal c…",
       "found_by": [
         "linkup"
+      ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 3
+        }
       ],
       "best_rank": 3
     },
@@ -181,6 +313,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 3
+        }
+      ],
       "best_rank": 3
     },
     {
@@ -189,6 +327,12 @@
       "snippet": "# Retrieval-augmented generation for knowledge-intensive NLP tasks ## Cited By publication date: 8-Sep-2026 https://dl.acm.org/doi/10.1145/3793230.3837772 * Hanan S Carhart N Hampshire P (2026) Retrieval-Augmented Generation for Automated Planning Documentation Data Extraction Proceedings of the 2026 ACM Symposium on Document Engineering 10.1145/3820755.3832801 (1-2) Online publication date: 25-Au…",
       "found_by": [
         "parallel-search"
+      ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 3
+        }
       ],
       "best_rank": 3
     },
@@ -199,6 +343,12 @@
       "found_by": [
         "linkup"
       ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 4
+        }
+      ],
       "best_rank": 4
     },
     {
@@ -207,6 +357,12 @@
       "snippet": "n et.al. 2505.09029 null 2025-05-13 Improved Algorithms for Differentially Private Language Model Alignment Keyu Chen et.al. 2505.08849 null 2025-05-13 Reinforcement Learning meets Masked Video Modeling : Trajectory-Guided Adaptive Token Selection Ayush K. Rai et.al. 2505.08561 null 2025-05-13 A Practical Introduction to Deep Reinforcement Learning Yinghan Sun et.al. 2505.08295 null 2025-05-13 Hyp…",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 4
+        }
       ],
       "best_rank": 4
     },
@@ -217,6 +373,12 @@
       "found_by": [
         "parallel-search"
       ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 4
+        }
+      ],
       "best_rank": 4
     },
     {
@@ -225,6 +387,12 @@
       "snippet": "Teaching | DICE Research Group Summer Term 2026 Project Groups How to Train Your Large Language Model 2 (HTYLLM2) Master Project Groups Knowledge Graph Summarization (KGS) Master Adaptive Retrieval-Augmented Generation Master Seminars Logic-based Explainability in AI Master Seminars Argumentation for Explainable AI Master Recent Advances in Knowledge Graphs Master Project Groups How to Train Your …",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 5
+        }
       ],
       "best_rank": 5
     },
@@ -235,6 +403,12 @@
       "found_by": [
         "parallel-search"
       ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 5
+        }
+      ],
       "best_rank": 5
     },
     {
@@ -243,6 +417,12 @@
       "snippet": "## What Is RAG (Retrieval-Augmented Generation)? Retrieval-augmented generation combines information retrieval with generative language modelling. The retriever identifies useful evidence from sources outside the model’s trained parameters. The generator receives that evidence with the user’s request and produces an answer. The word augmented matters because the model is not retrained each tim…",
       "found_by": [
         "linkup"
+      ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 6
+        }
       ],
       "best_rank": 6
     },
@@ -253,6 +433,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 6
+        }
+      ],
       "best_rank": 6
     },
     {
@@ -261,6 +447,12 @@
       "snippet": "Maragatham, G., Khan, A., Shreeharini, S., Paul, S. (2026). Enhancing Generative AI with Retrieval-Augmented Generation: A Comparative Study. In: Ramachandran, G., Dao, NN., Jhanjhi, N.Z., Muthukrishnan, A., Duraivelu, H. (eds) Advances in Artificial Intelligence and Machine Learning in Big Data Processing.",
       "found_by": [
         "brave"
+      ],
+      "found_in": [
+        {
+          "candidate": 4,
+          "citation": 6
+        }
       ],
       "best_rank": 6
     },
@@ -271,6 +463,12 @@
       "found_by": [
         "parallel-search"
       ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 6
+        }
+      ],
       "best_rank": 6
     },
     {
@@ -279,6 +477,12 @@
       "snippet": "## Retrieval Augmented Generation Market (By Function: Recommendation Engines, Summarization \u0026 Reporting, Response Generation, Document Retrieval; By Deployment: On-Premises, Cloud; By Application: Content Generation, Research \u0026 Development, Marketing \u0026 Sales, Legal \u0026 Compliance, Customer Support \u0026 Chatbots, Knowledge Management; By End Use: Media \u0026 Entertainment, Education, IT \u0026 Telecommunication…",
       "found_by": [
         "linkup"
+      ],
+      "found_in": [
+        {
+          "candidate": 2,
+          "citation": 7
+        }
       ],
       "best_rank": 7
     },
@@ -289,6 +493,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 7
+        }
+      ],
       "best_rank": 7
     },
     {
@@ -297,6 +507,12 @@
       "snippet": "Retrieval-augmented generation (RAG) effectively extends the knowledge boundaries of large language models (LLMs) for complex tasks, yet current paradigms typically optimize for an interleaving of reasoning and retrieval, where models fail to critically evaluate retrieved information against the target question. ... Eval-RAR introduces a “Search-then-Evaluate” paradigm where the model performs…",
       "found_by": [
         "parallel-search"
+      ],
+      "found_in": [
+        {
+          "candidate": 6,
+          "citation": 7
+        }
       ],
       "best_rank": 7
     },
@@ -307,6 +523,12 @@
       "found_by": [
         "you"
       ],
+      "found_in": [
+        {
+          "candidate": 7,
+          "citation": 7
+        }
+      ],
       "best_rank": 7
     },
     {
@@ -314,6 +536,12 @@
       "snippet": "# Explaining grounding Grounding is the practice of connecting a generative model's output to retrieved source material, so that an answer rests on documents the system can point to rather than on the statistical residue of training\\. A grounded response carries provenance: the passages that informed it, the queries that fetched them, and the position in the answer each source supports\\. The techn…",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 8
+        }
       ],
       "best_rank": 8
     },
@@ -323,6 +551,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 9
+        }
+      ],
       "best_rank": 9
     },
     {
@@ -330,6 +564,12 @@
       "snippet": "Will your AI platform become irrelevant by 2026? Discover the hidden flaw in today’s AI models that RAG-powered systems are set to obliterate—leaving legacy solutions hopelessly outdated\\. ## The Case for RAG: Not Just Another Buzzword The AI ecosystem is shifting under our feet\\. For years, generative AI models dazzled us by producing fluent, humanlike text, images, and code on demand\\. Yet, …",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 10
+        }
       ],
       "best_rank": 10
     },
@@ -339,6 +579,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 11
+        }
+      ],
       "best_rank": 11
     },
     {
@@ -346,6 +592,12 @@
       "snippet": "# Multimodal RAG framework improves question answering over lengthy documents Researchers at South China Normal University have unveiled MMRDoc, a new retrieval-augmented generation framework designed to help artificial intelligence systems read, search and reason over long, visually dense documents such as financial reports, scientific papers and multi-page contracts\\. The study, published in the…",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 12
+        }
       ],
       "best_rank": 12
     },
@@ -355,6 +607,12 @@
       "found_by": [
         "telem"
       ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 13
+        }
+      ],
       "best_rank": 13
     },
     {
@@ -362,6 +620,12 @@
       "snippet": "# “Carnet de gratitud : cuaderno de bocetos de agosto de 2026”\\. Un proyecto de stig\\_legrand \\| Domestika ### Introduction Where am I when I draw? Physically, I am here, at my desk, making decisions about line, colour, composition, and what will remain outside the frame\\. But mentally, I am travelling back to a day that has already been followed by several others\\. I am trying to find what is…",
       "found_by": [
         "telem"
+      ],
+      "found_in": [
+        {
+          "candidate": 3,
+          "citation": 14
+        }
       ],
       "best_rank": 14
     }

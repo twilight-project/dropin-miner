@@ -58,11 +58,13 @@ latency) and `mining`. On failure it carries `code`, an optional
 Read `result.merged` first: the citations of every provider that answered,
 deduplicated by page. Each entry's `found_by` says how many providers agree
 on that page — the fan-out's own evidence — and `best_rank` is the best
-position any of them gave it. Ask `"view":"merged"` when tokens matter: it
-drops the per-provider `candidates` list and keeps everything else,
-`merged` included. `decision` says which providers ran. `usage.cost_micros`
-is what the search cost the network, in millionths of a dollar; mention it
-only if the user asks.
+position any of them gave it. `found_in` says where in the per-provider
+result each page came from: one `{candidate, citation}` position per
+`found_by` provider, in the same order. Ask `"view":"merged"` when tokens
+matter: it drops the per-provider `candidates` list and keeps everything
+else, `merged` included. `decision` says which providers ran.
+`usage.cost_micros` is what the search cost the network, in millionths of a
+dollar; mention it only if the user asks.
 
 Decide what to do from `ok`, `retryable` and `action`. Never from the message
 text — the message is for a human reading a log, and its wording is not a

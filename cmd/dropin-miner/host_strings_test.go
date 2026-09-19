@@ -422,6 +422,16 @@ func renderedHostStrings(t *testing.T, goos string) string {
 	value("searchCommand", entry.searchCommand())
 	section("any host without a skill (opencode's AGENTS.md note, the rules line for any other agent)")
 	value("rulesSnippet", rulesSnippet(entry))
+	// opencode's own note, which is the one a participant copies by hand:
+	// it renders for that host's declared tool shell on this OS, so this is
+	// where the here-string form and its encoding line appear on Windows.
+	// The generic line above stays POSIX for every OS.
+	opencode, ok := targetByID(installTargets, "opencode")
+	if !ok {
+		t.Fatal("no opencode target")
+	}
+	opencodeShells, _ := toolShellsForSkill(opencode, goos)
+	value("opencode note", rulesSnippetFor(entry, opencodeShells))
 
 	skill := renderedSkillFor("claude", entry, goos)
 	stdinSearch := skillSearchBlock(t, skill)

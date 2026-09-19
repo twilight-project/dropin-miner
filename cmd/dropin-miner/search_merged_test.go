@@ -94,9 +94,17 @@ func TestMergedListNormalizesURLs(t *testing.T) {
 	if merged.URL != "https://Example.com/Docs/" {
 		t.Errorf("url should come from the first candidate that found the page: %q", merged.URL)
 	}
+	// found_in follows found_by entry for entry: alpha cited it as
+	// candidate 0's rank 0, beta as candidate 1's (#126).
+	if got := positionsOf(merged); !samePositions(got, [2]int{0, 0}, [2]int{1, 0}) {
+		t.Errorf("found_in: got %v, want [[0 0] [1 0]]", got)
+	}
 	distinct := pages[1]
 	if len(distinct.FoundBy) != 1 || distinct.FoundBy[0] != "gamma" {
 		t.Errorf("the differing-query page merged when it should not have: %+v", distinct)
+	}
+	if got := positionsOf(distinct); !samePositions(got, [2]int{2, 0}) {
+		t.Errorf("the distinct page's found_in: got %v, want [[2 0]]", got)
 	}
 }
 
@@ -172,6 +180,12 @@ func TestMergedListDoesNotDoubleCountOneProvidersRepeat(t *testing.T) {
 	if got := pages[0].FoundBy; len(got) != 1 || got[0] != "repeats" {
 		t.Errorf("found_by: got %v, want exactly one entry for the repeating provider", got)
 	}
+	// And found_in names the FIRST of those two citations — the same
+	// occurrence found_by counted (#126). The second one, rank 1, is the
+	// same page under a trailing slash.
+	if got := positionsOf(pages[0]); !samePositions(got, [2]int{0, 0}) {
+		t.Errorf("found_in: got %v, want [[0 0]], the first of the provider's two citations", got)
+	}
 }
 
 // TestMergedListOrdering drives all three ordering rules S3 states:
@@ -205,14 +219,19 @@ func TestMergedListOrdering(t *testing.T) {
 		},
 	}
 	pages := mergedPagesOf(r)
+	// found_in is the positions each page was merged from, which the
+	// ordering rules move around but never rewrite: D keeps p2's rank-1
+	// citation as well as p3's rank-0 one even though only the smaller
+	// became its best_rank (#126).
 	want := []struct {
 		url      string
 		bestRank int
+		foundIn  [][2]int
 	}{
-		{"https://a.test/D", 0}, // found_by=2, beats every found_by=1 page; p3 lowered its rank from 1 to 0
-		{"https://a.test/A", 0}, // found_by=1, best_rank=0, seen before C
-		{"https://a.test/C", 0}, // found_by=1, best_rank=0, tie with A broken by appearance
-		{"https://a.test/B", 1}, // found_by=1, best_rank=1 — loses to both rank-0 pages
+		{"https://a.test/D", 0, [][2]int{{1, 1}, {2, 0}}}, // found_by=2, beats every found_by=1 page; p3 lowered its rank from 1 to 0
+		{"https://a.test/A", 0, [][2]int{{0, 0}}},         // found_by=1, best_rank=0, seen before C
+		{"https://a.test/C", 0, [][2]int{{1, 0}}},         // found_by=1, best_rank=0, tie with A broken by appearance
+		{"https://a.test/B", 1, [][2]int{{0, 1}}},         // found_by=1, best_rank=1 — loses to both rank-0 pages
 	}
 	if len(pages) != len(want) {
 		t.Fatalf("pages: got %d, want %d: %+v", len(pages), len(want), pages)
@@ -223,6 +242,9 @@ func TestMergedListOrdering(t *testing.T) {
 		}
 		if pages[i].BestRank != w.bestRank {
 			t.Errorf("%s best_rank: got %d, want %d", pages[i].URL, pages[i].BestRank, w.bestRank)
+		}
+		if got := positionsOf(pages[i]); !samePositions(got, w.foundIn...) {
+			t.Errorf("%s found_in: got %v, want %v", pages[i].URL, got, w.foundIn)
 		}
 	}
 }
@@ -263,6 +285,13 @@ func TestMergedListOnlyReadsOkCandidates(t *testing.T) {
 	pages := mergedPagesOf(r)
 	if len(pages) != 1 || pages[0].URL != "https://a.test/should-appear" {
 		t.Fatalf("pages: %+v", pages)
+	}
+	// The skipped candidate still occupies position 0 in the result the
+	// router stores, so the page found by the second one is candidate 1.
+	// A found_in counted over the ok candidates alone would say 0 here,
+	// and would name the wrong result to anything joining by position.
+	if got := positionsOf(pages[0]); !samePositions(got, [2]int{1, 0}) {
+		t.Errorf("found_in: got %v, want [[1 0]] — the index in the router's own candidate list, not among the ok ones", got)
 	}
 }
 
