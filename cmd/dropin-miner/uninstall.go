@@ -263,6 +263,14 @@ func (r *uninstallRun) run(homeFlag string) int {
 
 	switch {
 	case r.dry:
+		// The same section the real run closes with, in both modes (#129).
+		// A dry run is the form a participant reads before deciding, and
+		// "these files will still be here, and here is why" is exactly what
+		// a decision is made on; it was only ever printed from closing(),
+		// which a dry run does not reach. Computed from the files present
+		// now, which is what it says: a dry run takes no exclusion, so it
+		// creates none of them and none of them is about to go.
+		r.sayLeftoverLocks()
 		r.printf("\nDry run: nothing was changed, asked or contacted.\n")
 		return exitOK
 	case r.purge:
