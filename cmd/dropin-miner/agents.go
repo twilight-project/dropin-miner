@@ -1682,7 +1682,16 @@ func codexSandboxRoots(entry binEntry, getenv func(string) string) []string {
 //     and a write was planned on every run forever. It now means what it
 //     says — our own table already reads as the renderer would write it —
 //     and the rest of the file is none of its business.
-func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agentPlan) {
+//
+// And #128 is leaveToItsOwner's rule reaching the one single-slot file it had
+// not reached. Codex has one config.toml and our block in it is one slot, so
+// a second installation's `agents install` rewrote the machine installation's
+// writable_roots with its own and the machine's Codex searches then wrote
+// nowhere. The block names its installation by the directories it makes
+// writable (codexBlockOwner); one that is not this installation's is left
+// exactly as it is, named in the sentence a left skill uses, and the rest of
+// the host is installed as usual.
+func planCodexSandbox(ops agentOps, label, path string, roots []string, entry binEntry, p *agentPlan) {
 	existing, mode, err := readWithMode(ops, path)
 	if err != nil {
 		p.refused = append(p.refused, fmt.Sprintf("%s: cannot read %s: %v", label, path, err))
@@ -1708,6 +1717,18 @@ func planCodexSandbox(ops agentOps, label, path string, roots []string, p *agent
 		wantContents, _ := splitCodexBlock(mustRegion(want))
 		if have.oursText() == wantContents.oursText() && len(have.foreign) == 0 {
 			return // already what we would write, wherever in the file it sits
+		}
+		// Asked only of a block we are about to change, and after the
+		// no-op above: a block that already reads as this binary would
+		// write it needs no owner, and a participant whose own roots sit
+		// outside their home keeps their silent second install.
+		if ours, other, why := codexBlockOwner(have.oursText(), entry); !ours {
+			if other == "" {
+				p.notes = append(p.notes, fmt.Sprintf("%s: left the sandbox block in %s: %s", label, path, why))
+				return
+			}
+			noteOnce(p, label+": "+leftForeign(other))
+			return
 		}
 		if extra := keysWeDidNotWrite(have.oursText()); len(extra) > 0 {
 			p.notes = append(p.notes, droppedKeysNote(label, path, extra))

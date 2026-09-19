@@ -542,7 +542,7 @@ func (t codexTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry,
 		p.skipped = append(p.skipped, t.Label()+": already installed")
 	}
 	if roots := codexSandboxRoots(entry, getenv); len(roots) > 0 {
-		planCodexSandbox(ops, t.Label(), paths.codexConfig, roots, p)
+		planCodexSandbox(ops, t.Label(), paths.codexConfig, roots, entry, p)
 	} else {
 		p.notes = append(p.notes, t.Label()+": shell commands run sandboxed; if searches record nothing, allow this command network access and let it write to your tokendrop home")
 	}
@@ -614,22 +614,15 @@ func removeOurSandboxBlock(existing []byte, entry binEntry) sandboxRemoval {
 		return sandboxRemoval{next: existing, had: true,
 			why: "it cannot be read as TOML tables, so which of them are ours cannot be decided; remove it by hand"}
 	}
-	if entry.cfg != "" {
-		// Discovery (an empty cfg) has no installation directory to compare
-		// against, and v0.2.9 wrote the block from whatever config it found;
-		// keep that rather than strand a block nothing can attribute.
-		home := filepath.Dir(entry.cfg)
-		roots := markedSandboxRoots(contents.oursText())
-		if len(roots) == 0 {
-			return sandboxRemoval{next: existing, had: true,
-				why: "its writable roots cannot be read, so it cannot be attributed to this installation"}
+	// The one reading install refuses by (codexBlockOwner), so a block this
+	// installation's install left cannot be one its uninstall then removes.
+	// Where the owner can be named, the reason is the sentence the skill's
+	// own refusal uses; where it cannot, it says what it could not read.
+	if ours, other, why := codexBlockOwner(contents.oursText(), entry); !ours {
+		if other != "" {
+			why = belongsTo(other)
 		}
-		for _, r := range roots {
-			if !pathUnder(r, home) {
-				return sandboxRemoval{next: existing, had: true,
-					why: "its writable roots are another installation's, not this one's"}
-			}
-		}
+		return sandboxRemoval{next: existing, had: true, why: why}
 	}
 	return sandboxRemoval{
 		next:    appendTables(stripped, contents.foreignText()),
