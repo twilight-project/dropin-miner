@@ -13,6 +13,231 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.12 — 2026-09-19
+
+0.2.12 is the cleanup the 0.2.11 release check and upgrade acceptance
+asked for, and the first release carrying search-experience work. An
+upgrade now refreshes the agent integrations it owns, so a fix that
+lives in rendered skill or hook text reaches a host without a second
+command. Two installations on one machine stop overwriting each other's
+files. Hermes' own rewriting of its configuration is understood in every
+form its writers leave. Hosts that run each other's hooks stand down.
+And a search can say what it wants and read back what it got: the
+request options the router accepts, what the router decided and what the
+search cost, and one merged list of pages across every provider that
+answered.
+
+Coming from 0.2.11: run `dropin-miner upgrade` on a native install, or
+`npm install -g dropin-miner@latest` on an npm install, and then run
+`dropin-miner agents install` once — for the last time. The upgrade into
+this release is carried out by the 0.2.11 binary, which replaces the
+program and touches no host file, and most of what changed for a host
+this release is rendered text; from 0.2.12 onward the upgrade refreshes
+the integrations it owns by itself, so the next release will not ask for
+this. Your wallet, identity, credential, recorded searches and config
+are kept, and `upgrade -rollback` still puts the previous version back
+with no network. Coming from earlier: the older entries below apply
+first.
+
+- **An upgrade refreshes the agent integrations it owns.** Once the
+  replacement has succeeded — and only then, so an upgrade that is put
+  back leaves them as they were — the new binary renders again the
+  skills and hook entries this installation already set up. It sets up
+  no host that was not set up, and leaves, by name, anything belonging
+  to another installation or naming none. A failure never fails the
+  upgrade: the binary is in place, and the line says so and gives the
+  one command that finishes the job. `-rollback` does the same with the
+  binary it restores. And `dropin-miner agents status` now names any
+  file an earlier version rendered that this one would write
+  differently, which is the diagnosis that did not exist before — a
+  skill of this installation's included when it names a binary at
+  another path, since for a file a host has only one of it is the config
+  that decides whose it is.
+
+- **Two installations on one machine leave each other's files alone.** A
+  host has one skill directory, and opencode and Pi one adapter file
+  each. A second installation's `agents install` used to overwrite the
+  first's silently — the damage was done there, rather than in the later
+  uninstall that correctly removed what by then read as someone else's.
+  Install now leaves a single-slot file that is another installation's,
+  says whose it is, and goes on with the rest of that host; `agents
+  uninstall` asks the same question the same way, and `agents status`
+  says which installation a host belongs to instead of calling it
+  installed. Codex's sandbox block is one of these files too, and it
+  names directories rather than a config, so it is attributed by the
+  four an installation's config names — `state_dir`, `spool_dir`,
+  `intake_dir` and `sessions_dir`. Another installation's block is left
+  and named; this installation's is refreshed wherever those directories
+  happen to live, rather than only under its own home.
+
+- **Claude Code's allow rules stop accumulating.** A rule naming this
+  installation's binary and config is one rule in any spelling this
+  client has ever written, so superseded spellings are replaced rather
+  than added beside, and a duplicate collapses to one. A rule used to be
+  added whenever its exact text was absent, which left every earlier
+  spelling in place for ever. Another installation's rules are
+  untouched, and a set already equal to the current one is left exactly
+  as it lies, so a second install still writes nothing.
+
+- **Codex's config keeps its order.** dropin-miner's block is rewritten
+  where it stands, and appended only when there is none, so a reinstall
+  moves no byte outside our own markers. Every write used to strip the
+  block and append it, reordering a file for a change that was only ever
+  to our own table. An uninstall followed by an install restores the
+  file byte for byte when the block was last, and otherwise moves no
+  line of yours relative to another. Tables Codex added inside our block
+  are still kept.
+
+- **Lock files are named, not deleted.** `uninstall` now lists every
+  lock file DropinMiner commands coordinate through that is still
+  present — the lifecycle gate, `setup.lock`, `connect.lock`,
+  `flush.lock` and the binary's update lock — in both modes, and says
+  each is safe to delete. `-dry-run` prints that same section, from the
+  files present when it runs. They are named rather than removed because
+  an ordinary operation cannot remove its own lock file: unlinking one
+  is safe only while the gate is held, and an operation has released the
+  gate by the time it holds its own lock, so taking the gate back at the
+  end would reverse the one lock order.
+
+- **Hosts that run each other's hooks stand down.** Cursor loads Claude
+  Code's `settings.json` and runs those hooks with its own payload. The
+  Claude Code hooks now recognise a caller that is not Claude Code from
+  the payload alone — never from the environment — and write nothing,
+  spawn nothing, print nothing and exit 0. That is one flush per Cursor
+  turn instead of two, and a Cursor command is never rewritten with a
+  `claude-code` trace bridge.
+
+- **A search believes its host's channel, not whatever variable it
+  finds.** A host that exported the lineage file has declared that file
+  as its trace channel and writes no bridge, so a bridge variable found
+  beside it is dropped unread — never decoded, and never a fallback when
+  the declared file is missing — and reported on stderr only, because
+  the machine envelope is what the model reads and a model is one of the
+  ways a foreign bridge arrives. With a session id exported, a lineage
+  file is used only when it holds that session. A host started by
+  another host as a shell command inherits the outer host's channel, and
+  so its session and label: that is chosen rather than overlooked,
+  because the exported environment is the declaration and the inner
+  search is work the outer session asked for.
+
+- **Nested workspaces, and a leftover temporary file.** A same-host
+  search from inside a nested workspace no longer adopts the inner
+  workspace's session: with a session id exported, the walk climbs past
+  a lineage file of another session to the searching session's own. And
+  a lineage write that fails removes its own temporary file, while stale
+  ones another process left behind are swept.
+
+- **Self-update on a loaded or scanned machine.** A new binary slow to
+  answer its version check is asked once more, and only on a timeout — a
+  wrong version, a malformed line, a byte on stderr or a failure to
+  start is evidence, and is refused on the first answer. Two timeouts
+  report `retry` rather than calling the release bad. On Windows the
+  move-aside now waits about a second, over five attempts, for a file
+  something else is briefly holding, instead of failing on the first
+  sharing violation.
+
+- **Hermes: every form its own writers leave is understood.** Hermes
+  rewrites its own `config.yaml` in two styles — a whole-file re-dump
+  that drops our markers, and a round trip that keeps them and folds the
+  command onto a second line — and after either, `agents status` counts
+  the hook, `agents install` reports it already set up and writes
+  nothing, and `agents uninstall` removes the entry. A block belonging
+  to another installation, holding a line we did not write, or followed
+  by something Hermes added inside our `hooks:` mapping, is left and
+  named with its lines, never cut. The by-hand step uninstall used to
+  end in is gone for every form Hermes' own writers leave; it remains
+  only for an entry this client will not edit.
+
+- **Search: the request options the router accepts.** A `search --stdin`
+  request may now carry `tier`, `recency` (`day`, `week`, `month` or
+  `year`), `domain_filter` (up to 16 bare hostnames), `max_results` (1
+  to 25) and `view`. A malformed value, an empty list or an explicit
+  null is answered with `fix_input` before any router call is made, so a
+  caller fixes its request instead of paying for a search that was never
+  the one it meant.
+
+- **Search: what the router decided and what it cost.** The envelope now
+  carries the router's own `decision` — which tier ran, which providers
+  it dispatched, and which it dropped for cost — and its `usage`: what
+  the search cost the network in millionths of a dollar, whether it was
+  served from cache, how many arms are still running, and the latency.
+  Each candidate carries its own cost and latency too. In the terminal
+  the providers and the cost are printed on one line, and nothing is
+  printed when the router sent neither block: a zero cost is never
+  invented for one the router never stated.
+
+- **Search: one merged list across providers.** `result.merged` is every
+  answering provider's pages deduplicated by URL identity, each page
+  naming which providers found it (`found_by`), where each of them cited
+  it (`found_in` — one candidate-and-citation position per provider,
+  into the result the router stores under `request_id`) and its best
+  rank; pages are ordered by how many providers found one, then by that
+  best rank. It is present in every view, so an agent may always read it
+  first. `"view":"merged"` drops the per-provider candidate list and
+  keeps everything else, which is what makes those positions worth
+  carrying: without them nothing maps a page back into the stored
+  result. A citation whose URL names neither a host nor a path is not a
+  page and is dropped.
+
+- **The skill teaches what is now true.** Fast is the default and
+  answers from one provider; balanced is for when the user needs to see
+  several sources. Each option is named with one example, and `recency`
+  and `domain_filter` are stated as preferences the router passes to its
+  providers rather than restrictions it enforces: a page from another
+  date or another host coming back is not a failure to report, while
+  `max_results` is a cap and is applied. `merged` is what to read first,
+  and `"view":"merged"` is described as dropping the providers' own
+  answer texts — ask for it when the pages are what matters. Cost is
+  mentioned only if the user asks. The skill's frontmatter description
+  is now encoded as a YAML scalar rather than quoted by the template
+  around it, so a description carrying the examples' own quotes and
+  colons is still valid YAML for every consumer that parses it.
+
+- **The hint for a host without a skill directory is the skill's own
+  block.** opencode's `AGENTS.md` note, and the line any unknown agent
+  is given, now carry the same fenced search block the installed skills
+  teach, rendered for the shell that host runs — the quoted heredoc on
+  POSIX, the here-string with the encoding line on Windows. Before, they
+  carried a bare command with the JSON request on the line below it,
+  which nothing carried to stdin: a participant who pasted the two lines
+  got no search at all.
+
+- **Documented.** Known limits: a Claude Code session using its
+  PowerShell tool gets no trace and a skill command it cannot run, and
+  text the model writes in the same message as a search never reaches
+  the trace — both are host limits with no workaround in this client. A
+  warning for Cursor on Windows with a PowerShell terminal profile: a
+  query containing non-ASCII characters can reach the router corrupted,
+  so a search can quietly answer a different question; use a Git Bash
+  terminal profile or keep queries ASCII while the cause is being
+  measured. And `docs/RELEASING.md` no longer says to delete a tag that
+  failed preflight: the tag rulesets refuse the deletion for everyone,
+  an administrator included, so the failed version number is burned and
+  the next patch version is tagged instead.
+
+- **Deferred.** Cursor on Windows under a PowerShell terminal profile,
+  where the query and the stored assistant text both reach the router
+  double-encoded, the cause still under measurement: #117, #113.
+  Cursor's exported environment not reaching the shell its agent runs,
+  so a search carries no session — confirmed for the command-line agent
+  on macOS, the editor half still to be measured: #118. Two Cursor
+  conversations on one workspace sharing one lineage file and
+  relabelling each other's searches: #109. The Cursor CLI launched from
+  Git Bash on Windows blocking every search on its own hook wrapper:
+  #101.
+
+- **Stated exceptions.** This release's check ran on macOS only. Its two
+  Windows-only rows — the Cursor editor hook log, and a live Hermes run
+  — run with the Windows upgrade acceptance after the tag; until then
+  CI's own Windows runners, the Hermes differential test against PyYAML,
+  and the captured Cursor payloads stand for them. Pi and Hermes have
+  been run live on Windows; on macOS and Linux they still rest on
+  reading each host's own source, not a live run. The upgrade acceptance
+  from 0.2.11 into this release runs after this tag, so this entry does
+  not claim it — and it cannot prove the re-render above either. The
+  re-render runs inside an upgrade, and the first upgrade carried out by
+  a binary that has it is the one *from* 0.2.12.
+
 ## v0.2.11 — 2026-09-18
 
 0.2.11 carries the rest of the fixes from 0.2.9's field validation. Two of
