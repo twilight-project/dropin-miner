@@ -16,10 +16,12 @@ package main
 //	    Claude Code lifecycle. Maintains the context-window generation the
 //	    lineage hook reads. session-start also starts a flush.
 //	hook [-config file] cursor <event>
-//	    Cursor hooks. Cursor cannot rewrite a command, so every event
-//	    updates the workspace's lineage file and `search` reads it:
-//	    sessionStart (seed, flush, export TOKENDROP_LINEAGE to the session),
-//	    beforeShellExecution (allow our command; stamp turn/call),
+//	    Cursor hooks. Every event updates the session's lineage file and
+//	    `search` reads it:
+//	    sessionStart (seed, flush, export the identity to the session's
+//	    later hooks), preToolUse (put that identity on our exact rendered
+//	    search, #118), beforeShellExecution (allow our command; stamp
+//	    turn/call),
 //	    afterAgentThought / afterAgentResponse (the text before a search),
 //	    preCompact (bump the window), stop (flush).
 //	hook [-config file] flush
@@ -48,7 +50,10 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const (
@@ -182,7 +187,7 @@ func hookMain(ops hookOps, args []string, stdin io.Reader, stdout, stderr io.Wri
 		}
 	case "cursor":
 		if len(args) > 1 {
-			hookCursor(ops, hc, args[1], payload, stdout)
+			hookCursor(ops, hc, args[1], payload, stdout, stderr)
 		}
 	case "hermes":
 		if len(args) > 1 {
@@ -699,7 +704,7 @@ type cursorPayload struct {
 // conversation updates the workspace's lineage file; the two events Cursor
 // waits on an answer for (sessionStart, beforeShellExecution) get exactly
 // the answer that lets the session proceed.
-func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdout io.Writer) {
+func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdout, stderr io.Writer) {
 	var p cursorPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		p = cursorPayload{}
@@ -757,7 +762,7 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		if err != nil {
 			return // nothing established: allow nothing, stamp nothing
 		}
-		recognized := recognizeRenderedForm(p.Command, ops.executable, hc.cfgPath, shells)
+		recognized := recognizeCursorCommand(ops, hc, p.Command, shells)
 		if recognized == nil {
 			return
 		}
@@ -771,6 +776,16 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 			})
 		}
 		fmt.Fprintln(stdout, `{"permission":"allow"}`)
+	case "preToolUse":
+		shells, err := declaredShells(cursorTarget{}, runtime.GOOS, channelTool)
+		if err != nil {
+			return
+		}
+		runners, err := declaredShells(cursorTarget{}, runtime.GOOS, channelHook)
+		if err != nil {
+			return
+		}
+		cursorPreToolUse(ops, hc, payload, shells, runners, stdout, stderr)
 	case "afterAgentThought":
 		if p.Text == "" {
 			return
@@ -789,4 +804,280 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 	case "stop", "sessionEnd":
 		flush()
 	}
+}
+
+// ── Cursor's identity, carried on the command (#118) ────────────────────
+//
+// A `sessionStart` hook's `env` does not reach the shell Cursor's agent runs,
+// and Cursor never said it would: its documentation promises that
+// "session-scoped environment variables from sessionStart hooks are passed to
+// all subsequent hook executions within that session" — later HOOKS, not the
+// agent's shell and not the terminal. Measured on macOS and Windows, both
+// terminal profiles: every Cursor search reached the router as `cli`.
+//
+// So the variables sessionStart exports arrive here, in the preToolUse hook,
+// and this hook has a documented way to change the command the agent is about
+// to run (`updated_input`). For the one command that is ours — byte for byte
+// the search this installation's skill renders, recognized exactly as
+// beforeShellExecution recognizes it for its allow — the three assignments
+// go in front of it in the syntax of the shell it was rendered for, and
+// searchTrace finds them set. Nothing else is touched, and this hook never
+// denies: a command it does not rewrite gets no answer at all.
+//
+// Provenance (invariant 16, H-R4): only a prefix this adapter writes, with
+// the values this session's own sessionStart exported, may say `cursor`. The
+// harness must be exactly that, the session a hashed id, and the lineage path
+// a lineage file in this installation's sessions directory; anything else in
+// the environment is not what our sessionStart wrote, and is not carried.
+
+// cursorIdentity is what a Cursor session's sessionStart exported.
+type cursorIdentity struct {
+	lineage string
+	session string
+}
+
+// hashedIDRe is traceHash's shape: 32 lowercase hex digits.
+var hashedIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// cursorIdentityFromEnv reads the identity from the hook's own environment,
+// and only when it is exactly the shape sessionStart exports.
+func cursorIdentityFromEnv(getenv func(string) string, sessionsDir string) (cursorIdentity, bool) {
+	if getenv("TOKENDROP_HARNESS") != "cursor" {
+		return cursorIdentity{}, false
+	}
+	id := cursorIdentity{lineage: getenv(lineageEnv), session: getenv(sessionEnv)}
+	if !hashedIDRe.MatchString(id.session) || !isLineageFileIn(sessionsDir, id.lineage) {
+		return cursorIdentity{}, false
+	}
+	return id, true
+}
+
+// isLineageFileIn reports whether p names a lineage file directly inside dir.
+func isLineageFileIn(dir, p string) bool {
+	return dir != "" && p != "" && samePath(filepath.Dir(p), dir) && lineageNameRe.MatchString(filepath.Base(p))
+}
+
+// quotableFor reports whether value can be carried inside the single-quoted
+// literal sh's quoting writes, meaning exactly itself. A control character is
+// refused in both: a line break inside the prefix would put the rest of it on
+// a line of its own, and none of this client's values ever holds one.
+// PowerShell also reads the typographic quotes U+2018–U+201B as single
+// quotes, which powerShellQuoteArg does not double, so one of those would end
+// the literal early.
+func quotableFor(sh shellKind, value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		if sh == shellPowerShell && r >= '‘' && r <= '‛' {
+			return false
+		}
+	}
+	return true
+}
+
+// cursorIdentityPrefix renders the three assignments for sh, each value quoted
+// with the quoting the renderer owns. ok is false when a value cannot be
+// quoted for sh, and then nothing is rendered: never a partial prefix.
+func cursorIdentityPrefix(sh shellKind, id cursorIdentity) (string, bool) {
+	var b strings.Builder
+	for _, kv := range [][2]string{{"TOKENDROP_HARNESS", "cursor"}, {lineageEnv, id.lineage}, {sessionEnv, id.session}} {
+		if !quotableFor(sh, kv[1]) {
+			return "", false
+		}
+		switch sh {
+		case shellPOSIX:
+			// NAME='v' words in front of one command: POSIX scopes them to
+			// that command.
+			b.WriteString(kv[0] + "=" + posixQuoteArg(kv[1]) + " ")
+		case shellPowerShell:
+			b.WriteString("$env:" + kv[0] + "=" + powerShellQuoteArg(kv[1]) + "; ")
+		default:
+			return "", false
+		}
+	}
+	return b.String(), true
+}
+
+// withCursorIdentity puts prefix on a command rendered for sh. In PowerShell
+// the skill's $OutputEncoding line stays first — it is what makes the
+// here-string reach the binary as UTF-8 — so the assignments go after it.
+func withCursorIdentity(sh shellKind, prefix, command string) (string, bool) {
+	switch sh {
+	case shellPOSIX:
+		return prefix + command, true
+	case shellPowerShell:
+		head := psOutputEncodingLine + "\n"
+		if !strings.HasPrefix(command, head) {
+			return "", false
+		}
+		return head + prefix + command[len(head):], true
+	}
+	return "", false
+}
+
+// withoutCursorIdentity is withCursorIdentity's exact inverse: the command
+// with this prefix, and only this prefix, removed from where
+// withCursorIdentity puts it. ok is false when it is not there.
+func withoutCursorIdentity(sh shellKind, prefix, command string) (string, bool) {
+	switch sh {
+	case shellPOSIX:
+		return strings.CutPrefix(command, prefix)
+	case shellPowerShell:
+		head := psOutputEncodingLine + "\n"
+		rest, ok := strings.CutPrefix(command, head+prefix)
+		if !ok {
+			return "", false
+		}
+		return head + rest, true
+	}
+	return "", false
+}
+
+// recognizeCursorCommand is beforeShellExecution's recognizer. A command is
+// ours when it is exactly one of the rendered forms, as before, or exactly
+// the rendered SEARCH with this session's identity prefix in front of it —
+// the prefix rebuilt here from this hook's own environment, the same values
+// preToolUse wrote, and compared byte for byte. Any other prefix, one
+// carrying other values, or this prefix on anything but the search, is not a
+// command this client wrote (#91's discipline, for a prefix we write
+// ourselves), and Cursor asks about it as about any other.
+func recognizeCursorCommand(ops hookOps, hc hookContext, command string, shells []shellKind) *recognizedForm {
+	if f := recognizeRenderedForm(command, ops.executable, hc.cfgPath, shells); f != nil {
+		return f
+	}
+	id, ok := cursorIdentityFromEnv(ops.getenv, hc.sessionsDir)
+	if !ok {
+		return nil
+	}
+	for _, sh := range shells {
+		prefix, ok := cursorIdentityPrefix(sh, id)
+		if !ok {
+			continue
+		}
+		rest, ok := withoutCursorIdentity(sh, prefix, command)
+		if !ok {
+			continue
+		}
+		if f := recognizeRenderedForm(rest, ops.executable, hc.cfgPath, []shellKind{sh}); isSearchForm(f) {
+			return f
+		}
+	}
+	return nil
+}
+
+func isSearchForm(f *recognizedForm) bool {
+	return f != nil && len(f.path) == 1 && f.path[0] == "search"
+}
+
+// hookInputIntact reports whether the runners Cursor starts its hooks with
+// hand this hook the payload's bytes unchanged. POSIX alone does. On Windows
+// Cursor wraps a hook in PowerShell that reads the payload file in the ANSI
+// code page and re-encodes it, so every non-ASCII character arrives changed
+// (#113) — in whatever code page that machine has, so the change cannot be
+// undone with certainty.
+func hookInputIntact(runners []shellKind) bool {
+	if len(runners) == 0 {
+		return false
+	}
+	for _, sh := range runners {
+		if sh != shellPOSIX {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// cursorPreToolUse answers Cursor's preToolUse. shells are the tool shells
+// Cursor runs on this OS and runners its hook runners; both are parameters so
+// that every OS's forms are exercised on every CI runner.
+func cursorPreToolUse(ops hookOps, hc hookContext, payload []byte, shells, runners []shellKind, stdout, stderr io.Writer) {
+	var p struct {
+		CursorVersion *string                    `json:"cursor_version"`
+		ToolInput     map[string]json.RawMessage `json:"tool_input"`
+	}
+	if json.Unmarshal(payload, &p) != nil || p.CursorVersion == nil || *p.CursorVersion == "" || p.ToolInput == nil {
+		return
+	}
+	var command string
+	if json.Unmarshal(p.ToolInput["command"], &command) != nil || command == "" {
+		return
+	}
+	id, ok := cursorIdentityFromEnv(ops.getenv, hc.sessionsDir)
+	if !ok {
+		return
+	}
+	for _, sh := range shells {
+		if !isSearchForm(recognizeRenderedForm(command, ops.executable, hc.cfgPath, []shellKind{sh})) {
+			continue
+		}
+		// The command goes back to Cursor as the command it will run. If the
+		// bytes this hook received are not the bytes the agent wrote, echoing
+		// them would change the search itself — the query is in the command —
+		// and a lost label is the only acceptable cost of that doubt.
+		if !isASCII(command) && !hookInputIntact(runners) {
+			fmt.Fprintln(stderr, "dropin-miner hook: search not labeled: its command carries non-ASCII text, and Cursor's hook runner on this OS re-encodes it (#113)")
+			return
+		}
+		prefix, ok := cursorIdentityPrefix(sh, id)
+		if !ok {
+			fmt.Fprintf(stderr, "dropin-miner hook: search not labeled: the session's identity cannot be quoted for %s\n", sh)
+			return
+		}
+		rewritten, ok := withCursorIdentity(sh, prefix, command)
+		if !ok {
+			return
+		}
+		// Cursor uses updated_input INSTEAD of the tool's input, so every
+		// other field it sent (the working directory, the timeout) goes back
+		// as it came and only the command changes.
+		encoded, err := asciiJSON(rewritten)
+		if err != nil {
+			return
+		}
+		p.ToolInput["command"] = encoded
+		out, err := asciiJSON(map[string]any{"permission": "allow", "updated_input": p.ToolInput})
+		if err != nil {
+			return
+		}
+		fmt.Fprintln(stdout, string(out))
+		return
+	}
+}
+
+// asciiJSON encodes v with every non-ASCII character escaped, so the answer
+// reaches Cursor as the same text whatever code page a wrapper between this
+// process and Cursor reads it in.
+func asciiJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	for _, r := range strings.TrimSuffix(buf.String(), "\n") {
+		switch {
+		case r < 0x80:
+			out.WriteRune(r)
+		case r > 0xffff:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&out, `\u%04x\u%04x`, hi, lo)
+		default:
+			fmt.Fprintf(&out, `\u%04x`, r)
+		}
+	}
+	return out.Bytes(), nil
 }

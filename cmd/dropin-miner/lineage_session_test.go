@@ -15,6 +15,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -161,7 +162,7 @@ func TestTheSessionTheHookExportsIsTheOneTheWalkRequires(t *testing.T) {
 	start := func(conversation, workspace string) map[string]string {
 		t.Helper()
 		var out bytes.Buffer
-		hookCursor(p.ops.hook, hc, "sessionStart", mustJSON(t, map[string]any{"conversation_id": conversation, "workspace_roots": []string{workspace}}), &out)
+		hookCursor(p.ops.hook, hc, "sessionStart", mustJSON(t, map[string]any{"conversation_id": conversation, "workspace_roots": []string{workspace}}), &out, io.Discard)
 		var answer struct {
 			Env map[string]string `json:"env"`
 		}
@@ -205,7 +206,7 @@ func TestSessionStartExportsTheSessionWithoutAWorkspaceAndNotWithoutAConversatio
 	hc := hookContext{sessionsDir: adoptSessions}
 	answer := func(payload map[string]any) map[string]string {
 		var out bytes.Buffer
-		hookCursor(ops, hc, "sessionStart", mustJSON(t, payload), &out)
+		hookCursor(ops, hc, "sessionStart", mustJSON(t, payload), &out, io.Discard)
 		var a struct {
 			Env map[string]string `json:"env"`
 		}

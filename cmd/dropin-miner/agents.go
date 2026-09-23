@@ -1043,7 +1043,7 @@ func ruleIsOurs(e any, ref installationRef) bool {
 }
 
 func cursorHooks(entry binEntry, shells []shellKind) (hooksSpec, string, error) {
-	events := []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
+	events := []string{"sessionStart", "preToolUse", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
 	entries := map[string]map[string]any{}
 	note := ""
 	for _, ev := range events {
@@ -1054,6 +1054,10 @@ func cursorHooks(entry binEntry, shells []shellKind) (hooksSpec, string, error) 
 		note = runnerNote
 		entries[ev] = map[string]any{"command": cmd}
 	}
+	// preToolUse fires before every tool — Read, Grep, Write — and only a
+	// Shell call can be our search (#118), so the matcher keeps it from
+	// starting a process in front of every other one.
+	entries["preToolUse"]["matcher"] = "Shell"
 	return hooksSpec{root: "hooks", version: 1, entries: entries, order: events}, note, nil
 }
 

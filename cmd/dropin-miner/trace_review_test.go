@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -145,7 +146,7 @@ func TestCursorDiskWriteIsRedactedWithoutEverTouchingCapTrace(t *testing.T) {
 	payload := mustJSON(t, map[string]any{
 		"conversation_id": "conv-1", "workspace_roots": []string{workspace}, "text": secretText,
 	})
-	hookCursor(ops, hc, "afterAgentResponse", payload, new(strings.Builder))
+	hookCursor(ops, hc, "afterAgentResponse", payload, new(strings.Builder), io.Discard)
 
 	raw, ok := fs.files[path]
 	if !ok {
