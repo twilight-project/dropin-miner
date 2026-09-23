@@ -708,7 +708,9 @@ func searchTrace(ops searchOps, m config.Miner, getenv func(string) string) (env
 	// the same reason, and ends at its own per-shell identity under the
 	// declared harness. With no session exported the declared file is
 	// believed as before: every shell started before the variable existed.
-	// A file per conversation is the proper fix and is #109's, not this.
+	// Cursor now keys the file by conversation as well (#109), so a file of
+	// its own is what a Cursor search declares; this guard stays for every
+	// file a session did not name for itself.
 	session := getenv(sessionEnv)
 	if p := getenv(lineageEnv); p != "" {
 		if l, ok := loadLineage(ops.hook, p); ok && now.Sub(l.UpdatedAt) <= lineageMaxAge && (session == "" || l.SessionID == session) {

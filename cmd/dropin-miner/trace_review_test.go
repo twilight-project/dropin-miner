@@ -140,7 +140,7 @@ func TestCursorDiskWriteIsRedactedWithoutEverTouchingCapTrace(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{sessionsDir: "/sessions"}
 	workspace := "/w/proj"
-	path := lineagePath(hc.sessionsDir, workspace)
+	path := conversationLineagePath(hc.sessionsDir, workspace, "conv-1")
 
 	secretText := "here's what I found: " + traceReviewKey + " and " + traceReviewEmail
 	payload := mustJSON(t, map[string]any{

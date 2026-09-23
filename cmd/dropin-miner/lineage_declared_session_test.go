@@ -2,10 +2,13 @@ package main
 
 // The declared lineage file is adopted only when it holds this session (#109).
 //
-// Cursor keys the lineage file by workspace alone, and every hook event writes
-// the current conversation's id into it. Two conversations open on one
-// workspace share one file, and both shells name it in TOKENDROP_LINEAGE. No
-// nesting and no lost variable: two chat tabs on a project.
+// Cursor keyed the lineage file by workspace alone until #109's fix, and every
+// hook event wrote the current conversation's id into it. Two conversations
+// open on one workspace shared one file, and both shells named it in
+// TOKENDROP_LINEAGE. No nesting and no lost variable: two chat tabs on a
+// project. Cursor's files are now per conversation (cursor_conversation_test.go);
+// this guard stays for any file a session did not name for itself — the
+// workspace file a conversation started on 0.2.12 still declares, above all.
 //
 // Asserted on the bytes the router receives. The search runs from inside the
 // workspace, as it really does, so the fall-through meets the same file again

@@ -957,6 +957,13 @@ func lineageFileExists(in *execInstallation) bool {
 	return err == nil
 }
 
+// cursorLineageFileExists: Cursor keys its file by conversation as well
+// (#109), and every Cursor case here speaks for "exec-conversation".
+func cursorLineageFileExists(in *execInstallation) bool {
+	_, err := os.Stat(conversationLineagePath(in.sessions, in.root, "exec-conversation"))
+	return err == nil
+}
+
 // The hook events that spawn a detached flush (Claude Code's SessionStart
 // and Stop, Cursor's sessionStart and stop) are not run here: a flush that
 // outlives its test holds files in the test's temporary directory. H3's hook
@@ -1008,7 +1015,7 @@ var v029HookCases = map[string][]hookCase{
 					"workspace_roots": []string{in.root}, "command": search}
 			},
 			proof: func(t *testing.T, in *execInstallation, out execOutcome) bool {
-				return out.exit == 0 && strings.TrimSpace(out.stdout) == `{"permission":"allow"}` && lineageFileExists(in)
+				return out.exit == 0 && strings.TrimSpace(out.stdout) == `{"permission":"allow"}` && cursorLineageFileExists(in)
 			},
 		},
 		{
@@ -1017,7 +1024,7 @@ var v029HookCases = map[string][]hookCase{
 				return map[string]any{"conversation_id": "exec-conversation", "workspace_roots": []string{in.root}, "text": "thinking before a search"}
 			},
 			proof: func(t *testing.T, in *execInstallation, out execOutcome) bool {
-				return out.exit == 0 && lineageFileExists(in)
+				return out.exit == 0 && cursorLineageFileExists(in)
 			},
 		},
 		{
@@ -1026,7 +1033,7 @@ var v029HookCases = map[string][]hookCase{
 				return map[string]any{"conversation_id": "exec-conversation", "workspace_roots": []string{in.root}, "text": "a sentence before a search"}
 			},
 			proof: func(t *testing.T, in *execInstallation, out execOutcome) bool {
-				return out.exit == 0 && lineageFileExists(in)
+				return out.exit == 0 && cursorLineageFileExists(in)
 			},
 		},
 		{
@@ -1035,7 +1042,7 @@ var v029HookCases = map[string][]hookCase{
 				return map[string]any{"conversation_id": "exec-conversation", "workspace_roots": []string{in.root}}
 			},
 			proof: func(t *testing.T, in *execInstallation, out execOutcome) bool {
-				return out.exit == 0 && lineageFileExists(in)
+				return out.exit == 0 && cursorLineageFileExists(in)
 			},
 		},
 	},
@@ -1136,7 +1143,7 @@ func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 				if out.exit != 0 || strings.TrimSpace(out.stdout) != `{"permission":"allow"}` {
 					t.Fatalf("the %s search form the skill teaches was not auto-allowed:\n%s", toolShell, out)
 				}
-				if !lineageFileExists(in) {
+				if !cursorLineageFileExists(in) {
 					t.Fatal("no lineage was stamped for the search Cursor was about to run")
 				}
 			})

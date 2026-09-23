@@ -9,7 +9,8 @@ package main
 //             promoted into the spool by the next `flush` under whatever
 //             (slot, epoch) that flush finds joined. Metadata only — no
 //             query, no result, nothing the router did not already record.
-//   sidecar   one JSON file per workspace holding the lineage the hooks
+//   sidecar   one JSON file per workspace (per conversation, for Cursor)
+//             holding the lineage the hooks
 //             learned (hashed session/turn/call ids, the window generation,
 //             the assistant text just before the search). `search` reads
 //             it when no bridge arrived in its environment, so a host that
@@ -210,6 +211,20 @@ type lineageFile struct {
 // project paths.
 func lineagePath(dir, workspace string) string {
 	return filepath.Join(dir, traceHash("workspace|"+filepath.Clean(workspace))+".json")
+}
+
+// conversationLineagePath keys a Cursor conversation's sidecar on its
+// workspace AND its conversation (#109). Keyed by workspace alone, two
+// conversations open on one project — two chat tabs, a chat beside a
+// background agent — shared one file, took turns overwriting its session and
+// advanced one counter between them. Cursor's sessionStart exports this path
+// as the session's TOKENDROP_LINEAGE, and since #118 a Cursor search carries
+// that variable on its own command, so the file is always found by its path
+// and never by the walk: lineageForCwd keys by directory alone and is left as
+// it is for the hosts that need it. The name has lineagePath's shape, so the
+// sweep and the age rule treat it as every other lineage file.
+func conversationLineagePath(dir, workspace, conversation string) string {
+	return filepath.Join(dir, traceHash("workspace|"+filepath.Clean(workspace)+"|conversation|"+conversation)+".json")
 }
 
 func loadLineage(ops hookOps, path string) (*lineageFile, bool) {

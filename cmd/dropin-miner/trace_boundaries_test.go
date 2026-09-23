@@ -83,7 +83,7 @@ func TestTraceRedactionBoundaries(t *testing.T) {
 			t.Run("cursor", func(t *testing.T) {
 				_, ops := newFakeHookOps(nil)
 				runHook(t, ops, hookContext{sessionsDir: "/sessions"}, "cursor afterAgentResponse", map[string]any{"conversation_id": "synthetic", "cwd": "/workspace", "text": text})
-				l, ok := loadLineage(ops, lineagePath("/sessions", "/workspace"))
+				l, ok := loadLineage(ops, conversationLineagePath("/sessions", "/workspace", "synthetic"))
 				if !ok || len(l.History) != 1 {
 					t.Fatal("missing history")
 				}

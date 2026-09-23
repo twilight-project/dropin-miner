@@ -499,7 +499,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 		}
 		return m
 	}
-	path := lineagePath("/sessions", "/w/proj")
+	path := conversationLineagePath("/sessions", "/w/proj", "conv-1")
 
 	out, _ := runHook(t, ops, hc, "cursor sessionStart", base)
 	var start struct {

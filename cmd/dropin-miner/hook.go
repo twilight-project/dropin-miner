@@ -701,9 +701,9 @@ type cursorPayload struct {
 }
 
 // hookCursor handles one Cursor event. Every event that carries a
-// conversation updates the workspace's lineage file; the two events Cursor
-// waits on an answer for (sessionStart, beforeShellExecution) get exactly
-// the answer that lets the session proceed.
+// conversation updates that conversation's lineage file; the events Cursor
+// waits on an answer for get exactly the answer that lets the session
+// proceed.
 func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdout, stderr io.Writer) {
 	var p cursorPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -713,9 +713,21 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 	if len(p.WorkspaceRoots) > 0 && p.WorkspaceRoots[0] != "" {
 		workspace = p.WorkspaceRoots[0]
 	}
+	// One file per conversation (#109). sessionStart names it and exports it;
+	// every later event writes to the file the session DECLARED, when its
+	// environment holds one for this very conversation, and computes the same
+	// name otherwise. Declared first is what serves a conversation whose
+	// sessionStart ran on 0.2.12: it exported the workspace-keyed file, its
+	// searches carry that path, and its later events must keep writing there
+	// or its search would read a file nobody stamps.
 	path := ""
-	if hc.sessionsDir != "" && workspace != "" {
-		path = lineagePath(hc.sessionsDir, workspace)
+	if hc.sessionsDir != "" && workspace != "" && p.ConversationID != "" {
+		path = conversationLineagePath(hc.sessionsDir, workspace, p.ConversationID)
+	}
+	if event != "sessionStart" && p.ConversationID != "" && ops.getenv(sessionEnv) == traceHash(p.ConversationID) {
+		if declared := ops.getenv(lineageEnv); isLineageFileIn(hc.sessionsDir, declared) {
+			path = declared
+		}
 	}
 	now := ops.now()
 	update := func(apply func(*lineageFile)) {
@@ -747,9 +759,8 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 			env[lineageEnv] = path
 		}
 		if p.ConversationID != "" {
-			// Exported even when no path could be computed: that is one of
-			// the two ways a search ends up on the walk, and the walk is
-			// where this is read.
+			// Exported even when no path could be computed: the file a
+			// search declares is adopted only when it holds this session.
 			env[sessionEnv] = traceHash(p.ConversationID)
 		}
 		out, _ := json.Marshal(map[string]any{"env": env})
