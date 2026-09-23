@@ -472,9 +472,9 @@ hand submits whatever is pending.
 
 ## Known limits
 
-Three things worth knowing before you go looking for a setting that is not
-there. The first two are limits of Claude Code itself; DropinMiner cannot work
-around either.
+Four things worth knowing before you go looking for a setting that is not
+there. The first two are limits of Claude Code itself and the last is one of
+Cursor's command-line agent; DropinMiner cannot work around any of the three.
 
 **In Claude Code, the sentence right before a search does not reach the
 trace.** If the model writes something and searches in the same message — the
@@ -491,12 +491,22 @@ look installed and never match, which is worse — so none is written (#77). If
 you have Git for Windows, the searches Claude Code sends through its Bash tool
 are approved automatically; which tool it picks is up to the model.
 
-**In the Cursor editor on Windows with a PowerShell terminal profile, keep
-your queries to plain ASCII.** A query with accented or non-Latin characters
-can arrive at the router corrupted, which means a search can quietly answer a
-different question instead of failing. A Git Bash terminal profile does not
-have the problem. We are still measuring the cause (#117); until then, set
-Cursor's terminal profile to Git Bash, or keep the query ASCII.
+**In the Cursor editor on Windows with a PowerShell terminal profile, a query
+with accented or non-Latin characters once reached the router corrupted.** It
+was seen once, on Cursor 3.20 on 2026-09-18: the router stored the query
+double-encoded, so the search quietly answered a different question instead of
+failing. On Cursor 3.21 on 2026-09-21, with the current skill, the same query
+reached the router intact under both terminal profiles. A Git Bash terminal
+profile was never affected (#117). If you want to rule it out, set Cursor's
+terminal profile to Git Bash, or keep the query ASCII.
+
+**On Windows, Cursor's command-line agent started from Git Bash cannot run a
+search through the skill.** Cursor wraps each hook command in a PowerShell
+script of its own and then runs that script with bash, which cannot parse it,
+so every hook is rejected and every search with it. The Cursor editor is
+unaffected, and so is the command-line agent started from PowerShell: start it
+from PowerShell instead. The fix is Cursor's, and it has been reported to them
+(#101; Cursor forum thread 172789).
 
 ## When `doctor` says `recording UNKNOWN`
 
