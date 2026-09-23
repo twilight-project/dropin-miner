@@ -119,13 +119,17 @@ test that drives it. `tools/releasecheck` is release tooling and not part of the
 `.goreleaser.yaml` builds `./cmd/dropin-miner` and nothing else, so none of it ships in
 the binary, and nothing in `cmd/` or `pkg/` imports it.
 
-Every `uses:` in `release.yml` is pinned to a full commit SHA, with the release it
-corresponds to in a trailing comment. A tag like `@v4` is a moving pointer the action's
-owner can repoint at any time, and this workflow holds a publishing credential —
-"whatever `@v4` means today" is not an acceptable answer for what runs beside it. The
+Every `uses:` in both workflows, `release.yml` and `ci.yml`, is pinned to a full commit
+SHA, with the release it corresponds to in a trailing comment. A tag like `@v4` is a
+moving pointer the action's owner can repoint at any time, and `release.yml` holds a
+publishing credential — "whatever `@v4` means today" is not an acceptable answer for
+what runs beside it. `ci.yml` holds no credential and publishes nothing, and is pinned
+anyway, because a CI that changes under you without a diff is the other thing pins
+prevent: floating tags would have picked up the node24 releases of `actions/checkout`
+and `actions/setup-go` on their own and hidden the deprecation that made them due. The
 cost is that pins do not update themselves: bumping them is a deliberate PR, and the
-comment is there so a reader can see at a glance which release each SHA is. `ci.yml` is
-deliberately left on floating tags; it holds no credential and publishes nothing.
+comment is there so a reader can see at a glance which release each SHA is. The CI
+hygiene PR that moved both workflows to node24 was the first such bump.
 
 ### 1. `preflight` — may this tag become a release?
 
