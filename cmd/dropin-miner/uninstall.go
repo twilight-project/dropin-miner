@@ -1087,7 +1087,16 @@ func (r *uninstallRun) purgeSet() (inside, outside []string) {
 			}
 		}
 	}
-	flushLock := r.predictedFlushLockPath()
+	// The prediction is -purge-state's alone (#134). Only its exclusion
+	// takes the flush lock, so only there is an absent one about to exist
+	// and about to be removed; a default run holds the gate and setup.lock
+	// and nothing else, and prints this set as what REMAINS, where a file
+	// that is not there must not be named — the leftover-locks summary in
+	// the same output already applies that test.
+	flushLock := ""
+	if r.purge {
+		flushLock = r.predictedFlushLockPath()
+	}
 	for _, p := range append(first, last...) {
 		if lexists(p) || (p == flushLock && flushLock != "" && lockableDir(flushLock)) {
 			inside = append(inside, p)
@@ -1568,18 +1577,36 @@ func (r *uninstallRun) sayLeftoverLocks() {
 	}
 }
 
-// leftoverLocks is the lock files that still exist for this installation, in
-// lock order: the gate, setup.lock, connect.lock, flush.lock, and the
-// binary's update lock. A path that is gone -- uninstall -binary takes the
-// update lock with the binary -- is left out rather than named.
+// refreshTokenLockFile is the refresh-token lock pkg/auth takes in the state
+// directory (refreshLockFile, pkg/auth/refreshlock.go), named here because
+// that package does not export it; TestTheRefreshLockNameIsPkgAuths holds
+// the two spellings together.
+const refreshTokenLockFile = "refresh.token.lock"
+
+// leftoverLocks is the lock files that still exist for this installation:
+// first in lock order the gate, setup.lock, connect.lock, flush.lock and the
+// binary's update lock, then the two that belong to other subsystems and to
+// no lock order -- the refresh-token lock beside connect.lock in the state
+// directory, and the wallet's creation lock (#136). All seven are the same
+// kind of file: empty, held only while their command runs, made again by the
+// next one. A path that is gone -- uninstall -binary takes the update lock
+// with the binary -- is left out rather than named.
 func (r *uninstallRun) leftoverLocks() []string {
 	candidates := []string{lifecycleGatePath(r.home), filepath.Join(r.home, setupLockFile)}
+	stateDir := ""
 	if connectLock, flushLock, err := operationLockPaths(r.home, r.d.getenv); err == nil {
 		candidates = append(candidates, connectLock, flushLock)
+		if connectLock != "" {
+			stateDir = filepath.Dir(connectLock)
+		}
 	}
 	if owned := r.ownedBinary(); owned != "" {
 		candidates = append(candidates, owned+updateLockSuffix)
 	}
+	if stateDir != "" {
+		candidates = append(candidates, filepath.Join(stateDir, refreshTokenLockFile))
+	}
+	candidates = append(candidates, filepath.Join(r.home, "wallet", walletLockFile))
 	var out []string
 	seen := map[string]bool{}
 	for _, p := range candidates {
