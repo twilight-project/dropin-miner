@@ -13,6 +13,9 @@ tokendrop-*-spec.md
 docs/architecture/adr/
 docs/private/
 *.private.md
+# email_sweep_test.go's optional raw denylist names in plain text what the test
+# otherwise carries only as hashes; it lives on the maintainer's machine alone.
+/.email-sweep-denylist
 
 # ─── Go ────────────────────────────────────────────────────────────────────────
 /dropin-miner
