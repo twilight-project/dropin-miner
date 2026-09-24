@@ -13,6 +13,106 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.13 — 2026-09-24
+
+0.2.13 closes what the 0.2.12 checks found. Cursor searches finally
+carry Cursor's identity, so they are attributed to the conversation that
+made them rather than arriving as a bare command-line search. Two Cursor
+conversations on one workspace no longer share a lineage file. Text that
+Cursor's Windows hook wrapper double-encodes is read back as it was. And
+the last two lock-list wordings from the 0.2.12 checks are fixed. It is
+smaller than 0.2.12 on purpose.
+
+Coming from 0.2.12: run `dropin-miner upgrade` on a native install, or
+`npm install -g dropin-miner@latest` on an npm install. This is the
+first upgrade carried out by a binary that renders again the host
+integrations it owns, so once it has succeeded your skills and hooks are
+already current and there is nothing to run by hand; the upgrade's own
+output lists what it refreshed. Your wallet, identity, credential,
+recorded searches and config are kept, and `upgrade -rollback` puts the
+previous version back with no network. Coming from earlier: the older
+entries below apply first — and an upgrade from 0.2.11 or earlier still
+needs `dropin-miner agents install` once after it, because that older
+binary carries out the upgrade and touches no host file.
+
+- **Cursor searches carry Cursor's identity.** Cursor applies the
+  environment a session-start hook exports to its later hooks, not to
+  the shell its agent runs commands in — measured on both platforms, and
+  what Cursor's documentation says — so every Cursor search used to
+  reach the router as a plain command-line search. Now a `preToolUse`
+  hook puts the conversation's identity in front of the exact search the
+  skill renders, and nothing else, in that shell's own syntax. The shell
+  hook allows exactly that form and nothing looser: another session's
+  values, an extra assignment, or the prefix on any other command is
+  left to Cursor to ask about. `agents install` writes this as the
+  seventh entry in Cursor's `hooks.json`.
+
+- **One lineage file per Cursor conversation.** The session-start hook
+  now keys the file by workspace and conversation, so two conversations
+  open on one workspace no longer take turns relabelling each other's
+  searches. A conversation begun on 0.2.12 keeps working: its hooks go
+  on writing the file its session declared, which is the one its
+  searches read.
+
+- **Text Cursor's Windows wrapper double-encoded is read back as it
+  was.** On Windows PowerShell 5.1, Cursor's hook wrapper reads the
+  payload in the ANSI code page and encodes it again, so non-ASCII text
+  reached our hooks doubled — `é` as `Ã©`, an em dash as `â€”`. The
+  assistant and reasoning text the hooks store is now repaired when it
+  has exactly that shape, cp1252's characters included, and each repair
+  is reported on stderr. The command is never repaired: it is handed
+  back to Cursor to run, and a guess there would change the search, so
+  under a PowerShell profile on Windows a search whose query is not
+  plain ASCII is left exactly as written and runs without Cursor's
+  label. Reported to Cursor.
+
+- **The skill says when a search did not run.** When `ok` is false, or
+  the command could not run at all — blocked, sandboxed, refused, or no
+  JSON came back — the agent tells the user the search did not run and
+  stops, never answering the question as if it had. This comes from a
+  Cursor 3.21 measurement in which a sandboxed first attempt failed and
+  the agent answered anyway.
+
+- **Uninstall's two lock lists agree with the disk.** The list of what
+  remains after a default uninstall names only files that exist; it used
+  to name `flush.lock` whenever its path could be predicted, while the
+  summary in the same output correctly left it out. The "safe to delete"
+  summary now names all seven lock files, the refresh-token lock and the
+  wallet's lock included.
+
+- **Documented.** Known limits gain Cursor's command-line agent launched
+  from Git Bash on Windows, which rejects every hook and so every search
+  through the skill, because Cursor runs its PowerShell hook wrapper with
+  bash: launch it from PowerShell instead; reported to Cursor. The note
+  on a corrupted non-ASCII query under a Cursor PowerShell profile now
+  says what was measured: seen once, on Cursor 3.20, and intact on 3.21
+  with the current skill. `docs/PARTICIPANT.md` describes Cursor's seven
+  hooks and the one exception above.
+
+- **Under the hood.** CI's actions moved to their node24 releases, still
+  pinned to commit SHAs, and the Go module cache restores again on every
+  runner. `docs/RELEASING.md` says both workflows are pinned, and why.
+
+- **Deferred.** The Cursor PowerShell-profile corruption, seen once and
+  not reproduced: #117. Cursor's command-line agent launched from Git
+  Bash on Windows, Cursor's to fix: #101. Cursor's sandbox prompt on a
+  session's first search, Cursor's to fix: #135. The goreleaser action's
+  node24 bump, which only a tag push runs and so is proved on a fork tag
+  first: no issue.
+
+- **Stated exceptions.** The Cursor identity on the command has not been
+  seen end to end from a Cursor editor: CI proves the rendering and the
+  recogniser, one Cursor command-line search on macOS proves the
+  router's label, and the Windows editor row runs when that team is
+  back. Whether Cursor reuses one PowerShell process across
+  conversations is unmeasured; if it does, a search that was not
+  rewritten in a later conversation could carry an earlier one's
+  identity, on Windows under a PowerShell profile. Pi and Hermes have
+  been run live on Windows; on macOS and Linux they still rest on
+  reading each host's own source, not a live run. The upgrade acceptance
+  from 0.2.12 into this release runs after this tag, so this entry does
+  not claim it — and it is the one that proves the re-render forward.
+
 ## v0.2.12 — 2026-09-19
 
 0.2.12 is the cleanup the 0.2.11 release check and upgrade acceptance
