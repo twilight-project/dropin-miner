@@ -23,7 +23,7 @@ import (
 
 func issue113Bytes(t *testing.T, name string, wantLen int) string {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/hook/" + name)
+	raw, err := os.ReadFile("testdata/hook/" + name) // #nosec G304 -- a fixture name this test file spells
 	if err != nil {
 		t.Fatal(err)
 	}

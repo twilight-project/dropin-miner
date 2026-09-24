@@ -862,7 +862,7 @@ func undoDoubleEncoding(s string) (string, bool) {
 	b := make([]byte, 0, len(s))
 	for _, r := range s {
 		if r <= 0xff {
-			b = append(b, byte(r))
+			b = append(b, byte(r)) // #nosec G115 -- r <= 0xff, checked on the line above
 			continue
 		}
 		c, ok := cp1252High[r]
