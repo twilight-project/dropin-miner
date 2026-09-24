@@ -1,8 +1,8 @@
 # Chain fixtures
 
-These seven files are **verbatim CometBFT JSON-RPC responses**, captured from the public
-Twilight devnet node `http://54.179.101.3:26657` (chain `twilight-devnet-2`) on 2026-08-30 and
-re-indented for review. Nothing in them was written by hand.
+These seven files are **verbatim CometBFT JSON-RPC responses**, captured from a public
+Twilight devnet node (chain `twilight-devnet-2`) on 2026-08-30 and re-indented for review.
+Nothing in them was written by hand.
 
 They are the one deliberate exception to `testdata/README.md`'s "no captured traffic" rule, and
 the exception is narrow: that rule protects **provider** traffic — prompts, completions, API
