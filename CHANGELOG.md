@@ -13,6 +13,65 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.3.0 — 2026-09-24
+
+0.3.0 is a declaration, not a change. The setup, uninstall and native
+upgrade lifecycle that 0.2.9 shipped for field validation has completed
+live acceptance, and this release establishes it as the supported 0.3
+line. The 0.2.9 soak ran on macOS and Windows against the published
+release, through the public installers and npm (#57). The native
+`upgrade` has since been exercised live, on real installations, into
+every release after it: on macOS into 0.2.10, 0.2.11, 0.2.12 and
+0.2.13, and on Windows into 0.2.10, 0.2.11 and 0.2.12, on a desktop
+with real-time antivirus protection on throughout; `upgrade -rollback`
+put the previous release back with the network off on the 0.2.11 and
+0.2.13 acceptances. `setup` and `uninstall` ran through the soak's
+install and removal rows and again in the 0.2.11 and 0.2.12 release
+checks. The upgrade's re-rendering of the host integrations it owns was
+seen live in both directions: in the rollback direction on the 0.2.12
+acceptance and in the forward direction on the 0.2.13 one. Pi and
+Hermes have been run live on Windows, in the 0.2.9 soak, and Hermes
+again in the 0.2.11 and 0.2.12 checks, which discharges the exception
+carried since v0.2.6. The binary carries no change over 0.2.13.
+
+Coming from 0.2.13: run `dropin-miner upgrade` on a native install, or
+`npm install -g dropin-miner@latest` on an npm install. The upgrade
+renders again the host integrations it owns, so once it has succeeded
+your skills and hooks are already current and there is nothing to run
+by hand. Your wallet, identity, credential, recorded searches and
+config are kept, and `upgrade -rollback` puts the previous version back
+with no network. Coming from earlier: the older entries below apply
+first.
+
+This release closes the 0.3.0 epic (#50): native `setup`, `uninstall`
+and `upgrade` behind one install registry, built across PRs A to D and
+validated across five releases. It closes the 0.2.9 soak (#57): its
+findings became the 0.2.10 through 0.2.13 fixes, and what remains open
+from the field is Cursor's, listed below.
+
+The 0.2 line is complete; the next release of the search client is
+announced separately.
+
+- **Stated exceptions.** The Cursor identity on the command has been
+  seen end to end at the router from Cursor's command-line agent on
+  macOS, on the 0.2.13 check and again on the 0.2.13 acceptance, but
+  not yet from the Cursor editor; that row, and the Windows half of the
+  0.2.13 upgrade acceptance, run when the Windows team is back. Whether
+  Cursor reuses one PowerShell process across conversations is
+  unmeasured; if it does, a search that was not rewritten in a later
+  conversation could carry an earlier one's identity, on Windows under
+  a PowerShell profile. Three Cursor issues are reported upstream and
+  are Cursor's to fix: its sandbox prompt on a session's first search
+  (#135), its command-line agent launched from Git Bash on Windows
+  (#101), and a PowerShell-profile query corruption seen once on 3.20
+  and not reproduced on 3.21 (#117). One finding of ours is open and
+  is not fixed in the 0.2 line: a rollback across a version that added
+  a hook event leaves that event's entry in place, inert, until the
+  next upgrade — seen on the 0.2.13 acceptance when 0.2.12 was put
+  back and Cursor's `preToolUse` entry stayed (#142). The upgrade
+  acceptance from 0.2.13 into this release runs after this tag, so
+  this entry does not claim it.
+
 ## v0.2.13 — 2026-09-24
 
 0.2.13 closes what the 0.2.12 checks found. Cursor searches finally

@@ -434,9 +434,11 @@ processor-architecture query is its only genuinely Windows-only line):
 
 The legacy branches of both installers, and `scripts/setup.sh` itself, are kept
 through v0.2.10 and v0.3.0, so those releases carry no installer-code delta over
-what was validated on v0.2.9; the cleanup PR after v0.3.0 removes them. Once
-v0.2.9 is the latest release, though, step 3 above lands on the setup branch
-regardless — every release from here on ships a binary with `setup`.
+what was validated on v0.2.9; they are not removed in this repository — the
+search client continues in a successor repository, and the cleanup happens at
+the import there. Once v0.2.9 is the latest release, though, step 3 above lands
+on the setup branch regardless — every release from here on ships a binary with
+`setup`.
 
 ## What this doesn't cover
 
