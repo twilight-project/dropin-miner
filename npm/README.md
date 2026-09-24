@@ -638,9 +638,10 @@ and the pot splits equally among everyone eligible.
 
 ## Known limits
 
-Three things to know because you will meet them and looking for a setting to
-change would waste your time. The first two are limits of Claude Code itself,
-and this client has no workaround for either.
+Four things to know because you will meet them and looking for a setting to
+change would waste your time. The first two are limits of Claude Code itself
+and the last is one of Cursor's command-line agent; this client has no
+workaround for any of the three.
 
 **Claude Code: the sentence written just before a search does not travel.**
 The trace carries the assistant text of the turn a search belongs to, and
@@ -666,13 +667,26 @@ would look installed while every search still prompted. So none is written
 its Bash tool is covered by the rules that are written; which tool it uses is
 the model's choice per call, not something this client can set.
 
-**Windows, in the Cursor editor with a PowerShell terminal profile: keep
-queries ASCII.** A query containing non-ASCII characters can reach the router
-corrupted, so a search may quietly answer a different question rather than
-fail. A Git Bash terminal profile is unaffected. This is a warning and not a
-fix: the cause is still being measured (#117). What you can do today is set
-Cursor's `terminal.integrated.defaultProfile.windows` to Git Bash, or keep
-queries to ASCII.
+**Windows, in the Cursor editor with a PowerShell terminal profile: a
+non-ASCII query was once corrupted on its way to the router.** It was observed
+once, on Cursor 3.20.21 on 2026-09-18: the router stored the query
+double-encoded, so the search quietly answered a different question rather
+than failing. On Cursor 3.21.9 on 2026-09-21, with the current skill, the same
+query reached the router intact under both terminal profiles (two request ids
+checked in the router console). A Git Bash terminal profile was never affected
+(#117). To rule it out today, set Cursor's
+`terminal.integrated.defaultProfile.windows` to Git Bash, or keep queries to
+ASCII.
+
+**Windows: Cursor's command-line agent launched from Git Bash cannot run any
+hook, and so no search through the skill.** Cursor wraps each hook command in
+a PowerShell script of its own, which pipes the hook's payload in through
+`& { … }`, and then runs that wrapper with bash `eval`, which cannot parse
+`& {`; the agent reports the hook as blocked and rejects the tool call. No form of
+this client's own command makes Cursor's wrapper valid bash. The Cursor editor
+is unaffected, and so is the command-line agent launched from PowerShell,
+which is the workaround. Reported to Cursor (forum thread 172789); tracked in
+#101.
 
 ## Upgrading
 
