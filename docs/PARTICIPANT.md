@@ -360,10 +360,15 @@ ends with one flush instead of two and Cursor's command is never rewritten as
 though Claude Code had sent it. Cursor still starts the three commands each
 turn — that part is Cursor's — and each exits immediately.
 
-**Cursor** gets a skill and six entries in `~/.cursor/hooks.json`. Cursor
-cannot rewrite a command, so its hooks maintain the lineage file and the
-search reads it. The shell hook also allows our command, so Cursor never
-prompts for it.
+**Cursor** gets a skill and seven entries in `~/.cursor/hooks.json`. Its
+hooks keep one lineage file per conversation, and the `preToolUse` hook puts
+that conversation's identity in front of our search, rewriting the exact
+search the skill renders and nothing else, so the search reads the right
+file. The shell hook also allows our command, so Cursor never prompts for
+it. One exception, on Windows under a PowerShell profile: Cursor's hook
+wrapper re-encodes non-ASCII text before our hook sees it, so a search whose
+query is not plain ASCII is left exactly as the agent wrote it. It still
+runs, but without Cursor's label, until Cursor fixes its wrapper.
 
 **Codex** gets a skill, and — whenever a config is present — a small marked
 block in `~/.codex/config.toml` that widens its sandbox just enough (and,
