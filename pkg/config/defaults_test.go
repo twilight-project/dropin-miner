@@ -4,9 +4,12 @@ package config
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var bareIPURL = regexp.MustCompile(`^https?://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+`)
 
 // TestDefaultsAreTestnet: every scalar default is the testnet value and
 // every URL is https; DefaultWalletNodes has exactly one row,
@@ -72,10 +75,10 @@ func TestDefaultsAreTestnet(t *testing.T) {
 		if strings.Contains(v, ":26657") && strings.HasPrefix(v, "http://") {
 			t.Errorf("%s = %q is a plain-http :26657 node URL", name, v)
 		}
-	}
-	// No default anywhere is a bare IP literal (the deleted
-	// defaultWalletNodeURL was "http://54.179.101.3:26657").
-	if strings.Contains(node, "54.179.101.3") {
-		t.Error("DefaultWalletNodes still contains the deleted devnet IP literal")
+		// No default anywhere is a bare IP literal: a deleted wallet node
+		// default once was one.
+		if bareIPURL.MatchString(v) {
+			t.Errorf("%s = %q is a bare IP literal URL", name, v)
+		}
 	}
 }

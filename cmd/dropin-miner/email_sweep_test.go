@@ -17,14 +17,29 @@ package main
 // this sweep folds Go constant string concatenation the way the compiler
 // does before it checks anything, so that trick no longer hides a
 // reintroduced address from it either. A second, separate check below
-// scans every file's raw bytes for the maintainer's domain and username as
-// plain substrings, catching the one place the literal-folding check
-// cannot reach at all: a comment or doc sentence that just spells the
-// address out in prose, the way an early draft of this very file once did.
-// (Neither the domain nor the username is repeated anywhere in this file,
-// including this comment, for the same reason.)
+// catches the one place the literal-folding check cannot reach at all: a
+// comment or doc sentence that just spells the address out in prose, the
+// way an early draft of this very file once did. It lowercases every file
+// the walk visits and hashes three kinds of token — each email-shaped
+// match's domain, local part and local part cut at its first "+"; every
+// alphanumeric run of four or more; every dotted host name — against
+// bannedHashes, the SHA-256 of the maintainer's domain and username. The
+// denylist is carried as digests so that this file no longer spells what it
+// denies: it is scanned like every other file, and guards itself.
+//
+// What the hashes lose against the raw substring scan this replaced: a
+// fragment buried inside a longer token — the username with letters or
+// digits glued on either side, or the domain as the tail of a longer host
+// name — is no longer caught, because only whole tokens can be hashed. That
+// is the price of not carrying the plaintext, and it is the right trade. A
+// maintainer who wants the raw scan back locally puts the plain fragments,
+// one lowercase substring per line, in .email-sweep-denylist at the module
+// root, which .gitignore keeps out of every commit and which CI never has.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -55,6 +70,65 @@ func reservedEmailDomain(domain string) bool {
 }
 
 var sweepEmailPattern = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+
+// bannedHashes maps the hex SHA-256 of each banned fragment, lowercased, to
+// the name a failure reports it by. Recompute one with
+//
+//	printf '%s' 'value' | shasum -a 256
+var bannedHashes = map[string]string{
+	// SHA-256 of the maintainer's email domain.
+	"3e2ae79c33547fe9e8c159276ef409a2140d527f75c0646d3f076b27512b6cdd": "the maintainer's email domain",
+	// SHA-256 of the maintainer's username, the address's local part.
+	"ada5fc655d63a3c81e6de77567df23f0760b5da968fb510d58b7a45ec4885c45": "the maintainer's username",
+}
+
+var (
+	// sweepRunPattern is what catches the username spelled alone in prose,
+	// which the email pattern cannot.
+	sweepRunPattern = regexp.MustCompile(`[a-z0-9]{4,}`)
+	// sweepHostPattern is what catches the domain spelled alone.
+	sweepHostPattern = regexp.MustCompile(`[a-z0-9-]+(?:\.[a-z0-9-]+)+`)
+)
+
+// bannedTokenHits returns, once each and in no particular order, the names
+// of the bannedHashes entries that some token of lower hashes to. lower must
+// already be lowercased. Email matches are taken before the reserved-domain
+// filter and the URL-userinfo skip, since the point is to catch the real
+// address wherever it is.
+func bannedTokenHits(lower string) []string {
+	hit := map[string]bool{}
+	check := func(token string) {
+		sum := sha256.Sum256([]byte(token))
+		if name, ok := bannedHashes[hex.EncodeToString(sum[:])]; ok {
+			hit[name] = true
+		}
+	}
+	for _, match := range sweepEmailPattern.FindAllString(lower, -1) {
+		at := strings.LastIndexByte(match, '@')
+		local := match[:at]
+		check(match[at+1:])
+		check(local)
+		if plus := strings.IndexByte(local, '+'); plus >= 0 {
+			check(local[:plus])
+		}
+	}
+	for _, run := range sweepRunPattern.FindAllString(lower, -1) {
+		check(run)
+	}
+	for _, host := range sweepHostPattern.FindAllString(lower, -1) {
+		check(host)
+	}
+	names := make([]string, 0, len(hit))
+	for name := range hit {
+		names = append(names, name)
+	}
+	return names
+}
+
+// sweepDenylistName is the optional private list of plain fragments for the
+// raw substring pass, read from the module root on the maintainer's machine
+// only. It is gitignored and never committed.
+const sweepDenylistName = ".email-sweep-denylist"
 
 // findEmailLiterals reports every email-shaped match in text whose domain
 // is not reserved, skipping a match that is URL userinfo rather than a
@@ -127,21 +201,35 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 
-	// selfBase is this very file's name: the one place the banned-substring
-	// check below must not run, since the denylist necessarily names what
-	// it denies. A basename compare, not a full-path compare against
-	// runtime.Caller(0): that path is recorded at compile time and is not
-	// guaranteed to use the same separator convention filepath.Abs
-	// produces at run time on every OS (this broke on Windows CI).
-	const selfBase = "email_sweep_test.go"
+	denylistPath := filepath.Join(root, sweepDenylistName)
+	type denylistEntry struct {
+		line     int
+		fragment string
+	}
+	var denylist []denylistEntry
+	switch data, err := os.ReadFile(denylistPath); { // #nosec G304 -- fixed name under moduleRoot
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		t.Fatalf("read %s: %v", sweepDenylistName, err)
+	default:
+		for i, line := range strings.Split(string(data), "\n") {
+			if fragment := strings.ToLower(strings.TrimSpace(line)); fragment != "" {
+				denylist = append(denylist, denylistEntry{line: i + 1, fragment: fragment})
+			}
+		}
+	}
+
+	relPath := func(path string) string {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return path
+		}
+		return rel
+	}
 
 	report := func(t *testing.T, path, email string) {
 		t.Helper()
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			rel = path
-		}
-		t.Errorf("%s: email literal %q uses a real-looking domain; use a reserved one instead, e.g. someone@example.com", rel, email)
+		t.Errorf("%s: email literal %q uses a real-looking domain; use a reserved one instead, e.g. someone@example.com", relPath(path), email)
 	}
 
 	checkGoFile := func(t *testing.T, path string) {
@@ -180,32 +268,28 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 		}
 	}
 
-	// bannedSubstrings must never appear anywhere in this scope, in any
-	// context — literal, concatenated, or prose in a comment or doc. This
-	// is a raw byte scan, not an AST walk: it is what actually would have
-	// caught this file's own first draft, which spelled the address out
-	// in an explanatory comment rather than as a test value — the blind
-	// spot the literal-and-comment-folding check above structurally
-	// cannot close on its own, since a comment is prose, not a constant
-	// expression to fold.
-	bannedSubstrings := []string{"protonmail.com", "quasarai"}
-	checkNoBannedSubstring := func(t *testing.T, path string) {
+	// No banned fragment may appear anywhere in this scope, in any context
+	// — literal, concatenated, or prose in a comment or doc. These are scans
+	// of the raw bytes, not an AST walk: they are what actually would have
+	// caught this file's own first draft, which spelled the address out in
+	// an explanatory comment rather than as a test value — the blind spot
+	// the literal-and-comment-folding check above structurally cannot close
+	// on its own, since a comment is prose, not a constant expression to
+	// fold. The hashed token pass always runs; the raw substring pass runs
+	// only when the private denylist is present.
+	checkNoBannedFragment := func(t *testing.T, path string) {
 		t.Helper()
-		if filepath.Base(path) == selfBase {
-			return
-		}
 		data, err := os.ReadFile(path) // #nosec G304 -- test-owned repo file under moduleRoot
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		lower := strings.ToLower(string(data))
-		for _, banned := range bannedSubstrings {
-			if strings.Contains(lower, banned) {
-				rel, rerr := filepath.Rel(root, path)
-				if rerr != nil {
-					rel = path
-				}
-				t.Errorf("%s: contains %q — the maintainer's own address must never appear here, not even in a comment", rel, banned)
+		for _, name := range bannedTokenHits(lower) {
+			t.Errorf("%s: contains a token whose SHA-256 is bannedHashes' entry for %s — the maintainer's own address must never appear here, not even in a comment", relPath(path), name)
+		}
+		for _, banned := range denylist {
+			if strings.Contains(lower, banned.fragment) {
+				t.Errorf("%s: contains line %d of %s (raw substring pass) — the maintainer's own address must never appear here, not even in a comment", relPath(path), banned.line, sweepDenylistName)
 			}
 		}
 	}
@@ -222,7 +306,10 @@ func TestNoRealEmailAddressIsUsedAsATestSample(t *testing.T) {
 			}
 			return nil
 		}
-		checkNoBannedSubstring(t, path)
+		if path == denylistPath {
+			return nil
+		}
+		checkNoBannedFragment(t, path)
 		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			return rerr
