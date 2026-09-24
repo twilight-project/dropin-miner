@@ -125,3 +125,32 @@ func TestSkillTeachesTiersOptionsAndMergedList(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillSaysASearchThatDidNotRunIsReported: #135. Cursor 3.21 sandboxed
+// the first search and refused the second, and the agent then answered the
+// user's question with no search having reached the router. The skill's error
+// discipline said to decide from ok, retryable and action; it did not say
+// what to do with the question itself. Asserted inside "What comes back",
+// where the envelope is described, for every host on every OS.
+func TestSkillSaysASearchThatDidNotRunIsReported(t *testing.T) {
+	entry := binEntry{command: "/home/u/.tokendrop/bin/dropin-miner", cfg: "/home/u/.tokendrop/tokendrop.toml"}
+	for _, id := range goldenHostIDs {
+		for _, goos := range hostShellOSes {
+			t.Run(id+"/"+goos, func(t *testing.T) {
+				section, ok := skillSection(renderedSkillFor(id, entry, goos), "## What comes back", "## Reading the answer")
+				if !ok {
+					t.Fatal("no ## What comes back section found")
+				}
+				for _, want := range []string{
+					"When `ok` is false, or the command could not run at all",
+					"tell the user the search did not run and stop",
+					"never answer the question as if the search had run",
+				} {
+					if !containsFlat(section, want) {
+						t.Errorf("What comes back does not say %q:\n%s", want, section)
+					}
+				}
+			})
+		}
+	}
+}

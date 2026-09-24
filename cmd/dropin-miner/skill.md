@@ -60,6 +60,10 @@ cross-provider list, per-provider candidates, decision, usage, session,
 latency) and `mining`. On failure it carries `code`, an optional
 `error.message`, and `retry_after_ms` when the router said how long to wait.
 
+When `ok` is false, or the command could not run at all (blocked, sandboxed,
+refused, or no JSON came back), tell the user the search did not run and stop:
+never answer the question as if the search had run.
+
 ## Reading the answer
 
 Read `result.merged` first: the citations of every provider that answered,
