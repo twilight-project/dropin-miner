@@ -292,8 +292,9 @@ one task's searches: hashed session and turn identifiers (your agent's real
 ids never leave the machine), a call counter, and the assistant text just
 before the search, capped at 32 KB. That text is conversation content leaving
 your machine; it goes only inside the search request, to the router, and the
-miner stores none of it beyond a per-workspace lineage file under
-`~/.tokendrop/sessions` that the hooks maintain.
+miner stores none of it beyond the lineage files under
+`~/.tokendrop/sessions` that the hooks maintain, one per workspace, or for
+Cursor one per conversation.
 
 One of those files is only ever read back by the agent that wrote it. If you
 have an editor open at a repository root and another agent working in a
@@ -303,13 +304,12 @@ per-shell identity instead of borrowing the nearest session above it. Before
 0.2.11 it borrowed, which meant one agent's narration could be sent as
 another's.
 
-Cursor's session-start hook also tells its shell which session it belongs to.
-When that session id is there, a lineage file is used only if it holds that
-same session; a shell that carries no session id is served exactly as before.
-Two Cursor chats open on the same project still share one lineage file, and
-giving each its own is a separate fix that is not made yet (#109) — what this
-does is keep one chat's search from going out under the other's id whenever
-there is an id to compare.
+Cursor's hooks also tell the search which session it belongs to, by putting
+the session id on the search command itself. When that session id is there, a
+lineage file is used only if it holds that same session; a shell that carries
+no session id is served exactly as before. Each Cursor chat has its own
+lineage file, so two chats open on the same project no longer relabel each
+other's searches.
 
 If one agent starts another as a shell command — Claude Code launched from a
 Cursor agent's terminal, say — the inner one inherits the outer one's channel,

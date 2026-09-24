@@ -154,9 +154,9 @@ recorded simply finds nothing to promote.
 The **trace** is how the router groups one task's searches. It comes from
 whichever of these the host allows: a hook, plugin or extension that rewrites
 the shell command with the envelope in an environment variable (Claude Code,
-opencode, Pi, Hermes), a per-workspace
-lineage file the hooks write and `search` reads (Cursor, and every host as a
-fallback), or a hashed per-shell identity when there is no hook at all. A
+opencode, Pi, Hermes), a
+lineage file the hooks write and `search` reads (Cursor, one per conversation,
+and every host as a per-workspace fallback), or a hashed per-shell identity when there is no hook at all. A
 lineage file is only ever read by the host that wrote it: a search that cannot
 say which host it belongs to takes the per-shell identity rather than the
 nearest file above it, because an editor open at a repository root and a
@@ -181,13 +181,13 @@ writes no bridge, so a search that finds `TOKENDROP_LINEAGE` set drops a
 `TOKENDROP_TRACE_BRIDGE` beside it as somebody else's, and says so on stderr.
 With a session id exported, a lineage file — the declared one, or one found by
 walking up from the working directory — is used only when it holds that
-session; a shell that exports no session id is served exactly as before. Two
-Cursor conversations open on one workspace still share one lineage file, and
-giving each its own is that defect's own fix (#109), not this rule's: the rule
-only keeps one conversation's search from going out under the other's id when
-there is a session id to compare. All of this acts on variables the search
-finds in its environment; whether Cursor passes them to the shell its agent
-runs is still being measured (#118).
+session; a shell that exports no session id is served exactly as before. Each
+Cursor conversation has its own lineage file, so two conversations open on one
+workspace no longer relabel each other's searches (#109). Cursor passes what
+its session-start hook exports to its later hooks, not to the shell its agent
+runs, so Cursor's `preToolUse` hook puts those three variables in front of the
+exact search the skill renders, in that shell's own syntax, and rewrites
+nothing else (#118).
 
 A host started by another host as a shell command inherits the outer host's
 declared channel, and so carries the outer session and label: Claude Code
@@ -240,7 +240,7 @@ is executed to find out whether it exists.
 | host | tool | found by | shell it is taught for | lineage | files written by `agents install` |
 |---|---|---|---|---|---|
 | Claude Code | skill | `claude` on PATH | Bash on macOS and Linux; on Windows both Git Bash and PowerShell | full: PreToolUse on its Bash **and** PowerShell tools rewrites the command, in the syntax of whichever one the call used; window hooks; Stop flushes | `~/.claude/skills/dropin-miner/`, five hook entries and three `permissions.allow` rules — the single-quoted spelling the skill renders, plus the quoted and bare ones an agent may repeat from an older skill — in `~/.claude/settings.json`. Those rules are Bash rules, and they stop matching the moment the hook adds the trace envelope, because an allow rule matches on how a command begins — so the hook answers the permission question itself, `allow` for exactly the search the skill renders and silence for everything else. That covers the PowerShell tool too, which no installed rule ever did; what a PowerShell-tool permission *rule* must look like is still unestablished (#77), and a rule guessed at would never match, so none is written |
-| Cursor | skill | `cursor` or `cursor-agent` on PATH, or `~/.cursor` | Bash on macOS and Linux; on Windows both PowerShell and Git Bash, labelled by which one your terminal is — Cursor runs commands in the terminal `terminal.integrated.defaultProfile.windows` names, and v0.2.10 taught the PowerShell form alone, which a Git Bash terminal wrapped in `powershell.exe -Command` and expanded the encoding line out of, delivering `café 東京` as `caf? ??` (#96) | full, and the same six `hooks.json` entries serve the editor and the Agent CLI: both load the file. The CLI was watched live doing it — `sessionStart` exported the harness and the lineage path, `afterAgentThought` wrote reasoning history, and every search carried a `cursor` envelope the router confirmed. `afterAgentResponse` and `stop` have been observed for the editor and not yet for the CLI. The shell hook auto-allows exactly the search the skill renders, and nothing looser | `~/.cursor/skills/dropin-miner/`, six entries in `~/.cursor/hooks.json` |
+| Cursor | skill | `cursor` or `cursor-agent` on PATH, or `~/.cursor` | Bash on macOS and Linux; on Windows both PowerShell and Git Bash, labelled by which one your terminal is — Cursor runs commands in the terminal `terminal.integrated.defaultProfile.windows` names, and v0.2.10 taught the PowerShell form alone, which a Git Bash terminal wrapped in `powershell.exe -Command` and expanded the encoding line out of, delivering `café 東京` as `caf? ??` (#96) | full, and the same seven `hooks.json` entries serve the editor and the Agent CLI: both load the file. `sessionStart` exports the harness and a per-conversation lineage path to the later hooks; `preToolUse` puts that identity in front of the exact search the skill renders, in that shell's own syntax, and rewrites nothing else; the shell hook allows exactly that form, and nothing looser | `~/.cursor/skills/dropin-miner/`, seven entries in `~/.cursor/hooks.json` |
 | Codex | skill | `codex` on PATH | Bash on macOS and Linux; PowerShell on Windows | per-shell | `~/.codex/skills/dropin-miner/`; install also widens `~/.codex/config.toml`'s sandbox (network, plus writable roots: the state directory always, and the intake, sessions and spool directories when `[miner] enabled` — never the config, key or wallet) so searches record and the claim resumes; the flush a search starts runs inside that sandbox too, taking the flush lock read-only (setup and every flush outside the sandbox make sure the lock file exists) and writing its stamp in the state directory. A command inside the sandbox can read `credentials.json` (a search needs the key) and the state directory (a flush needs it); on Windows it cannot read the wallet, whose directory keeps its own owner-only access |
 | opencode | AGENTS.md line | `opencode` on PATH | Bash on macOS and Linux; PowerShell on Windows | full: in-process plugin rewrites the bash command | `~/.config/opencode/plugins/dropin-miner.js` |
 | Pi | skill | `pi` on PATH | Bash everywhere (Git Bash on Windows) | full: an auto-discovered extension rewrites the bash command; history is bound to the tool call that asked for it, and the window generation is read back from the session's own compaction entries | `~/.pi/agent/skills/dropin-miner/`, `~/.pi/agent/extensions/dropin-miner.ts` |
