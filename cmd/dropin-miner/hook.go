@@ -801,11 +801,13 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 		if p.Text == "" {
 			return
 		}
+		p.Text = repairStoredText(p.Text, stderr)
 		update(func(l *lineageFile) { l.History = []traceHistory{{Role: "reasoning", Text: p.Text}} })
 	case "afterAgentResponse":
 		if p.Text == "" {
 			return
 		}
+		p.Text = repairStoredText(p.Text, stderr)
 		update(func(l *lineageFile) { l.History = []traceHistory{{Role: "assistant", Text: p.Text}} })
 	case "preCompact":
 		update(func(l *lineageFile) {
@@ -815,6 +817,77 @@ func hookCursor(ops hookOps, hc hookContext, event string, payload []byte, stdou
 	case "stop", "sessionEnd":
 		flush()
 	}
+}
+
+// ── a payload Cursor's wrapper double-encoded (#113) ────────────────────
+//
+// On Windows Cursor runs a hook as
+//
+//	$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '…\payload.json' -Raw | & { $input | & '<hook>' }
+//
+// and Windows PowerShell 5.1's Get-Content reads a file with no byte-order
+// mark in the ANSI code page, one character per byte, which the pipe then
+// encodes as UTF-8 again: `é`, c3 a9, reaches this hook as c3 83 c2 a9.
+// Measured against Cursor's own hook log, which holds the same sentence
+// intact; reported to Cursor (forum thread 172787).
+//
+// The shape is unambiguous enough to reverse. Text that is valid UTF-8, whose
+// every character is one the ANSI reading can produce from a single byte, and
+// whose bytes so recovered are valid UTF-8 again, was one UTF-8 string read a
+// byte at a time. It is reversed once, on the text the hooks STORE — the
+// assistant's words and its reasoning. Never on the command: preToolUse hands
+// the command back to Cursor to run, and a guess there would change the
+// search (a non-ASCII command is not rewritten on Windows at all).
+//
+// "A single byte" is Latin-1 (U+0000–U+00FF, which covers the five bytes
+// cp1252 leaves undefined, as the measurement showed for 0x9d) and cp1252's
+// 27 characters for 0x80–0x9F. The second half is what reaches this hook for
+// the text a model writes most: `—` (e2 80 94) arrives as `â€”`, `’` as `â€™`
+// — #88's shape — and a Latin-1-only reading would leave every one of them.
+
+// cp1252High is cp1252's mapping of 0x80–0x9F, reversed.
+var cp1252High = map[rune]byte{
+	'€': 0x80, '‚': 0x82, 'ƒ': 0x83, '„': 0x84, '…': 0x85, '†': 0x86, '‡': 0x87,
+	'ˆ': 0x88, '‰': 0x89, 'Š': 0x8a, '‹': 0x8b, 'Œ': 0x8c, 'Ž': 0x8e,
+	'‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '•': 0x95, '–': 0x96, '—': 0x97,
+	'˜': 0x98, '™': 0x99, 'š': 0x9a, '›': 0x9b, 'œ': 0x9c, 'ž': 0x9e, 'Ÿ': 0x9f,
+}
+
+// undoDoubleEncoding returns s read back as the UTF-8 it was, and true, when
+// s has the double-encoded shape; otherwise s unchanged and false.
+func undoDoubleEncoding(s string) (string, bool) {
+	if isASCII(s) || !utf8.ValidString(s) {
+		return s, false
+	}
+	b := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r <= 0xff {
+			b = append(b, byte(r))
+			continue
+		}
+		c, ok := cp1252High[r]
+		if !ok {
+			return s, false // a character no single byte reads as: s is what it says
+		}
+		b = append(b, c)
+	}
+	// The second reading. s is not ASCII, so b holds a byte ≥ 0x80, and valid
+	// UTF-8 with such a byte is at least one multibyte sequence. Plain Latin-1
+	// prose — `café` as c3 a9 — gives e9 here, alone, which is not UTF-8.
+	if !utf8.Valid(b) {
+		return s, false
+	}
+	return string(b), true
+}
+
+// repairStoredText is undoDoubleEncoding for a string about to be stored,
+// counted on stderr so that a repair is never silent.
+func repairStoredText(s string, stderr io.Writer) string {
+	fixed, ok := undoDoubleEncoding(s)
+	if ok {
+		fmt.Fprintln(stderr, "dropin-miner hook: 1 double-encoded text repaired before storing (#113)")
+	}
+	return fixed
 }
 
 // ── Cursor's identity, carried on the command (#118) ────────────────────
