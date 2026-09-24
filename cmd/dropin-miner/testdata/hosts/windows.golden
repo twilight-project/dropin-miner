@@ -167,6 +167,9 @@ JSON
 -- sessionStart
 "C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor sessionStart
 "\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor sessionStart"
+-- preToolUse
+"C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor preToolUse
+"\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor preToolUse"
 -- beforeShellExecution
 "C:\Users\u\.tokendrop\bin\dropin-miner.exe" hook -config "C:\Users\u\.tokendrop\tokendrop.toml" cursor beforeShellExecution
 "\"C:\\Users\\u\\.tokendrop\\bin\\dropin-miner.exe\" hook -config \"C:\\Users\\u\\.tokendrop\\tokendrop.toml\" cursor beforeShellExecution"

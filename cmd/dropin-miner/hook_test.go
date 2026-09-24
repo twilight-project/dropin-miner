@@ -127,7 +127,7 @@ func hookMainWith(ops hookOps, hc hookContext, args []string, stdin *bytes.Reade
 			_ = ops.spawnFlush(hc.cfgPath)
 		}
 	case "cursor":
-		hookCursor(ops, hc, args[1], payload, stdout)
+		hookCursor(ops, hc, args[1], payload, stdout, stderr)
 	case "hermes":
 		hookHermes(args[1], payload, stdout)
 	case "flush":
@@ -499,7 +499,7 @@ func TestHookCursorEventsBuildTheLineageFileAndAnswerTheHost(t *testing.T) {
 		}
 		return m
 	}
-	path := lineagePath("/sessions", "/w/proj")
+	path := conversationLineagePath("/sessions", "/w/proj", "conv-1")
 
 	out, _ := runHook(t, ops, hc, "cursor sessionStart", base)
 	var start struct {

@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -139,13 +140,13 @@ func TestCursorDiskWriteIsRedactedWithoutEverTouchingCapTrace(t *testing.T) {
 	fs, ops := newFakeHookOps(nil)
 	hc := hookContext{sessionsDir: "/sessions"}
 	workspace := "/w/proj"
-	path := lineagePath(hc.sessionsDir, workspace)
+	path := conversationLineagePath(hc.sessionsDir, workspace, "conv-1")
 
 	secretText := "here's what I found: " + traceReviewKey + " and " + traceReviewEmail
 	payload := mustJSON(t, map[string]any{
 		"conversation_id": "conv-1", "workspace_roots": []string{workspace}, "text": secretText,
 	})
-	hookCursor(ops, hc, "afterAgentResponse", payload, new(strings.Builder))
+	hookCursor(ops, hc, "afterAgentResponse", payload, new(strings.Builder), io.Discard)
 
 	raw, ok := fs.files[path]
 	if !ok {

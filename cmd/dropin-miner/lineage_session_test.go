@@ -15,6 +15,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -154,14 +155,22 @@ func TestAKnownSessionStillRequiresFreshnessAndTheHarness(t *testing.T) {
 // End to end, with nothing hand-written between the two halves: Cursor's
 // session-start hook is run for two conversations in nested workspaces, and
 // the outer one's search runs with exactly the environment that hook
-// exported, less the lineage variable (the subshell that lost it).
-func TestTheSessionTheHookExportsIsTheOneTheWalkRequires(t *testing.T) {
+// exported — which since #118 is what its preToolUse hook puts on the
+// search's own command.
+//
+// Before #109 this test dropped the lineage variable and required the walk to
+// find the outer session's file. It cannot any more, and that is chosen: the
+// file is keyed by conversation, the walk by directory, and a Cursor search
+// carries its declared path on its own command, so no shell of its own
+// loses it. What a Cursor search that has no declared path gets is asserted
+// below: the honest per-shell identity under its harness, and nobody's file.
+func TestTheSessionTheHookExportsIsTheOneItsDeclaredFileHolds(t *testing.T) {
 	p := newLineageProbe(t, nestedCwd, nil)
 	hc := hookContext{sessionsDir: adoptSessions}
 	start := func(conversation, workspace string) map[string]string {
 		t.Helper()
 		var out bytes.Buffer
-		hookCursor(p.ops.hook, hc, "sessionStart", mustJSON(t, map[string]any{"conversation_id": conversation, "workspace_roots": []string{workspace}}), &out)
+		hookCursor(p.ops.hook, hc, "sessionStart", mustJSON(t, map[string]any{"conversation_id": conversation, "workspace_roots": []string{workspace}}), &out, io.Discard)
 		var answer struct {
 			Env map[string]string `json:"env"`
 		}
@@ -178,7 +187,7 @@ func TestTheSessionTheHookExportsIsTheOneTheWalkRequires(t *testing.T) {
 		t.Fatal("the hook wrote no lineage file for the outer session")
 	}
 	if outerEnv[sessionEnv] == "" || outerEnv[sessionEnv] != outerFile.SessionID {
-		t.Fatalf("exported session %q, the lineage file holds %q: the walk would never match its own file", outerEnv[sessionEnv], outerFile.SessionID)
+		t.Fatalf("exported session %q, the lineage file holds %q: the declared file would be refused", outerEnv[sessionEnv], outerFile.SessionID)
 	}
 	if outerEnv[sessionEnv] == innerEnv[sessionEnv] {
 		t.Fatal("two conversations exported one session id")
@@ -187,13 +196,21 @@ func TestTheSessionTheHookExportsIsTheOneTheWalkRequires(t *testing.T) {
 		t.Error("the raw conversation id was exported; every identifier is hashed")
 	}
 
-	delete(outerEnv, lineageEnv)
 	env := p.trace(outerEnv)
-	if env == nil || env.SessionID != outerFile.SessionID {
-		t.Fatalf("the outer session's search went out as %+v, want session %q", env, outerFile.SessionID)
+	if env == nil || env.SessionID != outerFile.SessionID || env.Seq != 1 {
+		t.Fatalf("the outer session's search went out as %+v, want session %q at seq 1", env, outerFile.SessionID)
 	}
 	if inner, _ := loadLineage(p.ops.hook, innerEnv[lineageEnv]); inner == nil || inner.Seq != 0 {
 		t.Errorf("the inner session's file was advanced: %+v", inner)
+	}
+
+	delete(outerEnv, lineageEnv)
+	lost := p.trace(outerEnv)
+	if lost == nil || lost.Harness != "cursor" || lost.SessionID == outerFile.SessionID || lost.SessionID == innerEnv[sessionEnv] {
+		t.Fatalf("with no declared path the search went out as %+v; want the per-shell identity under cursor", lost)
+	}
+	if l, _ := loadLineage(p.ops.hook, conversationLineagePath(adoptSessions, adoptRoot, "conversation-outer")); l == nil || l.Seq != 1 {
+		t.Fatalf("the outer session's file was advanced by a search that did not declare it: %+v", l)
 	}
 }
 
@@ -205,7 +222,7 @@ func TestSessionStartExportsTheSessionWithoutAWorkspaceAndNotWithoutAConversatio
 	hc := hookContext{sessionsDir: adoptSessions}
 	answer := func(payload map[string]any) map[string]string {
 		var out bytes.Buffer
-		hookCursor(ops, hc, "sessionStart", mustJSON(t, payload), &out)
+		hookCursor(ops, hc, "sessionStart", mustJSON(t, payload), &out, io.Discard)
 		var a struct {
 			Env map[string]string `json:"env"`
 		}

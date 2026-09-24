@@ -135,6 +135,9 @@ JSON
 -- sessionStart
 '/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor sessionStart
 "'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor sessionStart"
+-- preToolUse
+'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor preToolUse
+"'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor preToolUse"
 -- beforeShellExecution
 '/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor beforeShellExecution
 "'/home/u/.tokendrop/bin/dropin-miner' hook -config '/home/u/.tokendrop/tokendrop.toml' cursor beforeShellExecution"
